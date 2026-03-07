@@ -175,17 +175,45 @@ STATS_TEXT = (
     "• 24ч: <b>{success_24h}%</b> (сбоев: <b>{fail_24h}</b>)\n"
     "• 14д: <b>{success_14d}%</b> (сбоев: <b>{fail_14d}</b>)\n\n"
     "<b>24ч (свежее → старее, шаг 1ч)</b>\n"
-    "{by_hour_text}\n\n"
+    "<blockquote>{by_hour_text}</blockquote>\n\n"
     "<b>14д (свежее → старее, шаг 1д)</b>\n"
-    "{by_day_text}\n\n"
+    "<blockquote>{by_day_text}</blockquote>\n\n"
     "<b>Последние сбои</b>\n"
     "{recent_failures}\n\n"
     "Легенда: 🟩 стабильно, 🟨 редкие сбои, 🟥 частые сбои, ⬛ нет данных"
 )
-
+TIMEZONE_LABELS = {
+    -12: "Бейкер-Айленд",
+    -11: "Паго-Паго",
+    -10: "Гонолулу",
+    -9: "Анкоридж",
+    -8: "Лос-Анджелес",
+    -7: "Денвер",
+    -6: "Чикаго",
+    -5: "Нью-Йорк",
+    -4: "Каракас",
+    -3: "Буэнос-Айрес",
+    -2: "Южная Георгия",
+    -1: "Азорские острова",
+    0: "Лондон",
+    1: "Берлин",
+    2: "Киев",
+    3: "Москва",
+    4: "Дубай",
+    5: "Карачи",
+    6: "Дакка",
+    7: "Новосибирск",
+    8: "Шанхай",
+    9: "Якутск",
+    10: "Сидней",
+    11: "Соломоновы о-ва",
+    12: "Окленд",
+    13: "Самоа",
+    14: "Киритимати",
+}
 TIMEZONE_MENU_TEXT = (
     "<b>🕒 Часовой пояс</b>\n\n"
-    "<blockquote>🌍 Примеры:\n+3 Москва\n+7 Новосибирск\n+9 Якутск</blockquote>\n\n"
+    "<blockquote>{tz_rows}</blockquote>\n\n"
     "Текущий: <b>{tz_label}</b>\n\n"
     "Выберите смещение:"
 )
@@ -201,12 +229,15 @@ SETTINGS_MENU_TITLE = (
     "Версия бота: <code>{bot_version}</code>\n"
     "Статус версии: <b>{version_state}</b>\n"
     "Последняя проверка: <b>{last_check_ago}</b> мин назад\n\n"
-    "Автообновление: <b>{auto_update_state}</b>\n\n"
     "<code>{date}</code>"
 )
+VERSION_STATE_UNKNOWN = "⚪ Неизвестно"
+VERSION_STATE_UP_TO_DATE = "✅ Актуальная"
+VERSION_STATE_UPDATE_AVAILABLE = "🆕 Доступна: {latest_version}"
 AUTO_UPDATE_ON_TEXT = "🟢 Включено"
 AUTO_UPDATE_OFF_TEXT = "🔴 Выключено"
 SETTINGS_BTN_AUTO_UPDATE = "🤖 Автообновление: {state}"
+SETTINGS_BTN_RUN_UPDATE = "⬇️ Обновиться"
 SETTINGS_BTN_TIMEZONE = "🕓 Часовой пояс: {tz_label}"
 SETTINGS_BTN_RESTART = "♻️ Перезагрузить"
 SETTINGS_BTN_CLOSE = "❌ Закрыть"
@@ -215,6 +246,8 @@ SETTINGS_TOAST_UPDATED = "✅ Настройки обновлены"
 SETTINGS_UPDATE_OK_TOAST = "У вас актуальная версия"
 SETTINGS_UPDATE_AVAILABLE_TOAST = "Доступна новая версия: {latest_version}"
 SETTINGS_UPDATE_UNKNOWN_TOAST = "Не удалось проверить обновления"
+SETTINGS_UPDATE_RUNNING_TOAST = "Запускаю обновление..."
+SETTINGS_UPDATE_ALREADY_LATEST_TOAST = "Обновление не требуется"
 
 UPDATE_NOTIFY_TEXT = (
     "⚠️ Доступно обновление\n\n"

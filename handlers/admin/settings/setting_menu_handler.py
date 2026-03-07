@@ -1,13 +1,14 @@
+import asyncio
 import time
 from datetime import timedelta
 
 import aiohttp
 from aiogram import F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.exceptions import TelegramBadRequest
 
 import data.text as constant_text
 from core.process_control import restart_current_process
@@ -25,6 +26,7 @@ from db.main import (
 )
 from filters.all_filters import IsAdmin, IsPrivate
 from loader import apps_session, router
+from update_bot import download_and_extract_github_repo
 from utils.datetime_tools import DateTime
 from utils.others import not_warning_delete_message
 
@@ -32,14 +34,32 @@ DEFAULT_TIMEZONE_OFFSET = 3
 _VERSION_CACHE_TTL_SEC = 120
 _VERSION_CACHE = {
     "checked_at": 0,
-    "state": "неизвестно",
+    "state": constant_text.VERSION_STATE_UNKNOWN,
     "latest": None,
 }
 
 
-def _tz_label(offset: int) -> str:
+def _tz_offset_label(offset: int) -> str:
     sign = "+" if int(offset) >= 0 else ""
     return f"{sign}{int(offset)}"
+
+
+def _tz_full_label(offset: int) -> str:
+    value = int(offset)
+    sign = "+" if value >= 0 else ""
+    city = constant_text.TIMEZONE_LABELS.get(value)
+    if city:
+        return f"{sign}{value} {city}"
+    return f"{sign}{value}"
+
+
+def _timezone_rows_text() -> str:
+    rows: list[str] = []
+    for offset in range(-12, 15):
+        sign = "+" if offset >= 0 else ""
+        city = constant_text.TIMEZONE_LABELS.get(offset, "")
+        rows.append(f"{sign}{offset} {city}".strip())
+    return "\n".join(rows)
 
 
 def _auto_update_label(enabled: int) -> str:
@@ -151,11 +171,11 @@ async def _get_version_state(force: bool = False) -> tuple[str, int, str | None]
     latest_version = await _fetch_latest_version()
 
     if not latest_version:
-        state = "неизвестно"
+        state = constant_text.VERSION_STATE_UNKNOWN
     elif is_newer_version(local_version, latest_version):
-        state = f"доступна {latest_version}"
+        state = constant_text.VERSION_STATE_UPDATE_AVAILABLE.format(latest_version=latest_version)
     else:
-        state = "актуальная"
+        state = constant_text.VERSION_STATE_UP_TO_DATE
 
     _VERSION_CACHE["checked_at"] = now_ts
     _VERSION_CACHE["state"] = state
@@ -184,11 +204,11 @@ async def _send_stats(message: Message, admin_only: bool) -> None:
     if admin_only:
         events_24h = await get_admin_health_events(admin_id, since_24h)
         events_14d = await get_admin_health_events(admin_id, since_14d)
-        title = f"{constant_text.STATS_TITLE_OWN} (+{_tz_label(tz_offset).lstrip('+')})"
+        title = f"{constant_text.STATS_TITLE_OWN} ({_tz_offset_label(tz_offset)})"
     else:
         events_24h = await get_all_health_events(since_24h)
         events_14d = await get_all_health_events(since_14d)
-        title = f"{constant_text.STATS_TITLE_GLOBAL} (+{_tz_label(tz_offset).lstrip('+')})"
+        title = f"{constant_text.STATS_TITLE_GLOBAL} ({_tz_offset_label(tz_offset)})"
 
     fail_24h = sum(1 for x in events_24h if int(x.status) == 0)
     fail_14d = sum(1 for x in events_14d if int(x.status) == 0)
@@ -219,7 +239,6 @@ async def _send_stats(message: Message, admin_only: bool) -> None:
 
 async def _settings_text(admin_id: int) -> str:
     tz_offset = await get_user_timezone_offset(admin_id)
-    auto_update = await get_user_auto_update_enabled(admin_id)
     version_state, checked_at, _ = await _get_version_state(force=False)
 
     return constant_text.SETTINGS_MENU_TITLE.format(
@@ -227,7 +246,6 @@ async def _settings_text(admin_id: int) -> str:
         version_state=version_state,
         last_check_ago=_minutes_ago(checked_at),
         date=DateTime(tz_offset).time_strftime("%d.%m.%Y %H:%M:%S.%f"),
-        auto_update_state=_auto_update_label(auto_update),
     )
 
 
@@ -238,11 +256,9 @@ async def _settings_inline(admin_id: int):
     keyboard = InlineKeyboardBuilder()
     keyboard.row(
         InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_AUTO_UPDATE.format(state=_auto_update_label(auto_update)),
-            callback_data=f"set:au:{0 if auto_update else 1}",
+            text=constant_text.SETTINGS_BTN_RUN_UPDATE,
+            callback_data="set:update:run",
         ),
-    )
-    keyboard.row(
         InlineKeyboardButton(
             text=constant_text.SETTINGS_BTN_CHECK_UPDATE,
             callback_data="set:update:check",
@@ -250,7 +266,13 @@ async def _settings_inline(admin_id: int):
     )
     keyboard.row(
         InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_TIMEZONE.format(tz_label=_tz_label(tz_offset)),
+            text=constant_text.SETTINGS_BTN_AUTO_UPDATE.format(state=_auto_update_label(auto_update)),
+            callback_data=f"set:au:{0 if auto_update else 1}",
+        ),
+    )
+    keyboard.row(
+        InlineKeyboardButton(
+            text=constant_text.SETTINGS_BTN_TIMEZONE.format(tz_label=_tz_offset_label(tz_offset)),
             callback_data="set:tz:open",
         )
     )
@@ -270,14 +292,8 @@ def _timezone_inline(current_offset: int):
     for i in range(0, len(offsets), 3):
         buttons = []
         for value in offsets[i : i + 3]:
-            base_text = constant_text.TIMEZONE_BTN_PREFIX.format(
-                offset=(f"+{value}" if value >= 0 else str(value))
-            )
-            text = (
-                constant_text.TIMEZONE_BTN_SELECTED.format(label=base_text)
-                if value == current_offset
-                else base_text
-            )
+            base_text = constant_text.TIMEZONE_BTN_PREFIX.format(offset=(f"+{value}" if value >= 0 else str(value)))
+            text = constant_text.TIMEZONE_BTN_SELECTED.format(label=base_text) if value == current_offset else base_text
             buttons.append(InlineKeyboardButton(text=text, callback_data=f"set:tz:{value}"))
         keyboard.row(*buttons)
 
@@ -329,16 +345,50 @@ async def check_update_now_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
     local_version = get_local_version()
-    version_state, _, latest_version = await _get_version_state(force=True)
+    _, _, latest_version = await _get_version_state(force=True)
 
     if latest_version and is_newer_version(local_version, latest_version):
         await call.answer(constant_text.SETTINGS_UPDATE_AVAILABLE_TOAST.format(latest_version=latest_version))
-    elif version_state == "неизвестно":
+    elif not latest_version:
         await call.answer(constant_text.SETTINGS_UPDATE_UNKNOWN_TOAST)
     else:
         await call.answer(constant_text.SETTINGS_UPDATE_OK_TOAST)
 
     await _safe_edit_settings(call)
+
+
+@router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:update:run", StateFilter("*"))
+async def run_update_now_handler(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+
+    local_version = get_local_version()
+    _, _, latest_version = await _get_version_state(force=True)
+
+    if not latest_version:
+        await call.answer(constant_text.SETTINGS_UPDATE_UNKNOWN_TOAST)
+        return await _safe_edit_settings(call)
+
+    if not is_newer_version(local_version, latest_version):
+        await call.answer(constant_text.SETTINGS_UPDATE_ALREADY_LATEST_TOAST)
+        return await _safe_edit_settings(call)
+
+    await call.answer(constant_text.SETTINGS_UPDATE_RUNNING_TOAST)
+
+    await call.message.edit_text(
+        constant_text.AUTO_UPDATE_START_TEXT.format(from_version=local_version, to_version=latest_version)
+    )
+
+    for app in list(apps_session):
+        await stop_client(app)
+
+    ok = await asyncio.to_thread(download_and_extract_github_repo)
+    if not ok:
+        await call.message.answer(constant_text.AUTO_UPDATE_FAILED_TEXT)
+        return
+
+    await call.message.answer(constant_text.AUTO_UPDATE_DONE_TEXT.format(to_version=latest_version))
+    await asyncio.sleep(2)
+    restart_current_process()
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("set:au:"), StateFilter("*"))
@@ -358,10 +408,14 @@ async def set_auto_update_handler(call: CallbackQuery, state: FSMContext):
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:tz:open", StateFilter("*"))
 async def open_timezone_menu_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
+
     current_offset = await get_user_timezone_offset(call.from_user.id)
 
     await call.message.edit_text(
-        constant_text.TIMEZONE_MENU_TEXT.format(tz_label=_tz_label(current_offset)),
+        constant_text.TIMEZONE_MENU_TEXT.format(
+            tz_label=_tz_full_label(current_offset),
+            tz_rows=_timezone_rows_text(),
+        ),
         reply_markup=_timezone_inline(current_offset),
     )
 
@@ -377,7 +431,10 @@ async def set_timezone_handler(call: CallbackQuery, state: FSMContext):
         saved = await set_user_timezone_offset(call.from_user.id, DEFAULT_TIMEZONE_OFFSET)
         await call.answer(constant_text.TIMEZONE_RESET_TOAST)
         return await call.message.edit_text(
-            constant_text.TIMEZONE_MENU_TEXT.format(tz_label=_tz_label(saved)),
+            constant_text.TIMEZONE_MENU_TEXT.format(
+                tz_label=_tz_full_label(saved),
+                tz_rows=_timezone_rows_text(),
+            ),
             reply_markup=_timezone_inline(saved),
         )
 
@@ -390,10 +447,13 @@ async def set_timezone_handler(call: CallbackQuery, state: FSMContext):
         return await call.answer(constant_text.TIMEZONE_INVALID_TOAST)
 
     saved = await set_user_timezone_offset(call.from_user.id, offset)
-    await call.answer(constant_text.TIMEZONE_SET_TOAST.format(tz_label=_tz_label(saved)))
+    await call.answer(constant_text.TIMEZONE_SET_TOAST.format(tz_label=_tz_full_label(saved)))
 
     await call.message.edit_text(
-        constant_text.TIMEZONE_MENU_TEXT.format(tz_label=_tz_label(saved)),
+        constant_text.TIMEZONE_MENU_TEXT.format(
+            tz_label=_tz_full_label(saved),
+            tz_rows=_timezone_rows_text(),
+        ),
         reply_markup=_timezone_inline(saved),
     )
 
