@@ -14,5 +14,5 @@ from loader import router
 async def restart_handler(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(constant_text.RESTARTING_TEXT)
-    await stop_all_clients()
+    await stop_all_clients(for_restart=True)
     restart_current_process()

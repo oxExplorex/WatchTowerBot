@@ -395,7 +395,7 @@ async def run_update_now_handler(call: CallbackQuery, state: FSMContext):
         constant_text.AUTO_UPDATE_START_TEXT.format(from_version=local_version, to_version=latest_version)
     )
 
-    await stop_all_clients()
+    await stop_all_clients(for_restart=True)
 
     ok = await asyncio.to_thread(download_and_extract_github_repo)
     if not ok:
@@ -485,7 +485,7 @@ async def reboot_from_settings_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
     await call.message.edit_text(constant_text.RESTARTING_TEXT)
-    await stop_all_clients()
+    await stop_all_clients(for_restart=True)
     restart_current_process()
 
 

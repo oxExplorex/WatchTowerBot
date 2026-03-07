@@ -84,7 +84,7 @@ async def _run_auto_update(target_ids: Iterable[int], current_version: str, late
     for admin_id in ids:
         await _safe_send(admin_id, start_text, include_snooze=False)
 
-    await stop_all_clients()
+    await stop_all_clients(for_restart=True)
     ok = await asyncio.to_thread(download_and_extract_github_repo)
 
     if not ok:

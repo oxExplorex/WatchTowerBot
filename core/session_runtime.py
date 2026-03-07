@@ -25,8 +25,20 @@ def _is_expected_stop_error(exc: Exception) -> bool:
     return any(marker in text for marker in expected_markers)
 
 
+async def _disconnect_client(app_session) -> None:
+    disconnect_method = getattr(app_session, "disconnect", None)
+    try:
+        if callable(disconnect_method):
+            await disconnect_method()
+    except Exception as exc:
+        if _is_expected_stop_error(exc):
+            bot_logger.debug(f"Skip disconnect warning: {exc}")
+            return
+        bot_logger.exception("disconnect client failed")
+
+
 async def stop_client(app_session) -> None:
-    # stop() gracefully shuts down updates/session; disconnect() is only fallback.
+    # Full stop for runtime removal.
     stop_method = getattr(app_session, "stop", None)
     try:
         if callable(stop_method):
@@ -38,23 +50,19 @@ async def stop_client(app_session) -> None:
             return
         bot_logger.exception("stop_client failed on stop()")
 
-    disconnect_method = getattr(app_session, "disconnect", None)
-    try:
-        if callable(disconnect_method):
-            await disconnect_method()
-    except Exception as exc:
-        if _is_expected_stop_error(exc):
-            bot_logger.debug(f"Skip stop_client warning: {exc}")
-            return
-        bot_logger.exception("stop_client failed on disconnect()")
+    await _disconnect_client(app_session)
 
 
-async def stop_all_clients(clear_runtime: bool = True) -> int:
+async def stop_all_clients(clear_runtime: bool = True, for_restart: bool = False) -> int:
     from loader import apps_session
 
     stopped = 0
     for app_session in list(apps_session):
-        await stop_client(app_session)
+        if for_restart:
+            # Softer shutdown for restart/update avoids pyrofork sqlite close race.
+            await _disconnect_client(app_session)
+        else:
+            await stop_client(app_session)
         stopped += 1
 
     if clear_runtime:

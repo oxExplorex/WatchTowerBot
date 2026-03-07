@@ -44,6 +44,7 @@ def _handle_compose_task_result(task: asyncio.Task) -> None:
 
     bot_logger.error(f"compose() failed: {exc.__class__.__name__}: {exc}")
 
+
 def _register_pyrogram_handlers() -> None:
     for app in apps_session:
         if not isinstance(app, Client):
@@ -73,6 +74,7 @@ async def start_polling_bot():
     dispatcher.include_router(router)
 
     _register_pyrogram_handlers()
+
     compose_task = loop.create_task(compose(apps_session))
     compose_task.add_done_callback(_handle_compose_task_result)
 
