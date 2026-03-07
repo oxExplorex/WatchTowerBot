@@ -1,8 +1,7 @@
-
-from aiogram.types import InlineKeyboardButton
+﻿from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-
+import data.text as constant_text
 
 
 def back_inline():
@@ -10,10 +9,8 @@ def back_inline():
 
     keyboard.row(
         InlineKeyboardButton(
-            text=f"Отмена",
-            callback_data=f"back_delete"
+            text=constant_text.ACTION_CANCEL_TEXT,
+            callback_data="back_delete",
         ),
     )
     return keyboard.as_markup()
-
-

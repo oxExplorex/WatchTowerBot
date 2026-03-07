@@ -1,50 +1,34 @@
-from aiogram import F
+﻿from aiogram import F
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 import data.text as constant_text
 from filters.all_filters import IsAdmin, IsPrivate
+from handlers.admin.states import AdminStates
 from loader import router
 
 
-
-
-# DOES NOTHING
 @router.message(IsPrivate(), IsAdmin(), F.text.in_(constant_text.PROXY_USER_KEYBOARD), StateFilter("*"))
-async def proxy_menu_handler(message: Message, state: FSMContext):
+async def open_proxy_menu_handler(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(constant_text.PROXY_MENU_PROMPT_TEXT)
+    await state.set_state(AdminStates.wait_proxy_manager)
+
+
+@router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.wait_proxy_manager))
+async def save_proxy_handler(message: Message, state: FSMContext):
     await state.clear()
 
-    _user_id = message.from_user.id
+    text = (message.text or "").strip()
+    if text.count(":") == 3:
+        with open("data/proxy.txt", "w", encoding="utf-8") as file:
+            file.write(text)
+        return await message.answer(constant_text.PROXY_SET_TEXT)
 
-    await message.answer("Введите прокси для работы с gemini\n\nФормат:\n{ip}:{port}:{user}:{password} Или 0 для отключения")
-    await state.set_state("wait_proxy_manager")
+    if text == "0":
+        with open("data/proxy.txt", "w", encoding="utf-8") as file:
+            file.write("0")
+        return await message.answer(constant_text.PROXY_DISABLED_TEXT)
 
-
-# DOES NOTHING
-@router.message(IsPrivate(), IsAdmin(), StateFilter("wait_proxy_manager"))
-async def proxy_menu_handler(message: Message, state: FSMContext):
-    await state.clear()
-
-    if message.text.count(":") == 3:
-        _ip, _port, _user, _password = message.text.split(":")
-
-        with open("data/proxy.txt", "w") as file:
-            file.write(f"{_ip}:{_port}:{_user}:{_password}")
-
-        return await message.answer("Прокси установлены")
-    elif message.text == "0":
-
-        with open("data/proxy.txt", "w") as file:
-            file.write(f"0")
-
-        return await message.answer("Прокси выключены")
-
-    return await message.answer("Неверный формат прокси")
-
-
-
-
-
-
-
+    return await message.answer(constant_text.PROXY_INVALID_FORMAT_TEXT)

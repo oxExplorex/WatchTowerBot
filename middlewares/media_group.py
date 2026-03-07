@@ -1,10 +1,10 @@
-import asyncio
+﻿import asyncio
 from typing import Callable, Any, Awaitable, Union
 
 from aiogram import BaseMiddleware
 from aiogram.types import Message
 
-from _logging import bot_logger
+from core.logging import bot_logger
 
 
 class AlbumMiddleware(BaseMiddleware):

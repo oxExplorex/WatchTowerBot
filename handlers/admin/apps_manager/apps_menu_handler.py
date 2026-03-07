@@ -1,60 +1,62 @@
-import os
+﻿import math
 
 from aiogram import F
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import CallbackQuery, Message
 
+import data.text as constant_text
 from db.main import get_app_tg_user_id
 from filters.all_filters import IsAdmin, IsPrivate
 from keyboards.inline.apps_manager.apps_menu_inline import apps_tg_admin_inline
-from loader import router, apps_session
-
-import data.text as constant_text
+from loader import router
 from utils.datetime_tools import DateTime
 
-
-#
-async def _get_apps_tg(user_id, offset):
-    _apps_tg, _count = await get_app_tg_user_id(user_id, offset)
-    if not _apps_tg:
-        return [0, await apps_tg_admin_inline(_apps_tg, offset, _count)]
-
-    return [_count, await apps_tg_admin_inline(_apps_tg, offset, _count)]
+PAGE_SIZE = 5
 
 
-# DOES NOTHING
+def _normalize_page(value: int) -> int:
+    return 1 if value < 1 else value
+
+
+async def _get_apps_page(user_id: int, page: int):
+    normalized_page = _normalize_page(page)
+    offset = (normalized_page - 1) * PAGE_SIZE
+
+    apps, count = await get_app_tg_user_id(user_id, offset)
+    total_pages = max(1, math.ceil(count / PAGE_SIZE))
+    keyboard = await apps_tg_admin_inline(apps, normalized_page, total_pages)
+    return count, total_pages, keyboard
+
+
 @router.message(IsPrivate(), IsAdmin(), F.text.in_(constant_text.APP_TG_USER_KEYBOARD), StateFilter("*"))
-async def apps_menu_handler(message: Message, state: FSMContext):
+async def open_apps_menu_handler(message: Message, state: FSMContext):
     await state.clear()
 
-    _user_id = message.from_user.id
-
-    _count, _reply_keyboard = await _get_apps_tg(_user_id, 0)
-
+    total, _, keyboard = await _get_apps_page(message.from_user.id, 1)
     await message.answer(
         text=constant_text.APPS_COUNT_INFO_TEXT.format(
-            _count=_count,
-            date=DateTime().time_strftime("%d.%m.%Y %H:%M:%S.%f")),
-        reply_markup=_reply_keyboard)
+            _count=total,
+            date=DateTime().time_strftime("%d.%m.%Y %H:%M:%S.%f"),
+        ),
+        reply_markup=keyboard,
+    )
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("apps_admin_menu:"), StateFilter("*"))
-async def apps_menu_offset_handler(call: CallbackQuery, state: FSMContext):
+async def paginate_apps_menu_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
-    _offset = int(call.data.split(":")[-1])
-    _user_id = call.from_user.id
+    page = int(call.data.split(":")[-1])
+    total, total_pages, _ = await _get_apps_page(call.from_user.id, 1)
+    if page < 1 or page > total_pages:
+        return await call.answer(constant_text.WARNING_PAGE_EDGE)
 
-    if _offset < 0:
-        return await call.answer(constant_text.WARNING_NOT_ACCOUNT_ANSWER)
-
-    _count, _reply_keyboard = await _get_apps_tg(_user_id, _offset)
-
-
+    _, _, keyboard = await _get_apps_page(call.from_user.id, page)
     await call.message.edit_text(
         text=constant_text.APPS_COUNT_INFO_TEXT.format(
-            _count=_count,
-            date=DateTime().time_strftime("%d.%m.%Y %H:%M:%S.%f")),
-        reply_markup=_reply_keyboard
+            _count=total,
+            date=DateTime().time_strftime("%d.%m.%Y %H:%M:%S.%f"),
+        ),
+        reply_markup=keyboard,
     )

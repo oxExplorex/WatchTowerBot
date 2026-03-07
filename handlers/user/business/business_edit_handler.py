@@ -1,8 +1,8 @@
-from aiogram.filters import StateFilter
+﻿from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from _logging import bot_logger
+from core.logging import bot_logger
 from loader import router
 
 

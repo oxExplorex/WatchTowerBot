@@ -1,24 +1,21 @@
-
-from aiogram.types import InlineKeyboardButton
+﻿from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-
+import data.text as constant_text
 
 
 def agree_inline():
     keyboard = InlineKeyboardBuilder()
     keyboard.row(
         InlineKeyboardButton(
-            text=f"✅ Подтвердить",
-            callback_data=f"agree"
+            text=constant_text.ACTION_CONFIRM_TEXT,
+            callback_data="agree",
         ),
     )
     keyboard.row(
         InlineKeyboardButton(
-            text=f"Отмена",
-            callback_data=f"back_delete"
+            text=constant_text.ACTION_CANCEL_TEXT,
+            callback_data="back_delete",
         ),
     )
     return keyboard.as_markup()
-
-

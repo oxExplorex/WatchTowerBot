@@ -1,39 +1,29 @@
-TOKEN_BOT = "" # Токен бота
-GEMINI_KEY = "" # Токен GEMINI (Позже перенесу в бд)
+﻿TOKEN_BOT = ""  # Telegram bot token
+GEMINI_KEY = ""  # Gemini API key
 
-user = "postgres" # пользователь (по дефолту: postgres )
-password = "g3i68ojA18S8Jo7aIUr02nA" # Который вы указали
-db = "postgres" # имя бд (по дефолту: postgres)
+# Database connection
+# Recommended: create dedicated DB for this bot.
+# Example name: gemini_message_manager
+user = "postgres"
+password = "postgres"
+database_name = "gemini_message_manager"
+# Existing administrative DB used only to create target DB if needed
+database_admin_name = "postgres"
 
+host = "localhost"
+port = 5432
 
-host = "localhost" # localhost, если бд не на сервере
-port = 5432 # 5432, если не изменяли.
-# На сервере лучше сменить порт.
+# DB driver for SQLModel/SQLAlchemy. Recommended for PostgreSQL: postgresql+asyncpg
+db_http = "postgresql+asyncpg"
 
+# Optional for sqlite engine:
+# database_path = "data/gemini_message_manager.sqlite3"
 
-# список админов, которые могут пользоваться ботом ( Telegram ID )
+# Admin users (Telegram user IDs)
 admin_id_list = [
     1,
     2,
-]  # PS: Можно назначить через админку других админов.
+]
 
-
-
-########################################
-########################################
-# Ниже значения, которые изменять только продвинутым пользователям!
-########################################
-########################################
-
-# изменять, только если у вас другая база данных, например mysql
-# Подробнее: https://pypi.org/project/tortoise-orm/
-db_http = "postgres"
-
-# Путь до логов.
-path_logs = 'data/logs/log_{d}.log'
-
-########################################
-########################################
-# Выше значения, которые изменять только продвинутым пользователям!
-########################################
-########################################
+# Logs path
+path_logs = "data/logs/log_{d}.log"

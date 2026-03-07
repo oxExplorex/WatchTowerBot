@@ -1,105 +1,94 @@
-
-import google.generativeai as genai
+﻿import google.generativeai as genai
 from pyrogram import Client
 from pyrogram.types import Message
 
-from _logging import bot_logger
+import data.text as constant_text
+from core.session_runtime import session_number_from_client
+from db.main import get_account_by_number
 from loader import chat_gemini
 
 
-def get_answer_text_list(_promt, question, answer):
-    _temp = []
-
-    _temp_str = f"Токены: {answer.usage_metadata.prompt_token_count} | {answer.usage_metadata.candidates_token_count} | {answer.usage_metadata.total_token_count}\n\n"
-    _temp_str += f"<emoji id=5276507609652802495>👀</emoji> Промт: {_promt}\n\n" if _promt else ""
-    _temp_str += f"<emoji id=5206479194388713063>❓</emoji> Вопрос: {question}\n\n" if question else ""
-    _temp_str += f"<emoji id=5370939500811791703>🤓</emoji> Ответ: {answer.text}"
-    _temp_str = f"{answer.text.replace("\\n", "\n")}"
-    return _temp_str
+def get_answer_text(answer):
+    return answer.text.replace("\\n", "\n")
 
 
-def get_answer_text_pre(_repl):
-    if _repl:
-        if _repl.animation or _repl.video or _repl.video_note or (_repl.sticker and _repl.sticker.is_video):
-            _temp_str = "<emoji id=5226906660143904201>🤨</emoji> Смотрю видео, подожди <emoji id=5220046725493828505>✍️</emoji>"
-        elif _repl.voice or _repl.audio:
-            _temp_str = "<emoji id=5226906660143904201>🤨</emoji> Слушаю голосовое, подожди <emoji id=5220046725493828505>✍️</emoji>"
-        elif _repl.sticker:
-            _temp_str = "<emoji id=5226906660143904201>🤨</emoji> Рассматриваю стикер, подожди <emoji id=5220046725493828505>✍️</emoji>"
-        elif _repl.photo:
-            _temp_str = "<emoji id=5226906660143904201>🤨</emoji> Рассматриваю фото, подожди <emoji id=5220046725493828505>✍️</emoji>"
-        else:
-            _temp_str = "<emoji id=5269436882302811645>👀</emoji> Думаю над чем-то непонятным, подожди <emoji id=5220046725493828505>✍️</emoji>"
-    else:
-        _temp_str = "<emoji id=5269436882302811645>👀</emoji> Думаю над текстом, подожди <emoji id=5220046725493828505>✍️</emoji>"
-    return _temp_str
+def get_answer_text_pre(reply_message):
+    if not reply_message:
+        return constant_text.GEMINI_THINKING_TEXT
+
+    if reply_message.animation or reply_message.video or reply_message.video_note or (
+        reply_message.sticker and reply_message.sticker.is_video
+    ):
+        return constant_text.GEMINI_ANALYZING_VIDEO_TEXT
+    if reply_message.voice or reply_message.audio:
+        return constant_text.GEMINI_ANALYZING_AUDIO_TEXT
+    if reply_message.sticker:
+        return constant_text.GEMINI_ANALYZING_STICKER_TEXT
+    if reply_message.photo:
+        return constant_text.GEMINI_ANALYZING_PHOTO_TEXT
+    return constant_text.GEMINI_ANALYZING_CONTENT_TEXT
 
 
-def _get_mime_type(_repl):
-    if _repl:
-        if _repl.animation or _repl.video or _repl.video_note or (_repl.sticker and _repl.sticker.is_video):
-            return 'video/mp4'
-        elif _repl.voice or _repl.audio:
-            return "audio/wav"
-        elif _repl.photo or _repl.sticker:
-            return "image/png"
+def _get_mime_type(reply_message):
+    if not reply_message:
+        return None
+    if reply_message.animation or reply_message.video or reply_message.video_note or (
+        reply_message.sticker and reply_message.sticker.is_video
+    ):
+        return "video/mp4"
+    if reply_message.voice or reply_message.audio:
+        return "audio/wav"
+    if reply_message.photo or reply_message.sticker:
+        return "image/png"
     return None
 
-def _protos(_text, message: Message, _mime_type):
-    # Так, делаем
-    if _mime_type:
-        return f"[Сообщение от @{message.from_user.username} ({message.from_user.id}) с вложением ниже |{message.from_user.full_name}] {_text}"
-    return f"[Сообщение от @{message.from_user.username} ({message.from_user.id}) |{message.from_user.full_name}] {_text}"
+
+def _build_text(text, message: Message, has_media: bool):
+    prefix = f"[Message from @{message.from_user.username} ({message.from_user.id}) | {message.from_user.full_name}]"
+    if has_media:
+        prefix = f"[Message with attachment from @{message.from_user.username} ({message.from_user.id}) | {message.from_user.full_name}]"
+    return f"{prefix} {text}".strip()
+
 
 async def gemini_app_handler(client: Client, message: Message):
-    if (await client.get_me()).id != message.from_user.id:
+    session_number = session_number_from_client(client)
+    account = await get_account_by_number(session_number) if session_number else None
+    if not account or not account.is_active:
         return
 
-    _promt_root = (message.text or message.caption or "").replace(".", "", 1)
-    _promt_reply = (message.reply_to_message.text or message.reply_to_message.caption or "") if message.reply_to_message else ""
+    if not message.from_user or int(account.user_id) != int(message.from_user.id):
+        return
 
-    await message.edit_text(
-        get_answer_text_pre(message.reply_to_message)
-    )
+    if chat_gemini is None:
+        return await message.reply_text(constant_text.GEMINI_UNAVAILABLE_TEXT)
 
-    _mime_type = _get_mime_type(message.reply_to_message)
-    if not(_mime_type is None) and message.reply_to_message:
-        if _mime_type:
-            pass
-        else:
-            return await message.edit_text("Я не знаю такой формат файла")
+    prompt_root = (message.text or message.caption or "").replace(".", "", 1)
+    reply_text = (message.reply_to_message.text or message.reply_to_message.caption or "") if message.reply_to_message else ""
 
-        animation = await message.reply_to_message.download(in_memory=True)
+    await message.edit_text(get_answer_text_pre(message.reply_to_message))
 
-        _parts = [
-            genai.protos.Part(text=_protos(_promt_root, message, None)) if _promt_root else None,
-            genai.protos.Part(text=_protos(_promt_reply, message.reply_to_message, _mime_type)) if _promt_reply else None,
+    mime_type = _get_mime_type(message.reply_to_message)
+    if mime_type and message.reply_to_message:
+        media = await message.reply_to_message.download(in_memory=True)
+        parts = [
+            genai.protos.Part(text=_build_text(prompt_root, message, False)) if prompt_root else None,
+            genai.protos.Part(text=_build_text(reply_text, message.reply_to_message, True)) if reply_text else None,
             genai.protos.Part(
                 inline_data=genai.protos.Blob(
-                    mime_type=_mime_type,
-                    data=animation.getbuffer().tobytes()
+                    mime_type=mime_type,
+                    data=media.getbuffer().tobytes(),
                 )
-            )
-        ]
-        _parts = [i for i in _parts if i]
-
-        response = await chat_gemini.send_message_async(
-            content=genai.protos.Content(
-                parts=_parts
             ),
-        )
+        ]
+        parts = [part for part in parts if part]
     else:
-        _parts = [
-            genai.protos.Part(text=_protos(_promt_root, message, None)) if _promt_root else genai.protos.Part(text="?"),
-            genai.protos.Part(text=_protos(_promt_reply,  message.reply_to_message, None)) if _promt_reply else genai.protos.Part(text="?")
+        parts = [
+            genai.protos.Part(text=_build_text(prompt_root or "?", message, False)),
+            genai.protos.Part(text=_build_text(reply_text or "?", message.reply_to_message or message, False)),
         ]
 
-        response = await chat_gemini.send_message_async(
-            content=genai.protos.Content(
-                parts=_parts,
-            ),
-        )
-
-    await message.edit_text(
-        text=get_answer_text_list(_promt_root, _promt_reply, response),
+    response = await chat_gemini.send_message_async(
+        content=genai.protos.Content(parts=parts),
     )
+
+    await message.edit_text(text=get_answer_text(response))

@@ -1,9 +1,9 @@
-from aiogram import F
+﻿from aiogram import F
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from _logging import bot_logger
+from core.logging import bot_logger
 from loader import router, bot
 
 
@@ -13,4 +13,5 @@ async def deleted_business_handler(message: Message):
     bot_logger.info(message)
 
     return
+
 

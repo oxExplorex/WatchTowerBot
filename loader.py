@@ -1,159 +1,123 @@
-import asyncio
+﻿import asyncio
 import os
 import traceback
+
 import google.generativeai as genai
-from aerich import Command
 from aiogram import Bot, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from google.generativeai import ChatSession
 from pyrogram import Client
 
-from _logging import bot_logger
-from config_statistic import SAFETY_SETTINGS
-from data.config import GEMINI_KEY
-from data.config import TOKEN_BOT
-from db.main import connect_database, close_database, TORTOISE_ORM, delete_user, update_user, get_account_all, \
-    get_app_tg_uuid_aio, get_admins
+from core.logging import bot_logger
+from data.gemini_safety import SAFETY_SETTINGS
+from data.config import GEMINI_KEY, TOKEN_BOT
+from db.main import close_database, connect_database, get_account_all, get_app_tg_uuid_aio
+from db.migrations import run_db_migrations
 
-loop = asyncio.get_event_loop()
+
+def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
+    try:
+        return asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+
+loop = _get_or_create_event_loop()
 asyncio_lock = asyncio.Lock()
 
 
-async def _check_and_migration_db():
-
-    if not os.path.exists("./migrations"):
-        os.makedirs("./migrations")
-    if not os.path.exists("./migrations/models"):
-        os.makedirs("./migrations/models")
-
-    command = Command(tortoise_config=TORTOISE_ORM, app='models')
-
-    try:
-        await command.init_db(False)
-    except:
-        pass
-
-    await command.init()
-    try:
-        await command.upgrade()
-    except:
-        pass
-    await command.migrate()
-
-    await connect_database()
-
-    await delete_user(1)
-
-    await update_user(1, "", "")
-
-    await delete_user(1)
-
-    await close_database()
+async def _bootstrap_db() -> None:
+    await run_db_migrations()
 
 
-async def _get_apps_user():
+async def _get_apps_user() -> list[Client]:
     try:
         await connect_database()
 
-        _apps = [
-        ]
-
-        for _account in await get_account_all():
-
-            _app_tg = await get_app_tg_uuid_aio(_account.app_tg)
-            if not _app_tg:
-                # todo alert admin
+        apps = []
+        for account in await get_account_all(active_only=True):
+            app_tg = await get_app_tg_uuid_aio(account.app_tg)
+            if not app_tg:
                 continue
 
-            _apps.append(
+            apps.append(
                 Client(
-                    name=f"data/session/{_account.number}",
-                    api_id=_app_tg.app_id,
-                    api_hash=_app_tg.api_hash,
-                    phone_number=f"{_account.number}",
+                    name=f"data/session/{account.number}",
+                    api_id=app_tg.app_id,
+                    api_hash=app_tg.api_hash,
+                    phone_number=f"{account.number}",
                 )
             )
 
-
         await close_database()
-        return _apps
-    except Exception as e:
-
+        return apps
+    except Exception:
         bot_logger.info(traceback.format_exc())
-
         try:
             await close_database()
-        except:
+        except Exception:
             pass
-        return False
+        return []
 
 
-_ = loop.run_until_complete(_check_and_migration_db())  # миграция
-_ = loop.run_until_complete(_check_and_migration_db())  # миграция
-apps_session = loop.run_until_complete(_get_apps_user())
-
+_ = loop.run_until_complete(_bootstrap_db())
+apps_session: list[Client] = loop.run_until_complete(_get_apps_user())
 
 router = Router()
 bot = Bot(
     token=TOKEN_BOT,
-    default=DefaultBotProperties(
-        parse_mode=ParseMode.HTML
-    )
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
+
 
 async def _get_gemini_chat():
     try:
         await connect_database()
 
         if os.path.exists("data/proxy.txt"):
-            with open("data/proxy.txt", "r") as file:
-                _proxy = file.read()
-                if _proxy == "0":
-                    pass
-                else:
-                    _ip, _port, _user, _password = _proxy.split(":")
+            with open("data/proxy.txt", "r", encoding="utf-8") as file:
+                proxy_raw = file.read().strip()
+                if proxy_raw and proxy_raw != "0":
+                    ip, port, user, password = proxy_raw.split(":")
+                    proxy = f"http://{user}:{password}@{ip}:{port}"
+                    bot_logger.info(f"Proxy enabled: {proxy}")
 
-                    proxy = f'http://{_user}:{_password}@{_ip}:{_port}'
-
-                    bot_logger.info(f"Установлены прокси : {proxy}")
-
-                    os.environ['http_proxy'] = proxy
-                    os.environ['HTTP_PROXY'] = proxy
-                    os.environ['https_proxy'] = proxy
-                    os.environ['HTTPS_PROXY'] = proxy
-                    os.environ['HTTPS_PROXY'] = proxy
-                    os.environ['grpc_proxy'] = proxy  # GRPC прокси
-                    os.environ['GRPC_PROXY'] = proxy  # GRPC прокси (верхний регистр)
+                    os.environ["http_proxy"] = proxy
+                    os.environ["HTTP_PROXY"] = proxy
+                    os.environ["https_proxy"] = proxy
+                    os.environ["HTTPS_PROXY"] = proxy
+                    os.environ["grpc_proxy"] = proxy
+                    os.environ["GRPC_PROXY"] = proxy
 
         genai.configure(api_key=GEMINI_KEY)
 
         with open("data/promt_ai_userbot.txt", "r", encoding="utf-8") as file:
-            SYSTEM_INSTRUCTION = file.read()
+            system_instruction = file.read()
 
-        _admins = list(set([x.user_id for x in await get_account_all()]))
-        _admins = ", ".join([str(x) for x in _admins])
-
-        bot_logger.info(_admins)
+        admin_ids = list(set(x.user_id for x in await get_account_all(active_only=True)))
+        admin_ids_text = ", ".join(str(x) for x in admin_ids)
 
         model = genai.GenerativeModel(
-            model_name='gemini-2.0-flash',
-            system_instruction=SYSTEM_INSTRUCTION.replace("[Здесь перечислить user_id через запятую]", _admins),
+            model_name="gemini-2.0-flash",
+            system_instruction=system_instruction.replace("[Здесь перечислить user_id через запятую]", admin_ids_text),
             safety_settings=SAFETY_SETTINGS,
-
         )
         chat_gemini = model.start_chat(history=[])
 
         await close_database()
         return chat_gemini
-    except Exception as e:
-
+    except Exception:
         bot_logger.info(traceback.format_exc())
-
         try:
             await close_database()
-        except:
+        except Exception:
             pass
-        return False
+        return None
+
 
 chat_gemini: ChatSession = loop.run_until_complete(_get_gemini_chat())
+
+

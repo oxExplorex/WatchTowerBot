@@ -1,82 +1,67 @@
-from aiogram.types import InlineKeyboardButton
+﻿from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from db.models import apps_db
 import data.text as constant_text
+from db.models import apps_db
 
 
-def _inline_keyboard_button(text="", data="", url=""):
-    if url:
-        return InlineKeyboardButton(
-            text=text,
-            url=url,
-        )
-    return InlineKeyboardButton(
-        text=text,
-        callback_data=data
-    )
+def _state_emoji(value: int) -> str:
+    return "✅" if int(value) else "❌"
 
 
-async def account_edit_admin_inline(_account: apps_db):
+async def account_edit_admin_inline(account: apps_db):
     keyboard = InlineKeyboardBuilder()
 
     keyboard.row(
         InlineKeyboardButton(
-            text=f"*Help",
-            callback_data=f"123"
+            text=constant_text.ACCOUNT_EDIT_BTN_SESSION.format(state=_state_emoji(account.is_active)),
+            callback_data=f"acc:ts:{account.uuid}",
         ),
-    )
-
-
-    keyboard.row(
-        InlineKeyboardButton(
-            text=f"New chat:",
-            callback_data=f"123"
-        ),
-        InlineKeyboardButton(
-            text=f"{constant_text.EMOJI_YES_OR_NO_TEXT[_account.alert_new_chat]}",
-            callback_data=f"123"
-        ),
-        InlineKeyboardButton(
-            text=f"{_account.alert_new_chat_id}",
-            callback_data=f"123"
-        )
     )
 
     keyboard.row(
         InlineKeyboardButton(
-            text=f"Del chat:",
-            callback_data=f"123"
-        ),
-        InlineKeyboardButton(
-            text=f"{constant_text.EMOJI_YES_OR_NO_TEXT[_account.alert_del_chat]}",
-            callback_data=f"123"
-        ),
-        InlineKeyboardButton(
-            text=f"{_account.alert_del_chat}",
-            callback_data=f"123"
-        )
-    )
-    keyboard.row(
-        InlineKeyboardButton(
-            text=f"Bot/SG/Channel:",
-            callback_data=f"123"
-        ),
-        InlineKeyboardButton(
-            text=f"{constant_text.EMOJI_YES_OR_NO_TEXT[_account.alert_bot]}",
-            callback_data=f"123"
-        ),
-    )
-    keyboard.row(
-        InlineKeyboardButton(
-            text=f"Назад",
-            callback_data=f"account_admin_menu:0"
+            text=constant_text.ACCOUNT_EDIT_BTN_NEW_CHATS.format(state=_state_emoji(account.alert_new_chat)),
+            callback_data=f"acc:tn:{account.uuid}",
         ),
     )
 
+    keyboard.row(
+        InlineKeyboardButton(
+            text=constant_text.ACCOUNT_EDIT_BTN_DEL_CHATS.format(state=_state_emoji(account.alert_del_chat)),
+            callback_data=f"acc:td:{account.uuid}",
+        ),
+    )
+
+    keyboard.row(
+        InlineKeyboardButton(
+            text=constant_text.ACCOUNT_EDIT_BTN_BOTS.format(state=_state_emoji(account.alert_bot)),
+            callback_data=f"acc:tb:{account.uuid}",
+        ),
+    )
+
+    keyboard.row(
+        InlineKeyboardButton(
+            text=constant_text.ACCOUNT_EDIT_BTN_SPOILER_MEDIA.format(
+                state=_state_emoji(getattr(account, "alert_spoiler_media", 1))
+            ),
+            callback_data=f"acc:tm:{account.uuid}",
+        ),
+    )
+
+    keyboard.row(
+        InlineKeyboardButton(
+            text=constant_text.ACCOUNT_EDIT_BTN_CHECK_NOW,
+            callback_data=f"acc:chk:{account.uuid}",
+        ),
+        InlineKeyboardButton(
+            text=constant_text.ACCOUNT_EDIT_BTN_DELETE,
+            callback_data=f"acc:del:{account.uuid}",
+        ),
+    )
+
+    keyboard.row(
+        InlineKeyboardButton(text=constant_text.ACTION_BACK_TEXT, callback_data="acc:m:1"),
+    )
 
     return keyboard.as_markup()
-
-
-
-

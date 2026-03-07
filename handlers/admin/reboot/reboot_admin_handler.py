@@ -1,4 +1,4 @@
-import os
+﻿import os
 
 from aiogram import F
 from aiogram.filters import StateFilter
@@ -6,36 +6,19 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 import data.text as constant_text
+from core.session_runtime import stop_client
 from filters.all_filters import IsAdmin, IsPrivate
-from loader import router, apps_session
+from loader import apps_session, router
 from update_bot import download_and_extract_github_repo
 
 
-# DOES NOTHING
 @router.message(IsPrivate(), IsAdmin(), F.text.in_(constant_text.RESTART_BOT_W_KEYBOARD), StateFilter("*"))
-async def restart_admin_handler(message: Message, state: FSMContext):
+async def restart_windows_handler(message: Message, state: FSMContext):
     await state.clear()
+    await message.answer(constant_text.RESTARTING_TEXT)
 
-    await message.answer("Перезапускаю...")
-
-    for app in apps_session:
-        if app.is_initialized:
-            await app.stop()
+    for app in list(apps_session):
+        await stop_client(app)
 
     download_and_extract_github_repo()
-
-    os.system("start.bat")
-
-
-# DOES NOTHING
-@router.message(IsPrivate(), IsAdmin(), F.text.in_(constant_text.RESTART_BOT_U_KEYBOARD), StateFilter("*"))
-async def restart_admin_handler(message: Message, state: FSMContext):
-    await state.clear()
-
-    return await message.answer("Разработка :)")
-
-    for app in apps_session:
-        if app.is_initialized:
-            await app.stop()
-
     os.system("start.bat")

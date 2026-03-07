@@ -1,53 +1,36 @@
-from typing import List
+﻿from typing import List
 
 from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+import data.text as constant_text
 from db.main import get_user
 from db.models import apps_db
 
 
-async def account_tg_admin_inline(account_tg: List[apps_db], offset, _count):
+async def account_tg_admin_inline(account_tg: List[apps_db], page: int, total_pages: int):
     keyboard = InlineKeyboardBuilder()
 
-    for i in account_tg:
-        _name = None
-        _user = await get_user(i.user_id)
-        if _user:
-            _name = _user.full_name
-        else:
-            _name = None
+    for item in account_tg:
+        user = await get_user(item.user_id)
+        name = user.full_name if user and user.full_name else constant_text.ACCOUNT_MENU_UNKNOWN_NAME
+        status = constant_text.ACCOUNT_MENU_ACTIVE_ICON if item.is_active else constant_text.ACCOUNT_MENU_INACTIVE_ICON
+        title = constant_text.ACCOUNT_MENU_TITLE.format(status=status, name=name, user_id=item.user_id)
 
         keyboard.row(
             InlineKeyboardButton(
-                text=f"⚙️ {_name} [{i.user_id}]",
-                callback_data=f"account_admin_menu_edit:{i.uuid}"
+                text=title,
+                callback_data=f"acc:e:{item.uuid}",
             ),
         )
-    keyboard.row(
-        InlineKeyboardButton(
-            text=f"⬅️",
-            callback_data=f"account_admin_menu:{offset - 5}"
-        ),
-        InlineKeyboardButton(
-            text=f"{offset}/{_count}",
-            callback_data=f"123"
-        ),
-        InlineKeyboardButton(
-            text=f"➡️",
-            callback_data=f"account_admin_menu:{offset + 5}"
-        ),
-    )
-    keyboard.row(
-        InlineKeyboardButton(
-            text=f"Обновить",
-            callback_data=f"account_admin_menu:{offset}"
-        ),
-    )
 
+    keyboard.row(
+        InlineKeyboardButton(text=constant_text.ACTION_PAGE_PREV_TEXT, callback_data=f"acc:m:{page - 1}"),
+        InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data=f"acc:m:{page}"),
+        InlineKeyboardButton(text=constant_text.ACTION_PAGE_NEXT_TEXT, callback_data=f"acc:m:{page + 1}"),
+    )
+    keyboard.row(
+        InlineKeyboardButton(text=constant_text.ACTION_REFRESH_TEXT, callback_data=f"acc:m:{page}"),
+    )
 
     return keyboard.as_markup()
-
-
-
-

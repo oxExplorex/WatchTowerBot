@@ -1,116 +1,81 @@
-from tortoise.models import Model
-from tortoise import fields
+from typing import Optional
+from uuid import uuid4
+
+from sqlalchemy import BigInteger, Integer
+from sqlmodel import Field, SQLModel
 
 
-# до фикса ошибочки пусть будет null=True | не должно по пизде все идти :)
-
-class username_history_db(Model):
-    """
-
-    База данных юзернеймов (Грубо говоря история юзеров)
-
-    """
-    uuid = fields.UUIDField(pk=True)
-
-    user_id = fields.BigIntField(unique=True, null=True)
-    username = fields.TextField(default=None, null=True)
-
-    date = fields.BigIntField()
+class username_history_db(SQLModel, table=True):
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    user_id: Optional[int] = Field(default=None, sa_type=BigInteger, index=True)
+    username: Optional[str] = Field(default=None)
+    date: int = Field(sa_type=BigInteger)
 
 
-
-class user_db(Model):
-    """
-
-    База данных пользователей
-
-    """
-    uuid = fields.UUIDField(pk=True)
-    user_id = fields.BigIntField(unique=True)
-
-    username = fields.TextField(default=None, null=True)  # Актуальный юзер
-    full_name = fields.TextField(default=None, null=True)
-
-    roles = fields.TextField(default=None, null=True)  # может ли пользоваться ботом :)
+class user_db(SQLModel, table=True):
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    user_id: int = Field(sa_type=BigInteger, index=True)
+    username: Optional[str] = Field(default=None)
+    full_name: Optional[str] = Field(default=None)
+    roles: Optional[str] = Field(default=None, index=True)
 
 
-
-class app_tg_db(Model):
-    uuid = fields.UUIDField(pk=True)
-
-    user_id = fields.BigIntField(null=True)
-
-    app_id = fields.BigIntField(null=True)
-    api_hash = fields.TextField(null=True)
-
-    tag_name = fields.TextField(default="No Name", null=True)
+class app_tg_db(SQLModel, table=True):
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    user_id: Optional[int] = Field(default=None, sa_type=BigInteger, index=True)
+    app_id: Optional[int] = Field(default=None, sa_type=BigInteger)
+    api_hash: Optional[str] = Field(default=None)
+    tag_name: Optional[str] = Field(default="No Name")
 
 
+class apps_db(SQLModel, table=True):
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    admin_id: Optional[int] = Field(default=None, sa_type=BigInteger, index=True)
+    user_id: Optional[int] = Field(default=None, sa_type=BigInteger, index=True)
 
-class apps_db(Model):
-    uuid = fields.UUIDField(pk=True)
-    admin_id = fields.BigIntField(null=True)
+    app_tg: Optional[str] = Field(default=None, index=True)
+    number: Optional[str] = Field(default=None)
 
-    # user_id TG
-    user_id = fields.BigIntField(default=None, null=True)
+    alert_black_list: int = Field(default=1, sa_type=Integer)
+    alert_black_list_id: int = Field(default=1, sa_type=BigInteger)
 
-    app_tg = fields.UUIDField(default=None, null=True)
-    number = fields.TextField(default=None, null=True)
+    alert_del_chat: int = Field(default=1, sa_type=Integer)
+    alert_del_chat_id: int = Field(default=1, sa_type=BigInteger)
 
-    # todo: нужно ли сохранять файлы временные ()
-    # downloads_temp_file = fields.SmallIntField(default=1, null=True)
+    alert_new_chat: int = Field(default=1, sa_type=Integer)
+    alert_new_chat_id: int = Field(default=1, sa_type=BigInteger)
 
-    # todo: Нужно ли оповещать о черном списке
-    alert_black_list = fields.SmallIntField(default=1, null=True)
-    alert_black_list_id = fields.BigIntField(default=1, null=True)
+    alert_bot: int = Field(default=0, sa_type=Integer)
+    # Toggle for forwarding disappearing/spoiler media to admin notifications.
+    alert_spoiler_media: int = Field(default=1, sa_type=Integer)
 
-    # Нужно ли оповещать об удаленных чатах
-    alert_del_chat = fields.SmallIntField(default=1, null=True)
-    alert_del_chat_id = fields.BigIntField(default=1, null=True)
-
-    # Нужно ли оповещать о новых чатах
-    alert_new_chat = fields.SmallIntField(default=1, null=True)
-    alert_new_chat_id = fields.BigIntField(default=1, null=True)
-
-    # оповещения о ботах / каналах
-    alert_bot = fields.SmallIntField(default=1, null=True)
-
-    # Каждый апдейт будет сохраняться, чтобы видеть что все воркает
-    last_update = fields.BigIntField(default=None, null=True)
+    last_update: Optional[int] = Field(default=None, sa_type=BigInteger)
+    # Last dialogs_count snapshot used for lightweight periodic checks.
+    last_dialogs_count: Optional[int] = Field(default=None, sa_type=BigInteger)
+    # Last timestamp when full dialogs iteration was executed.
+    last_full_dialogs_scan: Optional[int] = Field(default=None, sa_type=BigInteger)
+    is_active: int = Field(default=1, sa_type=Integer, index=True)
 
 
-class history_users_db(Model):
-    # логи действий
-    uuid = fields.UUIDField(pk=True)
-
-    # id основы
-    admin_id = fields.BigIntField()
-
-    # id таргета
-    user_id = fields.BigIntField()
-
-    # action id
-    # Действие, которое было совершено
-    action_id = fields.SmallIntField()
-
-    # дата
-    date = fields.BigIntField()
+class history_users_db(SQLModel, table=True):
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    admin_id: int = Field(sa_type=BigInteger)
+    user_id: int = Field(sa_type=BigInteger)
+    action_id: int = Field(sa_type=Integer)
+    date: int = Field(sa_type=BigInteger)
 
 
-class dump_chat_user_db(Model):
-    # База данных чатов, которые есть на данный момент
-    uuid = fields.UUIDField(pk=True)
-
-    admin_id = fields.BigIntField()
-    chat_id = fields.BigIntField()
+class dump_chat_user_db(SQLModel, table=True):
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    admin_id: int = Field(sa_type=BigInteger, index=True)
+    chat_id: int = Field(sa_type=BigInteger, index=True)
 
 
-
-
-
-
-
-
-
-
-
+class account_health_db(SQLModel, table=True):
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    account_uuid: str = Field(index=True)
+    admin_id: int = Field(sa_type=BigInteger, index=True)
+    user_id: int = Field(sa_type=BigInteger, index=True)
+    status: int = Field(sa_type=Integer, index=True)
+    date: int = Field(sa_type=BigInteger, index=True)
+    reason: Optional[str] = Field(default=None)

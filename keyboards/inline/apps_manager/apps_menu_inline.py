@@ -1,55 +1,38 @@
-from typing import List
+﻿from typing import List
 
 from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+import data.text as constant_text
 from db.models import app_tg_db
 
 
-async def apps_tg_admin_inline(apps_tg: List[app_tg_db], offset, _count):
+async def apps_tg_admin_inline(apps_tg: List[app_tg_db], page: int, total_pages: int):
     keyboard = InlineKeyboardBuilder()
 
     keyboard.row(
-        InlineKeyboardButton(
-            text=f"➕ Добавить приложение",
-            callback_data=f"apps_admin_menu_add"
-        ),
+        InlineKeyboardButton(text=constant_text.APPS_MENU_ADD, callback_data="apps_admin_menu_add"),
     )
 
-    for i in apps_tg:
-        # account_id | name | statusv1 | statusv2 | delete
+    for item in apps_tg:
         keyboard.row(
             InlineKeyboardButton(
-                text=f"🔑 Add |  {i.tag_name} [{i.app_id}]",
-                callback_data=f"account_admin_menu_add:{i.uuid}"
+                text=constant_text.APPS_MENU_USE.format(tag_name=item.tag_name, app_id=item.app_id),
+                callback_data=f"account_admin_menu_add:{item.uuid}",
             ),
             InlineKeyboardButton(
-                text=f"🗑 DEL",
-                callback_data=f"apps_admin_menu_delete:{i.uuid}"
+                text=constant_text.APPS_MENU_DELETE,
+                callback_data=f"apps_admin_menu_delete:{item.uuid}",
             ),
         )
-    keyboard.row(
-        InlineKeyboardButton(
-            text=f"⬅️",
-            callback_data=f"apps_admin_menu:{offset - 5}"
-        ),
-        InlineKeyboardButton(
-            text=f"{offset}/{_count}",
-            callback_data=f"123"
-        ),
-        InlineKeyboardButton(
-            text=f"➡️",
-            callback_data=f"apps_admin_menu:{offset + 5}"
-        ),
-    )
-    keyboard.row(
-        InlineKeyboardButton(
-            text=f"Обновить",
-            callback_data=f"apps_admin_menu:{offset}"
-        ),
-    )
 
+    keyboard.row(
+        InlineKeyboardButton(text=constant_text.ACTION_PAGE_PREV_TEXT, callback_data=f"apps_admin_menu:{page - 1}"),
+        InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data=f"apps_admin_menu:{page}"),
+        InlineKeyboardButton(text=constant_text.ACTION_PAGE_NEXT_TEXT, callback_data=f"apps_admin_menu:{page + 1}"),
+    )
+    keyboard.row(
+        InlineKeyboardButton(text=constant_text.ACTION_REFRESH_TEXT, callback_data=f"apps_admin_menu:{page}"),
+    )
 
     return keyboard.as_markup()
-
-
