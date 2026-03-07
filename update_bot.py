@@ -3,7 +3,6 @@ import os
 import re
 import shutil
 import subprocess
-import time
 import traceback
 import zipfile
 from pathlib import Path
@@ -112,14 +111,41 @@ def _safe_extract_repo(zip_content: bytes, destination: Path) -> int:
     return updated_files
 
 
+def _resolve_latest_commit_sha() -> str | None:
+    api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/commits/{REPO_BRANCH}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "User-Agent": "gemini-message-manager-tg",
+    }
+
+    try:
+        response = requests.get(api_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+        sha = str(payload.get("sha") or "").strip()
+        return sha or None
+    except Exception:
+        return None
+
+
 def download_and_extract_github_repo() -> bool:
     try:
-        zip_url = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/archive/refs/heads/{REPO_BRANCH}.zip"
-        zip_url_with_ts = f"{zip_url}?t={int(time.time())}"
+        sha = _resolve_latest_commit_sha()
+        if sha:
+            zip_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/zipball/{sha}"
+        else:
+            zip_url = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/archive/refs/heads/{REPO_BRANCH}.zip"
+
         response = requests.get(
-            zip_url_with_ts,
+            zip_url,
             timeout=60,
-            headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+            headers={
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "User-Agent": "gemini-message-manager-tg",
+            },
         )
         response.raise_for_status()
 
