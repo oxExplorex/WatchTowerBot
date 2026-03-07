@@ -203,14 +203,18 @@ async def __tg_parse_dialogs_handler() -> None:
 
                 existing_chat_ids = {x.chat_id for x in await get_dump_chat_admin_all(user_id)}
                 current_chat_ids = set()
+                seen_chat_ids = set()
                 new_chats = []
+                filtered_out_count = 0
 
                 try:
                     async for dialog in app_session.get_dialogs(limit=total_dialogs + 5):
                         chat = dialog.chat
                         chat_id = chat.id
+                        seen_chat_ids.add(chat_id)
 
                         if not account_settings.alert_bot and _is_bot_or_channel(chat):
+                            filtered_out_count += 1
                             continue
 
                         username = chat.username
@@ -229,7 +233,15 @@ async def __tg_parse_dialogs_handler() -> None:
                         bot_logger.warning(f"get_dialogs error: {exc}")
                     continue
 
-                deleted_chats = existing_chat_ids - current_chat_ids
+                bot_logger.info(
+                    f"DIALOG SCAN USER: {user_id} | dialogs_count={total_dialogs} | "
+                    f"parsed_unique={len(current_chat_ids)} | seen_total={len(seen_chat_ids)} | "
+                    f"filtered_out={filtered_out_count}"
+                )
+
+                # Deletions are computed from all seen dialogs, not only filtered subset,
+                # so toggling bot/channel filter doesn't create false "deleted" events.
+                deleted_chats = existing_chat_ids - seen_chat_ids
                 all_changes = new_chats + list(deleted_chats)
 
                 log_new = []

@@ -17,6 +17,7 @@ def _is_expected_stop_error(exc: Exception) -> bool:
     text = str(exc).lower()
     expected_markers = (
         "already terminated",
+        "already disconnected",
         "not been started yet",
         "already stopped",
         "client is stopped",
@@ -25,19 +26,27 @@ def _is_expected_stop_error(exc: Exception) -> bool:
 
 
 async def stop_client(app_session) -> None:
+    # stop() gracefully shuts down updates/session; disconnect() is only fallback.
+    stop_method = getattr(app_session, "stop", None)
     try:
-        stop_method = getattr(app_session, "stop", None)
         if callable(stop_method):
             await stop_method()
+            return
+    except Exception as exc:
+        if _is_expected_stop_error(exc):
+            bot_logger.debug(f"Skip stop_client warning: {exc}")
+            return
+        bot_logger.exception("stop_client failed on stop()")
 
-        disconnect_method = getattr(app_session, "disconnect", None)
+    disconnect_method = getattr(app_session, "disconnect", None)
+    try:
         if callable(disconnect_method):
             await disconnect_method()
     except Exception as exc:
         if _is_expected_stop_error(exc):
             bot_logger.debug(f"Skip stop_client warning: {exc}")
             return
-        bot_logger.exception("stop_client failed")
+        bot_logger.exception("stop_client failed on disconnect()")
 
 
 async def stop_all_clients(clear_runtime: bool = True) -> int:
