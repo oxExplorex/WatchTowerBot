@@ -208,7 +208,7 @@ async def __tg_parse_dialogs_handler() -> None:
                 filtered_out_count = 0
 
                 try:
-                    async for dialog in app_session.get_dialogs(limit=total_dialogs + 5):
+                    async for dialog in app_session.get_dialogs(limit=total_dialogs + 15):
                         chat = dialog.chat
                         chat_id = chat.id
                         seen_chat_ids.add(chat_id)

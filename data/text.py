@@ -78,6 +78,7 @@ RESTART_BOT_W_KEYBOARD = ["🔄 Перезапуск бота"]
 # Generic actions
 ACTION_CANCEL_TEXT = "Отмена"
 ACTION_CANCELLED_TEXT = "Отменено"
+ACTION_CANCEL_COMMAND = "/cancel"
 ACTION_CONFIRM_TEXT = "✅ Подтвердить"
 ACTION_REFRESH_TEXT = "🔄 Обновить"
 ACTION_BACK_TEXT = "⬅️ Назад"

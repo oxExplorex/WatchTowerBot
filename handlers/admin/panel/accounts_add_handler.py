@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import os
 import re
 import traceback
@@ -16,6 +16,7 @@ from core.session_runtime import stop_and_remove_session
 from db.main import create_account_tg, get_app_tg_uuid, update_user
 from filters.all_filters import IsAdmin, IsPrivate
 from handlers.admin.states import AdminStates
+from keyboards.main.start_keyboard import static_admin_keyboard
 from keyboards.inline.back_inline import back_inline
 from loader import router
 from utils.others import close_state_pyrogram_client, not_warning_delete_message
@@ -57,6 +58,29 @@ async def start_add_account_handler(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.account_add_number)
 
 
+
+@router.message(
+    IsPrivate(),
+    IsAdmin(),
+    StateFilter(
+        AdminStates.account_add_number,
+        AdminStates.account_add_code,
+        AdminStates.account_add_password,
+    ),
+    F.text.in_([constant_text.ACTION_CANCEL_TEXT, constant_text.ACTION_CANCEL_COMMAND]),
+)
+async def cancel_add_account_handler(message: Message, state: FSMContext):
+    data = await state.get_data()
+    await close_state_pyrogram_client(state)
+    await state.clear()
+
+    await not_warning_delete_message(message=data.get("prompt_message"))
+    await not_warning_delete_message(message=message)
+
+    await message.answer(
+        text=constant_text.ACTION_CANCELLED_TEXT,
+        reply_markup=static_admin_keyboard(),
+    )
 @router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.account_add_number))
 async def receive_account_number_handler(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -184,4 +208,3 @@ async def receive_account_password_handler(message: Message, state: FSMContext):
         await close_state_pyrogram_client(state)
         await message.answer(f"{constant_text.ACCOUNT_ADD_ERROR_PREFIX}: {exc}")
         await state.clear()
-
