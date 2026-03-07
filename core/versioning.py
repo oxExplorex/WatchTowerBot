@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 
 import aiohttp
@@ -39,16 +40,20 @@ def get_remote_version_url() -> str:
 
 
 async def fetch_remote_version(timeout_sec: int = 15, log_prefix: str = "Version check") -> str | None:
-    url = get_remote_version_url()
+    base_url = get_remote_version_url()
+    cache_busted_url = f"{base_url}?t={int(time.time())}"
     timeout = aiohttp.ClientTimeout(total=timeout_sec)
 
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as response:
+            async with session.get(
+                cache_busted_url,
+                headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+            ) as response:
                 if response.status != 200:
-                    bot_logger.warning(f"{log_prefix} failed: HTTP {response.status} | {url}")
+                    bot_logger.warning(f"{log_prefix} failed: HTTP {response.status} | {base_url}")
                     return None
                 return (await response.text()).strip() or None
     except Exception as exc:
-        bot_logger.warning(f"{log_prefix} error: {exc} | {url}")
+        bot_logger.warning(f"{log_prefix} error: {exc} | {base_url}")
         return None

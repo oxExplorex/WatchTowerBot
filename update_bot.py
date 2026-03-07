@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import traceback
 import zipfile
 from pathlib import Path
@@ -114,7 +115,12 @@ def _safe_extract_repo(zip_content: bytes, destination: Path) -> int:
 def download_and_extract_github_repo() -> bool:
     try:
         zip_url = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/archive/refs/heads/{REPO_BRANCH}.zip"
-        response = requests.get(zip_url, timeout=60)
+        zip_url_with_ts = f"{zip_url}?t={int(time.time())}"
+        response = requests.get(
+            zip_url_with_ts,
+            timeout=60,
+            headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+        )
         response.raise_for_status()
 
         project_root = Path(__file__).resolve().parent
