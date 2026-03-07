@@ -14,7 +14,7 @@ from sqlmodel import SQLModel
 
 import data.config as config
 from core.logging import bot_logger
-from db.models import account_health_db, app_tg_db, apps_db, dump_chat_user_db, user_db
+from db.models import account_health_db, app_tg_db, apps_db, dump_chat_user_db, user_db, version_state_db
 
 
 def _cfg(name: str, default: Any = None) -> Any:
@@ -185,6 +185,7 @@ async def _sync_bigint_columns_postgres() -> None:
         "history_users_db": ["admin_id", "user_id", "date"],
         "dump_chat_user_db": ["admin_id", "chat_id"],
         "account_health_db": ["admin_id", "user_id", "date"],
+        "version_state_db": ["checked_at"],
     }
 
     async with _engine.begin() as conn:
@@ -307,6 +308,52 @@ async def _session_scope() -> AsyncIterator[AsyncSession]:
     async with _session_factory() as session:
         yield session
 
+
+
+
+async def get_version_state_cache(default_state: str = "⚪ Неизвестно") -> tuple[str, int, str | None]:
+    async with _session_scope() as session:
+        result = await session.execute(select(version_state_db).where(version_state_db.id == 1))
+        state_row = result.scalars().first()
+        if not state_row:
+            return default_state, 0, None
+
+        state = str(getattr(state_row, "state", default_state) or default_state)
+        checked_at = int(getattr(state_row, "checked_at", 0) or 0)
+        remote_version = getattr(state_row, "remote_version", None)
+        return state, checked_at, remote_version
+
+
+async def set_version_state_cache(
+    local_version: str,
+    remote_version: str | None,
+    state: str,
+    checked_at: int | None = None,
+) -> int:
+    checked_at_value = int(checked_at if checked_at is not None else time.time())
+
+    async with _session_scope() as session:
+        result = await session.execute(select(version_state_db).where(version_state_db.id == 1))
+        state_row = result.scalars().first()
+
+        if not state_row:
+            state_row = version_state_db(
+                id=1,
+                local_version=str(local_version),
+                remote_version=str(remote_version) if remote_version else None,
+                state=str(state),
+                checked_at=checked_at_value,
+            )
+        else:
+            state_row.local_version = str(local_version)
+            state_row.remote_version = str(remote_version) if remote_version else None
+            state_row.state = str(state)
+            state_row.checked_at = checked_at_value
+
+        session.add(state_row)
+        await session.commit()
+
+    return checked_at_value
 
 async def get_user(user_id):
     async with _session_scope() as session:

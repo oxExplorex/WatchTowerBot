@@ -1,4 +1,4 @@
-﻿from typing import Optional
+from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import BigInteger, Integer
@@ -83,3 +83,11 @@ class account_health_db(SQLModel, table=True):
     status: int = Field(sa_type=Integer, index=True)
     date: int = Field(sa_type=BigInteger, index=True)
     reason: Optional[str] = Field(default=None)
+
+
+class version_state_db(SQLModel, table=True):
+    id: int = Field(default=1, primary_key=True, sa_type=Integer)
+    local_version: Optional[str] = Field(default=None)
+    remote_version: Optional[str] = Field(default=None)
+    state: Optional[str] = Field(default=None)
+    checked_at: int = Field(default=0, sa_type=BigInteger, index=True)

@@ -19,6 +19,7 @@ from db.main import (
     get_user_auto_update_enabled,
     get_user_update_notification_state,
     set_user_update_last_notified,
+    set_version_state_cache,
 )
 from loader import bot
 from update_bot import download_and_extract_github_repo
@@ -120,16 +121,37 @@ async def version_check_job() -> None:
     async with _update_lock:
         current_version = get_local_version()
         latest_version = await fetch_remote_version(timeout_sec=15, log_prefix="Notifier version check")
+        now_ts = int(time.time())
 
         bot_logger.debug(
             f"Notifier version check: local={current_version} remote={latest_version or 'n/a'} "
             f"url={get_remote_version_url()}"
         )
 
-        if not latest_version or not is_newer_version(current_version, latest_version):
+        if not latest_version:
+            await set_version_state_cache(
+                local_version=current_version,
+                remote_version=None,
+                state=constant_text.VERSION_STATE_UNKNOWN,
+                checked_at=now_ts,
+            )
             return
 
-        now_ts = int(time.time())
+        if is_newer_version(current_version, latest_version):
+            state_text = constant_text.VERSION_STATE_UPDATE_AVAILABLE.format(latest_version=latest_version)
+        else:
+            state_text = constant_text.VERSION_STATE_UP_TO_DATE
+
+        await set_version_state_cache(
+            local_version=current_version,
+            remote_version=latest_version,
+            state=state_text,
+            checked_at=now_ts,
+        )
+
+        if not is_newer_version(current_version, latest_version):
+            return
+
         notify_text = constant_text.UPDATE_NOTIFY_TEXT.format(
             current_version=current_version,
             latest_version=latest_version,
@@ -171,3 +193,4 @@ async def start_update_notifier() -> None:
 
     bot_logger.info("Starting update notifier scheduler")
     update_scheduler.start()
+    asyncio.create_task(version_check_job())

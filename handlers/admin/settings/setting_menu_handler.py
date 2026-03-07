@@ -20,9 +20,11 @@ from db.main import (
     get_all_health_events,
     get_user_auto_update_enabled,
     get_user_timezone_offset,
+    get_version_state_cache,
     set_user_auto_update_enabled,
     set_user_timezone_offset,
     set_user_update_snooze_until,
+    set_version_state_cache,
 )
 from filters.all_filters import IsAdmin, IsPrivate
 from loader import router
@@ -31,12 +33,6 @@ from utils.datetime_tools import DateTime
 from utils.others import not_warning_delete_message
 
 DEFAULT_TIMEZONE_OFFSET = 3
-_VERSION_CACHE_TTL_SEC = 120
-_VERSION_CACHE = {
-    "checked_at": 0,
-    "state": constant_text.VERSION_STATE_UNKNOWN,
-    "latest": None,
-}
 
 
 def _tz_offset_label(offset: int) -> str:
@@ -153,11 +149,8 @@ async def _fetch_latest_version() -> str | None:
 
 
 async def _get_version_state(force: bool = False) -> tuple[str, int, str | None]:
-    now_ts = int(time.time())
-    checked_at = int(_VERSION_CACHE["checked_at"] or 0)
-
-    if not force and checked_at > 0 and (now_ts - checked_at) < _VERSION_CACHE_TTL_SEC:
-        return str(_VERSION_CACHE["state"]), checked_at, _VERSION_CACHE["latest"]
+    if not force:
+        return await get_version_state_cache(default_state=constant_text.VERSION_STATE_UNKNOWN)
 
     local_version = get_local_version()
     latest_version = await _fetch_latest_version()
@@ -169,25 +162,22 @@ async def _get_version_state(force: bool = False) -> tuple[str, int, str | None]
     else:
         state = constant_text.VERSION_STATE_UP_TO_DATE
 
-    _VERSION_CACHE["checked_at"] = now_ts
-    _VERSION_CACHE["state"] = state
-    _VERSION_CACHE["latest"] = latest_version
-
-    return state, now_ts, latest_version
-
-
-def _get_cached_version_state() -> tuple[str, int, str | None]:
-    return (
-        str(_VERSION_CACHE["state"]),
-        int(_VERSION_CACHE["checked_at"] or 0),
-        _VERSION_CACHE["latest"],
+    checked_at = await set_version_state_cache(
+        local_version=local_version,
+        remote_version=latest_version,
+        state=state,
     )
+    return state, checked_at, latest_version
+
+
+async def _get_cached_version_state() -> tuple[str, int, str | None]:
+    return await get_version_state_cache(default_state=constant_text.VERSION_STATE_UNKNOWN)
+
 
 def _minutes_ago(ts_value: int) -> int:
     if ts_value <= 0:
         return 0
     return max(0, int((time.time() - ts_value) // 60))
-
 
 async def _send_stats(message: Message, admin_only: bool) -> None:
     admin_id = message.from_user.id
@@ -238,7 +228,7 @@ async def _send_stats(message: Message, admin_only: bool) -> None:
 
 async def _settings_text(admin_id: int) -> str:
     tz_offset = await get_user_timezone_offset(admin_id)
-    version_state, checked_at, _ = _get_cached_version_state()
+    version_state, checked_at, _ = await _get_cached_version_state()
 
     return constant_text.SETTINGS_MENU_TITLE.format(
         bot_version=get_local_version(),
@@ -252,7 +242,7 @@ async def _settings_inline(admin_id: int):
     tz_offset = await get_user_timezone_offset(admin_id)
     auto_update = await get_user_auto_update_enabled(admin_id)
     local_version = get_local_version()
-    _, _, latest_version = _get_cached_version_state()
+    _, _, latest_version = await _get_cached_version_state()
     has_update = bool(latest_version and is_newer_version(local_version, latest_version))
 
     keyboard = InlineKeyboardBuilder()
