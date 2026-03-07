@@ -30,6 +30,20 @@ from middlewares.update_user import UpdateUserMiddleware
 from utils.others import send_log_to_active_bot
 
 
+def _handle_compose_task_result(task: asyncio.Task) -> None:
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        bot_logger.exception("compose() task result check failed")
+        return
+
+    if exc is None:
+        return
+
+    bot_logger.error(f"compose() failed: {exc.__class__.__name__}: {exc}")
+
 def _register_pyrogram_handlers() -> None:
     for app in apps_session:
         if not isinstance(app, Client):
@@ -59,7 +73,8 @@ async def start_polling_bot():
     dispatcher.include_router(router)
 
     _register_pyrogram_handlers()
-    loop.create_task(compose(apps_session))
+    compose_task = loop.create_task(compose(apps_session))
+    compose_task.add_done_callback(_handle_compose_task_result)
 
     # Technical delay for stable startup of pyrogram sessions.
     await asyncio.sleep(5)

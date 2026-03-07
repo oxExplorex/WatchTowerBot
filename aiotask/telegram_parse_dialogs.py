@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import traceback
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -14,6 +14,7 @@ from core.session_runtime import remove_client_from_runtime, session_number_from
 from db.main import (
     add_account_health_event,
     create_dump_chat_user,
+    delete_dump_chat_admin_all,
     del_dump_chat_user,
     delete_account_by_number,
     get_account_by_number,
@@ -93,6 +94,7 @@ def _is_fatal_session_error(exc: Exception) -> bool:
         "session expired",
         "unauthorized",
         "user deactivated",
+        "client has not been started yet",
     )
     return any(marker in error_text for marker in fatal_markers)
 
@@ -125,6 +127,7 @@ async def _drop_dead_session(app_session: Client, error: Exception) -> None:
         date=DateTime().timestamp(),
         reason=f"drop:{error.__class__.__name__}",
     )
+    await delete_dump_chat_admin_all(account.user_id)
 
     if not account.admin_id:
         return

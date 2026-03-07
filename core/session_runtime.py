@@ -1,6 +1,5 @@
 import asyncio
 import os
-import traceback
 
 from core.logging import bot_logger
 
@@ -14,6 +13,17 @@ def session_number_from_client(app_session) -> str | None:
     return number or None
 
 
+def _is_expected_stop_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    expected_markers = (
+        "already terminated",
+        "not been started yet",
+        "already stopped",
+        "client is stopped",
+    )
+    return any(marker in text for marker in expected_markers)
+
+
 async def stop_client(app_session) -> None:
     try:
         stop_method = getattr(app_session, "stop", None)
@@ -23,8 +33,11 @@ async def stop_client(app_session) -> None:
         disconnect_method = getattr(app_session, "disconnect", None)
         if callable(disconnect_method):
             await disconnect_method()
-    except Exception:
-        bot_logger.error(traceback.format_exc())
+    except Exception as exc:
+        if _is_expected_stop_error(exc):
+            bot_logger.debug(f"Skip stop_client warning: {exc}")
+            return
+        bot_logger.exception("stop_client failed")
 
 
 async def stop_all_clients(clear_runtime: bool = True) -> int:
