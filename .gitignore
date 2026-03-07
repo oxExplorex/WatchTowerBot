@@ -1,4 +1,4 @@
-﻿# IDE / editor
+# IDE / editor
 .idea/
 .vs/
 .vscode/
@@ -22,7 +22,6 @@ pip-wheel-metadata/
 .python-version
 
 # Local runtime data
-data/config.py
 data/proxy.txt
 data/session/
 data/logs/
@@ -43,6 +42,7 @@ data/__pycache__/
 # Local env files
 .env
 .env.*
+!.env.example
 
 # Temp / backups
 *.tmp
