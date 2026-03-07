@@ -1,26 +1,62 @@
-# мусор
+﻿# IDE / editor
 .idea/
+.vs/
+.vscode/
+
+# Python
 .venv/
-*__pycache__
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+.python-version
 
-# config
-config.py
-proxy.txt
+# Local runtime data
+data/config.py
+data/proxy.txt
+data/session/
+data/logs/
+data/temp/
+data/__pycache__/
 
-# сессии тг
-*.session-journal
+# SQLite / sessions
+*.sqlite3
+*.db
 *.session
+*.session-journal
 *.session-shm
 *.session-wal
 
-
-# Миграции
-migrations
-
-# логи
+# Logs
 *.log
 
-# test
+# Local env files
+.env
+.env.*
+
+# Temp / backups
+*.tmp
+*.bak
+*.orig
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Optional local migration output (if generated dynamically)
+migrations/
+
+# Local scripts
 test.py
 _test.py
-
