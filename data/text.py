@@ -248,6 +248,7 @@ SETTINGS_UPDATE_AVAILABLE_TOAST = "Доступна новая версия: {la
 SETTINGS_UPDATE_UNKNOWN_TOAST = "Не удалось проверить обновления"
 SETTINGS_UPDATE_RUNNING_TOAST = "Запускаю обновление..."
 SETTINGS_UPDATE_ALREADY_LATEST_TOAST = "Обновление не требуется"
+SETTINGS_UPDATE_DEBUG_TOAST = "L:{local_version} R:{remote_version}"
 
 UPDATE_NOTIFY_TEXT = (
     "⚠️ Доступно обновление\n\n"

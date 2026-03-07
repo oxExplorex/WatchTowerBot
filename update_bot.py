@@ -1,15 +1,53 @@
 import io
 import os
+import re
 import shutil
+import subprocess
 import traceback
 import zipfile
 from pathlib import Path
 
 import requests
 
-REPO_OWNER = "oxExplorex"
-REPO_NAME = "gemini_message_manager_tg"
-REPO_BRANCH = "main"
+DEFAULT_REPO_OWNER = "oxExplorex"
+DEFAULT_REPO_NAME = "gemini_message_manager_tg"
+DEFAULT_REPO_BRANCH = "main"
+
+
+def _detect_repo_from_git() -> tuple[str | None, str | None]:
+    try:
+        remote_url = subprocess.check_output(
+            ["git", "config", "--get", "remote.origin.url"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return None, None
+
+    if not remote_url:
+        return None, None
+
+    # Supports:
+    # - https://github.com/owner/repo(.git)
+    # - git@github.com:owner/repo(.git)
+    match = re.search(r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/.]+?)(?:\.git)?$", remote_url)
+    if not match:
+        return None, None
+
+    return match.group("owner"), match.group("repo")
+
+
+def _resolve_repo_settings() -> tuple[str, str, str]:
+    git_owner, git_repo = _detect_repo_from_git()
+
+    owner = os.getenv("BOT_UPDATE_REPO_OWNER") or git_owner or DEFAULT_REPO_OWNER
+    repo = os.getenv("BOT_UPDATE_REPO_NAME") or git_repo or DEFAULT_REPO_NAME
+    branch = os.getenv("BOT_UPDATE_REPO_BRANCH") or DEFAULT_REPO_BRANCH
+
+    return owner, repo, branch
+
+
+REPO_OWNER, REPO_NAME, REPO_BRANCH = _resolve_repo_settings()
 
 # Files that must survive update and stay local.
 PROTECTED_PATHS = {

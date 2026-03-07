@@ -4,7 +4,6 @@ import asyncio
 import time
 from typing import Iterable
 
-import aiohttp
 from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -13,7 +12,7 @@ import data.text as constant_text
 from core.logging import bot_logger
 from core.process_control import restart_current_process
 from core.session_runtime import stop_all_clients
-from core.versioning import get_local_version, get_remote_version_url, is_newer_version
+from core.versioning import fetch_remote_version, get_local_version, get_remote_version_url, is_newer_version
 from data.config import admin_id_list
 from db.main import (
     get_admins,
@@ -46,20 +45,6 @@ def _notification_keyboard(include_snooze: bool = True):
         )
     )
     return keyboard.as_markup()
-
-
-async def _fetch_remote_version() -> str | None:
-    timeout = aiohttp.ClientTimeout(total=15)
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(get_remote_version_url()) as response:
-                if response.status != 200:
-                    bot_logger.warning(f"Version check failed: HTTP {response.status}")
-                    return None
-                return (await response.text()).strip() or None
-    except Exception as exc:
-        bot_logger.warning(f"Version check error: {exc}")
-        return None
 
 
 async def _collect_admin_ids() -> list[int]:
@@ -119,7 +104,12 @@ async def _run_auto_update(target_ids: Iterable[int], current_version: str, late
 async def version_check_job() -> None:
     async with _update_lock:
         current_version = get_local_version()
-        latest_version = await _fetch_remote_version()
+        latest_version = await fetch_remote_version(timeout_sec=15, log_prefix="Notifier version check")
+
+        bot_logger.debug(
+            f"Notifier version check: local={current_version} remote={latest_version or 'n/a'} "
+            f"url={get_remote_version_url()}"
+        )
 
         if not latest_version or not is_newer_version(current_version, latest_version):
             return

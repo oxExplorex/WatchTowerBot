@@ -2,7 +2,6 @@ import asyncio
 import time
 from datetime import timedelta
 
-import aiohttp
 from aiogram import F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
@@ -11,9 +10,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import data.text as constant_text
+from core.logging import bot_logger
 from core.process_control import restart_current_process
 from core.session_runtime import stop_all_clients
-from core.versioning import get_local_version, get_remote_version_url, is_newer_version
+from core.versioning import fetch_remote_version, get_local_version, get_remote_version_url, is_newer_version
 from db.main import (
     get_accounts_overview,
     get_admin_health_events,
@@ -149,15 +149,7 @@ def _recent_failures(events, dt: DateTime, limit: int = 5) -> str:
 
 
 async def _fetch_latest_version() -> str | None:
-    timeout = aiohttp.ClientTimeout(total=12)
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(get_remote_version_url()) as response:
-                if response.status != 200:
-                    return None
-                return (await response.text()).strip() or None
-    except Exception:
-        return None
+    return await fetch_remote_version(timeout_sec=12, log_prefix="Settings version check")
 
 
 async def _get_version_state(force: bool = False) -> tuple[str, int, str | None]:
@@ -359,12 +351,25 @@ async def check_update_now_handler(call: CallbackQuery, state: FSMContext):
     local_version = get_local_version()
     _, _, latest_version = await _get_version_state(force=True)
 
+    bot_logger.info(
+        f"Manual version check: local={local_version} remote={latest_version or 'n/a'} "
+        f"url={get_remote_version_url()}"
+    )
+
+    debug_text = constant_text.SETTINGS_UPDATE_DEBUG_TOAST.format(
+        local_version=local_version,
+        remote_version=latest_version or "n/a",
+    )
+
     if latest_version and is_newer_version(local_version, latest_version):
-        await call.answer(constant_text.SETTINGS_UPDATE_AVAILABLE_TOAST.format(latest_version=latest_version))
+        await call.answer(
+            constant_text.SETTINGS_UPDATE_AVAILABLE_TOAST.format(latest_version=latest_version)
+            + f" | {debug_text}"
+        )
     elif not latest_version:
-        await call.answer(constant_text.SETTINGS_UPDATE_UNKNOWN_TOAST)
+        await call.answer(constant_text.SETTINGS_UPDATE_UNKNOWN_TOAST + f" | {debug_text}")
     else:
-        await call.answer(constant_text.SETTINGS_UPDATE_OK_TOAST)
+        await call.answer(constant_text.SETTINGS_UPDATE_OK_TOAST + f" | {debug_text}")
 
     await _safe_edit_settings(call)
 
