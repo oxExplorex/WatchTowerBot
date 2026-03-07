@@ -316,6 +316,27 @@ async def _safe_edit_settings(call: CallbackQuery) -> None:
             raise
 
 
+async def _run_update_flow(
+    message: Message,
+    local_version: str,
+    latest_version: str,
+    start_text: str,
+    done_text: str,
+    failed_text: str,
+) -> None:
+    await message.edit_text(start_text.format(from_version=local_version, to_version=latest_version))
+
+    await stop_all_clients(for_restart=True)
+    ok = await asyncio.to_thread(download_and_extract_github_repo)
+    if not ok:
+        await message.answer(failed_text)
+        return
+
+    await message.answer(done_text.format(to_version=latest_version))
+    await asyncio.sleep(2)
+    restart_current_process()
+
+
 @router.message(IsPrivate(), IsAdmin(), F.text == constant_text.SETTINGS_BOT_KEYBOARD[0], StateFilter("*"))
 async def open_my_stats_handler(message: Message, state: FSMContext):
     await state.clear()
@@ -391,20 +412,14 @@ async def run_update_now_handler(call: CallbackQuery, state: FSMContext):
 
     await call.answer(constant_text.SETTINGS_UPDATE_RUNNING_TOAST)
 
-    await call.message.edit_text(
-        constant_text.AUTO_UPDATE_START_TEXT.format(from_version=local_version, to_version=latest_version)
+    await _run_update_flow(
+        message=call.message,
+        local_version=local_version,
+        latest_version=latest_version,
+        start_text=constant_text.MANUAL_UPDATE_START_TEXT,
+        done_text=constant_text.MANUAL_UPDATE_DONE_TEXT,
+        failed_text=constant_text.MANUAL_UPDATE_FAILED_TEXT,
     )
-
-    await stop_all_clients(for_restart=True)
-
-    ok = await asyncio.to_thread(download_and_extract_github_repo)
-    if not ok:
-        await call.message.answer(constant_text.AUTO_UPDATE_FAILED_TEXT)
-        return
-
-    await call.message.answer(constant_text.AUTO_UPDATE_DONE_TEXT.format(to_version=latest_version))
-    await asyncio.sleep(2)
-    restart_current_process()
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("set:au:"), StateFilter("*"))
@@ -494,6 +509,33 @@ async def update_notice_close_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await not_warning_delete_message(message=call)
     await call.answer(constant_text.UPDATE_NOTIFY_CLOSED_TOAST)
+
+
+
+
+@router.callback_query(IsPrivate(), IsAdmin(), F.data == "upd:update", StateFilter("*"))
+async def update_notice_run_handler(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+
+    local_version = get_local_version()
+    _, _, latest_version = await _get_version_state(force=True)
+
+    if not latest_version:
+        return await call.answer(constant_text.SETTINGS_UPDATE_UNKNOWN_TOAST)
+
+    if not is_newer_version(local_version, latest_version):
+        return await call.answer(constant_text.SETTINGS_UPDATE_ALREADY_LATEST_TOAST)
+
+    await call.answer(constant_text.SETTINGS_UPDATE_RUNNING_TOAST)
+
+    await _run_update_flow(
+        message=call.message,
+        local_version=local_version,
+        latest_version=latest_version,
+        start_text=constant_text.MANUAL_UPDATE_START_TEXT,
+        done_text=constant_text.MANUAL_UPDATE_DONE_TEXT,
+        failed_text=constant_text.MANUAL_UPDATE_FAILED_TEXT,
+    )
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "upd:snooze", StateFilter("*"))

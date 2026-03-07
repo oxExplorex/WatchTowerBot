@@ -244,35 +244,45 @@ SETTINGS_BTN_RESTART = "♻️ Перезагрузить"
 SETTINGS_BTN_CLOSE = "❌ Закрыть"
 SETTINGS_BTN_CHECK_UPDATE = "🔎 Проверить обновление"
 SETTINGS_TOAST_UPDATED = "✅ Настройки обновлены"
-SETTINGS_UPDATE_OK_TOAST = "У вас актуальная версия"
-SETTINGS_UPDATE_AVAILABLE_TOAST = "Доступна новая версия: {latest_version}"
-SETTINGS_UPDATE_UNKNOWN_TOAST = "Не удалось проверить обновления"
-SETTINGS_UPDATE_RUNNING_TOAST = "Запускаю обновление..."
-SETTINGS_UPDATE_ALREADY_LATEST_TOAST = "Обновление не требуется"
+SETTINGS_UPDATE_OK_TOAST = "✅ У вас актуальная версия"
+SETTINGS_UPDATE_AVAILABLE_TOAST = "🆕 Доступна новая версия: {latest_version}"
+SETTINGS_UPDATE_UNKNOWN_TOAST = "⚠️ Не удалось проверить обновления"
+SETTINGS_UPDATE_RUNNING_TOAST = "🚀 Запускаю обновление..."
+SETTINGS_UPDATE_ALREADY_LATEST_TOAST = "✅ Обновление не требуется"
 SETTINGS_UPDATE_DEBUG_TOAST = "L:{local_version} R:{remote_version}"
 
 UPDATE_NOTIFY_TEXT = (
-    "⚠️ Доступно обновление\n\n"
+    "🆕 Найдена новая версия\n\n"
     "Текущая версия: <code>{current_version}</code>\n"
-    "Новая версия: <code>{latest_version}</code>\n\n"
-    "Рекомендуется обновить бота."
+    "Новая версия: <code>{latest_version}</code>"
 )
+UPDATE_NOTIFY_BTN_UPDATE_NOW = "⬇️ Обновить сейчас"
 UPDATE_NOTIFY_BTN_CLOSE = "❌ Закрыть"
 UPDATE_NOTIFY_BTN_SNOOZE_WEEK = "🔕 Не уведомлять 7 дней"
 UPDATE_NOTIFY_SNOOZE_TOAST = "Уведомления отключены на 7 дней"
 UPDATE_NOTIFY_CLOSED_TOAST = "Оповещение закрыто"
 
 AUTO_UPDATE_START_TEXT = (
-    "Обновляю бота\n\n"
-    "С <code>{from_version}</code> до <code>{to_version}</code>."
+    "🤖 Автообновление запущено\n\n"
+    "Версия: <code>{from_version}</code> → <code>{to_version}</code>."
 )
 AUTO_UPDATE_DONE_TEXT = (
-    "Бот обновлён\n\n"
+    "✅ Автообновление завершено\n\n"
     "Текущая версия: <code>{to_version}</code>.\n"
     "Перезапускаю процесс..."
 )
-AUTO_UPDATE_FAILED_TEXT = "Автообновление не удалось. Проверьте логи."
+AUTO_UPDATE_FAILED_TEXT = "❌ Автообновление не удалось. Проверьте логи."
 
+MANUAL_UPDATE_START_TEXT = (
+    "⬇️ Обновление запущено вручную\n\n"
+    "Версия: <code>{from_version}</code> → <code>{to_version}</code>."
+)
+MANUAL_UPDATE_DONE_TEXT = (
+    "✅ Обновление установлено\n\n"
+    "Текущая версия: <code>{to_version}</code>.\n"
+    "Перезапускаю процесс..."
+)
+MANUAL_UPDATE_FAILED_TEXT = "❌ Обновление не удалось. Проверьте логи."
 # Keyboard labels
 ACCOUNT_EDIT_BTN_SESSION = "Сессия {state}"
 ACCOUNT_EDIT_BTN_NEW_CHATS = "Новые чаты {state}"

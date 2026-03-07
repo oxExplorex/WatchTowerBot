@@ -29,8 +29,15 @@ update_scheduler = AsyncIOScheduler()
 _update_lock = asyncio.Lock()
 
 
-def _notification_keyboard(include_snooze: bool = True):
+def _notification_keyboard(include_snooze: bool = True, include_update: bool = False):
     keyboard = InlineKeyboardBuilder()
+    if include_update:
+        keyboard.row(
+            InlineKeyboardButton(
+                text=constant_text.UPDATE_NOTIFY_BTN_UPDATE_NOW,
+                callback_data="upd:update",
+            )
+        )
     if include_snooze:
         keyboard.row(
             InlineKeyboardButton(
@@ -55,12 +62,20 @@ async def _collect_admin_ids() -> list[int]:
     return sorted(ids)
 
 
-async def _safe_send(chat_id: int, text: str, include_snooze: bool = True) -> bool:
+async def _safe_send(
+    chat_id: int,
+    text: str,
+    include_snooze: bool = True,
+    include_update: bool = False,
+) -> bool:
     try:
         await bot.send_message(
             chat_id=chat_id,
             text=text,
-            reply_markup=_notification_keyboard(include_snooze=include_snooze),
+            reply_markup=_notification_keyboard(
+                include_snooze=include_snooze,
+                include_update=include_update,
+            ),
         )
         return True
     except Exception as exc:
@@ -129,6 +144,7 @@ async def version_check_job() -> None:
 
             if auto_update_enabled == 1:
                 auto_update_targets.append(admin_id)
+                continue
 
             if now_ts < int(snooze_until):
                 continue
@@ -136,7 +152,12 @@ async def version_check_job() -> None:
             if (now_ts - int(last_notified)) < NOTIFY_INTERVAL_SEC:
                 continue
 
-            sent = await _safe_send(admin_id, notify_text, include_snooze=True)
+            sent = await _safe_send(
+                admin_id,
+                notify_text,
+                include_snooze=True,
+                include_update=True,
+            )
             if sent:
                 await set_user_update_last_notified(admin_id, now_ts)
 
