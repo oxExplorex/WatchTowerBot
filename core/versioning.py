@@ -8,7 +8,7 @@ from pathlib import Path
 import aiohttp
 
 from core.logging import bot_logger
-from update_bot import REPO_BRANCH, REPO_NAME, REPO_OWNER
+from scripts.update_bot import REPO_BRANCH, REPO_NAME, REPO_OWNER
 
 _VERSION_RE = re.compile(r"\d+")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -113,3 +113,4 @@ async def fetch_remote_version(timeout_sec: int = 15, log_prefix: str = "Version
             f"api={get_remote_version_api_url()} raw={get_remote_version_url()}"
         )
         return None
+

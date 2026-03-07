@@ -22,7 +22,7 @@ from db.main import (
     set_version_state_cache,
 )
 from loader import bot
-from update_bot import download_and_extract_github_repo
+from scripts.update_bot import download_and_extract_github_repo
 
 NOTIFY_INTERVAL_SEC = 60 * 60 * 24
 
@@ -194,3 +194,4 @@ async def start_update_notifier() -> None:
     bot_logger.info("Starting update notifier scheduler")
     update_scheduler.start()
     asyncio.create_task(version_check_job())
+

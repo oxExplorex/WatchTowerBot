@@ -28,7 +28,7 @@ from db.main import (
 )
 from filters.all_filters import IsAdmin, IsPrivate
 from loader import router
-from update_bot import download_and_extract_github_repo
+from scripts.update_bot import download_and_extract_github_repo
 from utils.datetime_tools import DateTime
 from utils.others import not_warning_delete_message
 
@@ -552,3 +552,4 @@ async def update_notice_snooze_handler(call: CallbackQuery, state: FSMContext):
 
     await call.message.edit_reply_markup(reply_markup=keyboard.as_markup())
     await call.answer(constant_text.UPDATE_NOTIFY_SNOOZE_TOAST)
+

@@ -3,4 +3,4 @@ setlocal
 cd /d "%~dp0"
 
 python -m pip install -r requirements.txt
-python update_bot.py
+python scripts\update_bot.py

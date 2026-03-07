@@ -150,7 +150,7 @@ def download_and_extract_github_repo() -> bool:
         )
         response.raise_for_status()
 
-        project_root = Path(__file__).resolve().parent
+        project_root = Path(__file__).resolve().parents[1]
         updated = _safe_extract_repo(response.content, project_root)
         print(f"Repository updated successfully. Files updated: {updated}")
         return True

@@ -60,5 +60,4 @@ migrations/
 # Local scripts
 test.py
 _test.py
-scripts/
 
