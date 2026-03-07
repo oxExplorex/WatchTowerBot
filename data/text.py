@@ -1,22 +1,22 @@
-﻿EMOJI_YES_OR_NO_TEXT = ["✅", "❌"]
+EMOJI_YES_OR_NO_TEXT = ["✅", "❌"]
 
-START_MESSAGE_TEXT = (
-    "Панель управления\n\n"
-    "Версия: <code>{version}</code> ({version_status})\n\n"
-    "Последняя проверка: <code>{last_check}</code> (~<code>{last_check_sec}</code> сек)\n"
-)
+START_MESSAGE_TEXT = "Бот запущен. Откройте «⚙️ Настройки» для информации и управления."
 NOTICE_ADMINISTRATOR_TO_ACTIVE_BOT = "Бот запущен"
 
-APPS_COUNT_INFO_TEXT = "Всего приложений: {_count}\n\n<code>{date}</code>"
+APPS_COUNT_INFO_TEXT = (
+    "🔧 Выберите приложение для подключения профиля\n\n"
+    "Всего приложений: {_count}\n\n"
+    "<code>{date}</code>"
+)
 ACCOUNT_COUNT_INFO_TEXT = (
-    "<b>Сессии Telegram</b>\n\n"
+    "<b>🗂 Профили доступа</b>\n\n"
     "Аккаунты: {_count}\n"
     "Приложения: {_count_apps}\n\n"
     "<code>{date}</code>"
 )
 
 ACCOUNT_EDIT_INFO_TEXT = (
-    "<b>Сессия [<code>{user_id}</code>]</b>\n\n"
+    "<b>Профиль [<code>{user_id}</code>]</b>\n\n"
     "Телефон: {number}\n"
     "Статус: <b>{session_status}</b>\n\n"
     "app_id: {app_id}\n"
@@ -28,7 +28,7 @@ ACCOUNT_EDIT_INFO_TEXT = (
 
 APPS_ADD_APP_ID_TEXT = "Введите app_id"
 APPS_ADD_API_HASH_TEXT = "Введите api_hash"
-APPS_ADD_NAME_TAG_TEXT = "Введите tag приложения"
+APPS_ADD_NAME_TAG_TEXT = "Введите название приложения"
 APPS_ADD_AGREE_TEXT = (
     "Проверьте данные перед сохранением\n\n"
     "TAG: <b>{_tag_name}</b>\n"
@@ -36,7 +36,7 @@ APPS_ADD_AGREE_TEXT = (
     "API_HASH: <code>{_api_hash}</code>"
 )
 
-ACCOUNT_CHOICE_APP_ID_TEXT = "Выберите приложение"
+ACCOUNT_CHOICE_APP_ID_TEXT = "Выберите приложение для добавления профиля"
 ACCOUNT_INPUT_NUMBER_TEXT = "Введите номер в формате +79001112233 или 79001112233"
 ACCOUNT_INPUT_CODE_TEXT = "Введите код подтверждения из Telegram"
 ACCOUNT_INPUT_PASSWORD_TEXT = "Введите пароль 2FA"
@@ -58,12 +58,12 @@ ERROR_NOT_FOUND_ACCOUNT_ID = "Аккаунт не найден"
 SUCCESS_ADD_APP_TEXT = "✅ Приложение добавлено"
 SUCCESS_DEL_APP_TEXT = "✅ Приложение удалено"
 SUCCESS_ADD_ACCOUNT_TEXT = (
-    "✅ Аккаунт добавлен\n\n"
+    "✅ Профиль добавлен\n\n"
     "Важно:\n"
-    "1) Проверьте настройки сессии\n"
-    "2) Если сессия не стартует сразу - перезапустите бота"
+    "1) Проверьте настройки профиля\n"
+    "2) Если профиль не стартует сразу - перезапустите бота"
 )
-SUCCESS_DEL_ACCOUNT_TEXT = "✅ Аккаунт удалён"
+SUCCESS_DEL_ACCOUNT_TEXT = "✅ Профиль удалён"
 
 ACCOUNTS_USER_KEYBOARD = ["👤 Аккаунты"]
 APP_TG_USER_KEYBOARD = ["📱 Приложения"]
@@ -71,8 +71,9 @@ PROXY_USER_KEYBOARD = ["🛰 Прокси"]
 SETTINGS_BOT_KEYBOARD = [
     "📉 Моя статистика",
     "📊 Общая статистика",
+    "⚙️ Настройки",
 ]
-RESTART_BOT_W_KEYBOARD = ["🔄 Перезапуск (Win)"]
+RESTART_BOT_W_KEYBOARD = ["🔄 Перезапуск бота"]
 
 # Generic actions
 ACTION_CANCEL_TEXT = "Отмена"
@@ -84,20 +85,20 @@ ACTION_PAGE_PREV_TEXT = "◀️"
 ACTION_PAGE_NEXT_TEXT = "▶️"
 
 # Account/session texts
-ACCOUNT_STATUS_ENABLED_TEXT = "✅ включена"
-ACCOUNT_STATUS_DISABLED_TEXT = "⛔ выключена"
+ACCOUNT_STATUS_ENABLED_TEXT = "✅ включен"
+ACCOUNT_STATUS_DISABLED_TEXT = "⛔ выключен"
 ACCOUNT_RUNTIME_ONLINE_TEXT = "🟢 online"
 ACCOUNT_RUNTIME_OFFLINE_TEXT = "⚫ offline"
 ACCOUNT_NO_DATA_TEXT = "нет данных"
-ACCOUNT_SESSION_ENABLED_TOAST = "Сессия включена. Если не стартует автоматически, сделайте перезапуск бота."
-ACCOUNT_SESSION_REMOVED_NO_FILE_TOAST = "Сессия удалена: отсутствуют файлы сессии"
-ACCOUNT_SESSION_NOT_RUNNING_TOAST = "Сессия не запущена в runtime"
-ACCOUNT_SESSION_RESPONDS_TOAST = "Сессия отвечает"
-ACCOUNT_SESSION_INVALID_REMOVED_TOAST = "Сессия невалидна и удалена"
+ACCOUNT_SESSION_ENABLED_TOAST = "Профиль включен. Если не стартует автоматически, сделайте перезапуск бота."
+ACCOUNT_SESSION_REMOVED_NO_FILE_TOAST = "Профиль удалён: отсутствуют файлы сессии"
+ACCOUNT_SESSION_NOT_RUNNING_TOAST = "Профиль не запущен в runtime"
+ACCOUNT_SESSION_RESPONDS_TOAST = "Профиль отвечает"
+ACCOUNT_SESSION_INVALID_REMOVED_TOAST = "Профиль невалиден и удалён"
 ACCOUNT_CHECK_ERROR_TOAST = "Ошибка проверки: {error}"
 ACCOUNT_INVALID_REMOVED_TEXT = (
-    "⚠️ Сессия стала невалидной и удалена.\n"
-    "Запись убрана из базы и из runtime. Добавьте аккаунт заново."
+    "⚠️ Профиль стал невалидным и удалён.\n"
+    "Запись убрана из базы и из runtime. Добавьте профиль заново."
 )
 
 ACCOUNT_ADD_SESSION_BUSY_TEXT = (
@@ -110,7 +111,7 @@ ACCOUNT_ADD_ERROR_PREFIX = "Ошибка"
 # Spoiler / ttl media texts
 SPOILER_STATUS_TEXT = (
     "⏳ Обнаружено временное сообщение\n"
-    "Сессия: {session}\n"
+    "Профиль: {session}\n"
     "От: {sender}\n"
     "Чат: {chat}\n\n"
     "Скачиваю медиа..."
@@ -118,7 +119,7 @@ SPOILER_STATUS_TEXT = (
 SPOILER_DOWNLOAD_FAILED_TEXT = "⚠️ Временное сообщение обнаружено, но скачать медиа не удалось."
 SPOILER_SAVED_CAPTION_TEXT = (
     "🕒 Временное медиа сохранено\n"
-    "Сессия: {session}\n"
+    "Профиль: {session}\n"
     "От: {sender}\n"
     "Чат: {chat}"
 )
@@ -146,9 +147,9 @@ RESTARTING_TEXT = "Перезапускаю..."
 
 # Parser/runtime notifications
 PARSER_SESSION_DROPPED_TEXT = (
-    "⚠️ Сессия аккаунта отключена: Telegram вернул ошибку авторизации.\n"
+    "⚠️ Профиль отключён: Telegram вернул ошибку авторизации.\n"
     "Номер: <code>{number}</code>\n"
-    "Запись удалена из базы. Добавьте аккаунт заново."
+    "Запись удалена из базы. Добавьте профиль заново."
 )
 PARSER_UNKNOWN_ERROR_TEXT = "Ошибка"
 
@@ -182,6 +183,61 @@ STATS_TEXT = (
     "Легенда: 🟩 стабильно, 🟨 редкие сбои, 🟥 частые сбои, ⬛ нет данных"
 )
 
+TIMEZONE_MENU_TEXT = (
+    "<b>🕒 Часовой пояс</b>\n\n"
+    "<blockquote>🌍 Примеры:\n+3 Москва\n+7 Новосибирск\n+9 Якутск</blockquote>\n\n"
+    "Текущий: <b>{tz_label}</b>\n\n"
+    "Выберите смещение:"
+)
+TIMEZONE_SET_TOAST = "Часовой пояс сохранён: {tz_label}"
+TIMEZONE_RESET_TOAST = "Часовой пояс сброшен на +3 (Москва)"
+TIMEZONE_INVALID_TOAST = "Некорректный часовой пояс"
+TIMEZONE_BTN_PREFIX = "{offset}"
+TIMEZONE_BTN_SELECTED = "✅ {label}"
+TIMEZONE_BTN_RESET = "🔄 Сбросить до +3"
+
+SETTINGS_MENU_TITLE = (
+    "<b>⚙️ Настройки</b>\n\n"
+    "Версия бота: <code>{bot_version}</code>\n"
+    "Статус версии: <b>{version_state}</b>\n"
+    "Последняя проверка: <b>{last_check_ago}</b> мин назад\n\n"
+    "Автообновление: <b>{auto_update_state}</b>\n\n"
+    "<code>{date}</code>"
+)
+AUTO_UPDATE_ON_TEXT = "🟢 Включено"
+AUTO_UPDATE_OFF_TEXT = "🔴 Выключено"
+SETTINGS_BTN_AUTO_UPDATE = "🤖 Автообновление: {state}"
+SETTINGS_BTN_TIMEZONE = "🕓 Часовой пояс: {tz_label}"
+SETTINGS_BTN_RESTART = "♻️ Перезагрузить"
+SETTINGS_BTN_CLOSE = "❌ Закрыть"
+SETTINGS_BTN_CHECK_UPDATE = "🔎 Проверить обновление"
+SETTINGS_TOAST_UPDATED = "✅ Настройки обновлены"
+SETTINGS_UPDATE_OK_TOAST = "У вас актуальная версия"
+SETTINGS_UPDATE_AVAILABLE_TOAST = "Доступна новая версия: {latest_version}"
+SETTINGS_UPDATE_UNKNOWN_TOAST = "Не удалось проверить обновления"
+
+UPDATE_NOTIFY_TEXT = (
+    "⚠️ Доступно обновление\n\n"
+    "Текущая версия: <code>{current_version}</code>\n"
+    "Новая версия: <code>{latest_version}</code>\n\n"
+    "Рекомендуется обновить бота."
+)
+UPDATE_NOTIFY_BTN_CLOSE = "❌ Закрыть"
+UPDATE_NOTIFY_BTN_SNOOZE_WEEK = "🔕 Не уведомлять 7 дней"
+UPDATE_NOTIFY_SNOOZE_TOAST = "Уведомления отключены на 7 дней"
+UPDATE_NOTIFY_CLOSED_TOAST = "Оповещение закрыто"
+
+AUTO_UPDATE_START_TEXT = (
+    "Обновляю бота\n\n"
+    "С <code>{from_version}</code> до <code>{to_version}</code>."
+)
+AUTO_UPDATE_DONE_TEXT = (
+    "Бот обновлён\n\n"
+    "Текущая версия: <code>{to_version}</code>.\n"
+    "Перезапускаю процесс..."
+)
+AUTO_UPDATE_FAILED_TEXT = "Автообновление не удалось. Проверьте логи."
+
 # Keyboard labels
 ACCOUNT_EDIT_BTN_SESSION = "Сессия {state}"
 ACCOUNT_EDIT_BTN_NEW_CHATS = "Новые чаты {state}"
@@ -189,7 +245,7 @@ ACCOUNT_EDIT_BTN_DEL_CHATS = "Удалённые чаты {state}"
 ACCOUNT_EDIT_BTN_BOTS = "Боты/каналы {state}"
 ACCOUNT_EDIT_BTN_SPOILER_MEDIA = "TTL/спойлер-вложения {state}"
 ACCOUNT_EDIT_BTN_CHECK_NOW = "🧪 Проверить сейчас"
-ACCOUNT_EDIT_BTN_DELETE = "🗑 Удалить сессию"
+ACCOUNT_EDIT_BTN_DELETE = "🗑 Удалить"
 
 ACCOUNT_MENU_UNKNOWN_NAME = "Unknown"
 ACCOUNT_MENU_ACTIVE_ICON = "🟢"
@@ -197,5 +253,5 @@ ACCOUNT_MENU_INACTIVE_ICON = "⛔"
 ACCOUNT_MENU_TITLE = "{status} {name} [{user_id}]"
 
 APPS_MENU_ADD = "➕ Добавить приложение"
-APPS_MENU_USE = "🔑 Использовать | {tag_name} [{app_id}]"
+APPS_MENU_USE = "🧩 {tag_name} [{app_id}] • профилей: {linked_count}"
 APPS_MENU_DELETE = "🗑 Удалить"

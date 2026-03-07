@@ -1,4 +1,4 @@
-﻿import io
+import io
 import os
 import shutil
 import traceback
@@ -79,7 +79,8 @@ def download_and_extract_github_repo() -> bool:
         response = requests.get(zip_url, timeout=60)
         response.raise_for_status()
 
-        updated = _safe_extract_repo(response.content, Path.cwd())
+        project_root = Path(__file__).resolve().parent
+        updated = _safe_extract_repo(response.content, project_root)
         print(f"Repository updated successfully. Files updated: {updated}")
         return True
     except requests.RequestException as exc:

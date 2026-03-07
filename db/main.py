@@ -3,11 +3,13 @@ import re
 import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
+from uuid import UUID
 
 import asyncpg
 from sqlalchemy import func, inspect, select, text
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.sql.sqltypes import Integer
+from sqlalchemy.sql.sqltypes import BigInteger, Integer, String
 from sqlmodel import SQLModel
 
 import data.config as config
@@ -55,12 +57,28 @@ _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _quote_ident(name: str) -> str:
-    # Identifiers here come from metadata/constants, but we still validate defensively.
     if not _IDENT_RE.fullmatch(name):
         raise ValueError(f"Unsafe SQL identifier: {name}")
     return f'"{name}"'
 
 
+def _to_uuid(value: Any) -> Optional[UUID]:
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_timezone_offset(offset: Any, default: int = 3) -> int:
+    try:
+        value = int(offset)
+    except (TypeError, ValueError):
+        value = default
+    return max(-12, min(14, value))
 def _inspect_columns(sync_conn, table_name: str) -> dict[str, Any]:
     inspector = inspect(sync_conn)
     columns = inspector.get_columns(table_name, schema="public")
@@ -154,7 +172,7 @@ async def _sync_bigint_columns_postgres() -> None:
 
     bigint_columns = {
         "username_history_db": ["user_id", "date"],
-        "user_db": ["user_id"],
+        "user_db": ["user_id", "update_snooze_until", "update_last_notified"],
         "app_tg_db": ["user_id", "app_id"],
         "apps_db": [
             "admin_id",
@@ -174,7 +192,7 @@ async def _sync_bigint_columns_postgres() -> None:
             column_types = await conn.run_sync(lambda sync_conn: _inspect_columns(sync_conn, table_name))
             for column_name in columns:
                 current_type = column_types.get(column_name)
-                if isinstance(current_type, Integer):
+                if isinstance(current_type, Integer) and not isinstance(current_type, BigInteger):
                     table_sql = _quote_ident(table_name)
                     column_sql = _quote_ident(column_name)
 
@@ -188,12 +206,66 @@ async def _sync_bigint_columns_postgres() -> None:
                     bot_logger.info(f"Applied bigint migration: {table_name}.{column_name}")
 
 
+
+async def _sync_uuid_columns_postgres() -> None:
+    if _engine is None or _normalize_engine_name(DB_ENGINE) != "postgresql+asyncpg":
+        return
+
+    uuid_columns = {
+        "username_history_db": ["uuid"],
+        "user_db": ["uuid"],
+        "app_tg_db": ["uuid"],
+        "apps_db": ["uuid", "app_tg"],
+        "history_users_db": ["uuid"],
+        "dump_chat_user_db": ["uuid"],
+        "account_health_db": ["uuid", "account_uuid"],
+    }
+
+    async with _engine.begin() as conn:
+        for table_name, columns in uuid_columns.items():
+            table = SQLModel.metadata.tables.get(table_name)
+            if table is None:
+                continue
+
+            column_types = await conn.run_sync(lambda sync_conn: _inspect_columns(sync_conn, table_name))
+            for column_name in columns:
+                current_type = column_types.get(column_name)
+                if current_type is None or isinstance(current_type, PGUUID):
+                    continue
+
+                # Convert legacy varchar UUID columns to native Postgres UUID.
+                if isinstance(current_type, String):
+                    table_sql = _quote_ident(table_name)
+                    column_sql = _quote_ident(column_name)
+                    nullable = bool(table.columns[column_name].nullable)
+
+                    if nullable:
+                        using_expr = (
+                            f"CASE "
+                            f"WHEN {column_sql} IS NULL THEN NULL "
+                            f"WHEN {column_sql}::text = '' THEN NULL "
+                            f"ELSE {column_sql}::uuid END"
+                        )
+                    else:
+                        using_expr = f"{column_sql}::uuid"
+
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE {table_sql} "
+                            f"ALTER COLUMN {column_sql} TYPE UUID "
+                            f"USING {using_expr}"
+                        )
+                    )
+                    bot_logger.info(f"Applied uuid migration: {table_name}.{column_name}")
+
+
 async def _apply_compat_migrations() -> None:
     if _engine is None:
         return
 
     await _sync_missing_columns_postgres()
     await _sync_bigint_columns_postgres()
+    await _sync_uuid_columns_postgres()
 
 
 async def connect_database() -> None:
@@ -242,6 +314,113 @@ async def get_user(user_id):
         return result.scalars().first()
 
 
+
+async def get_user_timezone_offset(user_id: int, default: int = 3) -> int:
+    async with _session_scope() as session:
+        result = await session.execute(select(user_db).where(user_db.user_id == int(user_id)))
+        user = result.scalars().first()
+        if not user:
+            return _normalize_timezone_offset(default)
+        return _normalize_timezone_offset(getattr(user, "timezone_offset", default), default)
+
+
+async def set_user_timezone_offset(user_id: int, offset: int) -> int:
+    offset_value = _normalize_timezone_offset(offset)
+
+    async with _session_scope() as session:
+        result = await session.execute(select(user_db).where(user_db.user_id == int(user_id)))
+        user = result.scalars().first()
+
+        if not user:
+            roles = "admin" if int(user_id) in admin_id_list else None
+            user = user_db(user_id=int(user_id), roles=roles, timezone_offset=offset_value)
+            session.add(user)
+        else:
+            user.timezone_offset = offset_value
+            session.add(user)
+
+        await session.commit()
+
+    return offset_value
+
+
+async def get_user_auto_update_enabled(user_id: int, default: int = 0) -> int:
+    async with _session_scope() as session:
+        result = await session.execute(select(user_db).where(user_db.user_id == int(user_id)))
+        user = result.scalars().first()
+        if not user:
+            return int(default)
+        return int(getattr(user, "auto_update_enabled", default) or 0)
+
+
+async def set_user_auto_update_enabled(user_id: int, enabled: int) -> int:
+    enabled_value = 1 if int(enabled) else 0
+
+    async with _session_scope() as session:
+        result = await session.execute(select(user_db).where(user_db.user_id == int(user_id)))
+        user = result.scalars().first()
+
+        if not user:
+            roles = "admin" if int(user_id) in admin_id_list else None
+            user = user_db(user_id=int(user_id), roles=roles, auto_update_enabled=enabled_value, timezone_offset=3)
+        else:
+            user.auto_update_enabled = enabled_value
+
+        session.add(user)
+        await session.commit()
+
+    return enabled_value
+
+
+async def get_user_update_notification_state(user_id: int) -> tuple[int, int]:
+    async with _session_scope() as session:
+        result = await session.execute(select(user_db).where(user_db.user_id == int(user_id)))
+        user = result.scalars().first()
+        if not user:
+            return 0, 0
+
+        snooze_until = int(getattr(user, "update_snooze_until", 0) or 0)
+        last_notified = int(getattr(user, "update_last_notified", 0) or 0)
+        return snooze_until, last_notified
+
+
+async def set_user_update_snooze_until(user_id: int, until_ts: int) -> int:
+    value = int(until_ts)
+
+    async with _session_scope() as session:
+        result = await session.execute(select(user_db).where(user_db.user_id == int(user_id)))
+        user = result.scalars().first()
+
+        if not user:
+            roles = "admin" if int(user_id) in admin_id_list else None
+            user = user_db(user_id=int(user_id), roles=roles, update_snooze_until=value, timezone_offset=3)
+        else:
+            user.update_snooze_until = value
+
+        session.add(user)
+        await session.commit()
+
+    return value
+
+
+async def set_user_update_last_notified(user_id: int, ts_value: int) -> int:
+    value = int(ts_value)
+
+    async with _session_scope() as session:
+        result = await session.execute(select(user_db).where(user_db.user_id == int(user_id)))
+        user = result.scalars().first()
+
+        if not user:
+            roles = "admin" if int(user_id) in admin_id_list else None
+            user = user_db(user_id=int(user_id), roles=roles, update_last_notified=value, timezone_offset=3)
+        else:
+            user.update_last_notified = value
+
+        session.add(user)
+        await session.commit()
+
+    return value
+
 async def update_user(user_id, username, full_name):
     async with _session_scope() as session:
         result = await session.execute(select(user_db).where(user_db.user_id == user_id))
@@ -250,13 +429,16 @@ async def update_user(user_id, username, full_name):
         roles = "admin" if user_id in admin_id_list else None
 
         if not temp:
-            temp = user_db(user_id=user_id, roles=roles)
+            temp = user_db(user_id=user_id, roles=roles, timezone_offset=3)
             session.add(temp)
 
         if temp.roles != roles or temp.username != username or temp.full_name != full_name:
             temp.username = username
             temp.full_name = full_name
             temp.roles = roles
+
+        if getattr(temp, "timezone_offset", None) is None:
+            temp.timezone_offset = 3
 
         await session.commit()
 
@@ -288,23 +470,46 @@ async def get_app_tg_user_id(user_id, offset=0):
 
 
 async def get_app_tg_uuid(uuid, user_id):
+    uuid_value = _to_uuid(uuid)
+    if uuid_value is None:
+        return None
+
     async with _session_scope() as session:
         result = await session.execute(
-            select(app_tg_db).where(app_tg_db.uuid == str(uuid), app_tg_db.user_id == user_id)
+            select(app_tg_db).where(app_tg_db.uuid == uuid_value, app_tg_db.user_id == user_id)
         )
         return result.scalars().first()
 
 
 async def get_app_tg_uuid_aio(uuid):
+    uuid_value = _to_uuid(uuid)
+    if uuid_value is None:
+        return None
+
     async with _session_scope() as session:
-        result = await session.execute(select(app_tg_db).where(app_tg_db.uuid == str(uuid)))
+        result = await session.execute(select(app_tg_db).where(app_tg_db.uuid == uuid_value))
         return result.scalars().first()
 
 
-async def del_app_tg_uuid(uuid, user_id):
+
+async def get_accounts_count_by_app_tg_uuid(app_tg_uuid) -> int:
+    uuid_value = _to_uuid(app_tg_uuid)
+    if uuid_value is None:
+        return 0
+
     async with _session_scope() as session:
         result = await session.execute(
-            select(app_tg_db).where(app_tg_db.uuid == str(uuid), app_tg_db.user_id == user_id)
+            select(func.count()).select_from(apps_db).where(apps_db.app_tg == uuid_value)
+        )
+        return int(result.scalar() or 0)
+async def del_app_tg_uuid(uuid, user_id):
+    uuid_value = _to_uuid(uuid)
+    if uuid_value is None:
+        return False
+
+    async with _session_scope() as session:
+        result = await session.execute(
+            select(app_tg_db).where(app_tg_db.uuid == uuid_value, app_tg_db.user_id == user_id)
         )
         temp = result.scalars().first()
         if not temp:
@@ -371,17 +576,25 @@ async def get_account_tg_to_user_id(user_id, admin_id=None):
 
 
 async def get_account_uuid(uuid, admin_id):
+    uuid_value = _to_uuid(uuid)
+    if uuid_value is None:
+        return None
+
     async with _session_scope() as session:
         result = await session.execute(
-            select(apps_db).where(apps_db.uuid == str(uuid), apps_db.admin_id == admin_id)
+            select(apps_db).where(apps_db.uuid == uuid_value, apps_db.admin_id == admin_id)
         )
         return result.scalars().first()
 
 
 async def del_account_uuid(uuid, admin_id):
+    uuid_value = _to_uuid(uuid)
+    if uuid_value is None:
+        return False
+
     async with _session_scope() as session:
         result = await session.execute(
-            select(apps_db).where(apps_db.uuid == str(uuid), apps_db.admin_id == admin_id)
+            select(apps_db).where(apps_db.uuid == uuid_value, apps_db.admin_id == admin_id)
         )
         temp = result.scalars().first()
         if not temp:
@@ -393,9 +606,13 @@ async def del_account_uuid(uuid, admin_id):
 
 
 async def update_account_uuid(uuid, admin_id, **fields):
+    uuid_value = _to_uuid(uuid)
+    if uuid_value is None:
+        return None
+
     async with _session_scope() as session:
         result = await session.execute(
-            select(apps_db).where(apps_db.uuid == str(uuid), apps_db.admin_id == admin_id)
+            select(apps_db).where(apps_db.uuid == uuid_value, apps_db.admin_id == admin_id)
         )
         temp = result.scalars().first()
         if not temp:
@@ -412,6 +629,10 @@ async def update_account_uuid(uuid, admin_id, **fields):
 
 
 async def create_account_tg(admin_id, user_id, app_tg, number):
+    app_tg_uuid = _to_uuid(app_tg)
+    if app_tg_uuid is None:
+        return None
+
     async with _session_scope() as session:
         result = await session.execute(
             select(apps_db).where(apps_db.admin_id == admin_id, apps_db.user_id == user_id)
@@ -419,7 +640,7 @@ async def create_account_tg(admin_id, user_id, app_tg, number):
         account = result.scalars().first()
 
         if account:
-            account.app_tg = str(app_tg)
+            account.app_tg = app_tg_uuid
             account.number = number
             account.is_active = 1
             if getattr(account, "alert_spoiler_media", None) is None:
@@ -432,7 +653,7 @@ async def create_account_tg(admin_id, user_id, app_tg, number):
         account = apps_db(
             admin_id=admin_id,
             user_id=user_id,
-            app_tg=str(app_tg),
+            app_tg=app_tg_uuid,
             number=number,
             alert_del_chat_id=admin_id,
             alert_new_chat_id=admin_id,
@@ -540,7 +761,7 @@ async def add_account_health_event(account_uuid, admin_id, user_id, status, date
     async with _session_scope() as session:
         session.add(
             account_health_db(
-                account_uuid=str(account_uuid),
+                account_uuid=_to_uuid(account_uuid),
                 admin_id=int(admin_id) if admin_id is not None else 0,
                 user_id=int(user_id) if user_id is not None else 0,
                 status=int(status),
@@ -555,7 +776,7 @@ async def get_account_health_events(account_uuid, since_ts):
     async with _session_scope() as session:
         result = await session.execute(
             select(account_health_db).where(
-                account_health_db.account_uuid == str(account_uuid),
+                account_health_db.account_uuid == _to_uuid(account_uuid),
                 account_health_db.date >= int(since_ts),
             )
         )
@@ -604,6 +825,23 @@ async def get_all_health_events(since_ts):
             )
         )
         return result.scalars().all()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

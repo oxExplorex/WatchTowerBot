@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import os
 
 # Force UTF-8 for Windows console/log output.
@@ -16,6 +16,7 @@ from pyrogram import Client, compose, filters
 from pyrogram.handlers import MessageHandler
 
 from aiotask.telegram_parse_dialogs import starting_tg_parse_dialogs_handler
+from aiotask.update_notifier import start_update_notifier
 from core.logging import bot_logger
 from db.main import close_database, connect_database
 from filters.all_filters_app import file_spoiler_filter
@@ -63,6 +64,7 @@ async def start_polling_bot():
     # Technical delay for stable startup of pyrogram sessions.
     await asyncio.sleep(5)
     asyncio.create_task(starting_tg_parse_dialogs_handler())
+    asyncio.create_task(start_update_notifier())
 
     await send_log_to_active_bot(bot)
     bot_logger.info("Bot was started")

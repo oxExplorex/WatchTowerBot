@@ -1,4 +1,5 @@
-cls
-python update_bot.py
-python main.py
-exit
+@echo off
+setlocal
+cd /d "%~dp0"
+
+python -X utf8 main.py

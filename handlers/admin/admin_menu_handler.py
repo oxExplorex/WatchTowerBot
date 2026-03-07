@@ -1,4 +1,4 @@
-﻿from aiogram import F
+from aiogram import F
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -16,12 +16,7 @@ async def start_user_handler(message: Message, state: FSMContext):
     await state.clear()
 
     await message.answer(
-        text=constant_text.START_MESSAGE_TEXT.format(
-            version="1.1",
-            version_status="stable",
-            last_check="-",
-            last_check_sec="-",
-        ),
+        text=constant_text.START_MESSAGE_TEXT,
         reply_markup=static_admin_keyboard(),
     )
 

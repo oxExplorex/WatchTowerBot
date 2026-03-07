@@ -17,6 +17,7 @@ from db.main import (
     get_account_uuid,
     get_app_tg_user_id,
     get_app_tg_uuid,
+    get_user_timezone_offset,
     update_account_uuid,
 )
 from filters.all_filters import IsAdmin, IsPrivate
@@ -40,11 +41,11 @@ FATAL_SESSION_ERROR_NAMES = {
 }
 
 
-def _format_last_update(ts_value) -> str:
+def _format_last_update(ts_value, dt: DateTime) -> str:
     if not ts_value:
         return constant_text.ACCOUNT_NO_DATA_TEXT
     try:
-        return DateTime().convert_timestamp(int(ts_value))["str"]
+        return dt.convert_timestamp(int(ts_value))["str"]
     except Exception:
         return str(ts_value)
 
@@ -60,8 +61,7 @@ def _status_icon(fails: int, total: int) -> str:
     return "🟥"
 
 
-def _build_hourly_rows_desc(events, hours: int) -> list[str]:
-    dt = DateTime()
+def _build_hourly_rows_desc(events, hours: int, dt: DateTime) -> list[str]:
     now_hour = dt.now().replace(minute=0, second=0, microsecond=0)
     rows: list[str] = []
 
@@ -119,6 +119,9 @@ async def _show_accounts_or_close(call: CallbackQuery) -> None:
             pass
         return
 
+    tz_offset = await get_user_timezone_offset(call.from_user.id)
+    dt = DateTime(tz_offset)
+
     _, apps_count = await get_app_tg_user_id(call.from_user.id)
     total_pages = max(1, (count + PAGE_SIZE - 1) // PAGE_SIZE)
     keyboard = await account_tg_admin_inline(accounts, 1, total_pages)
@@ -127,7 +130,7 @@ async def _show_accounts_or_close(call: CallbackQuery) -> None:
         text=constant_text.ACCOUNT_COUNT_INFO_TEXT.format(
             _count=count,
             _count_apps=apps_count,
-            date=DateTime().time_strftime("%d.%m.%Y %H:%M:%S.%f"),
+            date=dt.time_strftime("%d.%m.%Y %H:%M:%S.%f"),
         ),
         reply_markup=keyboard,
     )
@@ -167,14 +170,23 @@ async def _render_account_editor(call: CallbackQuery, account):
     if not app_tg:
         return await call.answer(constant_text.ERROR_NOT_FOUND_APP_ID)
 
-    since_48h = DateTime().timestamp() - 60 * 60 * 48
+    tz_offset = await get_user_timezone_offset(call.from_user.id)
+    dt = DateTime(tz_offset)
+
+    since_48h = dt.timestamp() - 60 * 60 * 48
     events_48h = await get_account_health_events(account.uuid, since_48h)
-    rows_48h = _build_hourly_rows_desc(events_48h, hours=48)
+    rows_48h = _build_hourly_rows_desc(events_48h, hours=48, dt=dt)
 
     status_runtime = (
-        constant_text.ACCOUNT_RUNTIME_ONLINE_TEXT if is_session_running(account.number) else constant_text.ACCOUNT_RUNTIME_OFFLINE_TEXT
+        constant_text.ACCOUNT_RUNTIME_ONLINE_TEXT
+        if is_session_running(account.number)
+        else constant_text.ACCOUNT_RUNTIME_OFFLINE_TEXT
     )
-    state_text = constant_text.ACCOUNT_STATUS_ENABLED_TEXT if account.is_active else constant_text.ACCOUNT_STATUS_DISABLED_TEXT
+    state_text = (
+        constant_text.ACCOUNT_STATUS_ENABLED_TEXT
+        if account.is_active
+        else constant_text.ACCOUNT_STATUS_DISABLED_TEXT
+    )
 
     await call.message.edit_text(
         text=constant_text.ACCOUNT_EDIT_INFO_TEXT.format(
@@ -182,10 +194,10 @@ async def _render_account_editor(call: CallbackQuery, account):
             number=_spoil(account.number),
             app_id=_spoil(app_tg.app_id),
             api_hash=_spoil(app_tg.api_hash),
-            last_update=_format_last_update(account.last_update),
+            last_update=_format_last_update(account.last_update, dt=dt),
             session_status=f"{state_text} | {status_runtime}",
             hours_chart="\n".join(rows_48h),
-            date=DateTime().time_strftime("%d.%m.%Y %H:%M:%S"),
+            date=dt.time_strftime("%d.%m.%Y %H:%M:%S"),
         ),
         reply_markup=await account_edit_admin_inline(account),
     )
@@ -307,8 +319,9 @@ async def account_check_handler(call: CallbackQuery, state: FSMContext):
         await call.answer(constant_text.ERROR_NOT_FOUND_ACCOUNT_ID)
         return await _show_accounts_or_close(call)
 
+    tz_offset = await get_user_timezone_offset(call.from_user.id)
+    now_ts = DateTime(tz_offset).timestamp()
     client = get_client_by_number(account.number)
-    now_ts = DateTime().timestamp()
 
     if client is None:
         await add_account_health_event(account.uuid, account.admin_id, account.user_id, 0, now_ts, "not_running")

@@ -11,7 +11,7 @@ def static_admin_keyboard():
             KeyboardButton(text=constant_text.SETTINGS_BOT_KEYBOARD[0]),
             KeyboardButton(text=constant_text.SETTINGS_BOT_KEYBOARD[1]),
         ],
-        [KeyboardButton(text=constant_text.RESTART_BOT_W_KEYBOARD[0])],
+        [KeyboardButton(text=constant_text.SETTINGS_BOT_KEYBOARD[2])],
     ]
 
     return ReplyKeyboardMarkup(

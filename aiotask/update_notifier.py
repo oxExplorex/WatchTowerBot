@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import asyncio
+import time
+from typing import Iterable
+
+import aiohttp
+from aiogram.types import InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+import data.text as constant_text
+from core.logging import bot_logger
+from core.process_control import restart_current_process
+from core.versioning import get_local_version, get_remote_version_url, is_newer_version
+from data.config import admin_id_list
+from db.main import (
+    get_admins,
+    get_user_auto_update_enabled,
+    get_user_update_notification_state,
+    set_user_update_last_notified,
+)
+from loader import bot
+from update_bot import download_and_extract_github_repo
+
+NOTIFY_INTERVAL_SEC = 60 * 60 * 24
+
+update_scheduler = AsyncIOScheduler()
+_update_lock = asyncio.Lock()
+
+
+def _notification_keyboard(include_snooze: bool = True):
+    keyboard = InlineKeyboardBuilder()
+    if include_snooze:
+        keyboard.row(
+            InlineKeyboardButton(
+                text=constant_text.UPDATE_NOTIFY_BTN_SNOOZE_WEEK,
+                callback_data="upd:snooze",
+            )
+        )
+    keyboard.row(
+        InlineKeyboardButton(
+            text=constant_text.UPDATE_NOTIFY_BTN_CLOSE,
+            callback_data="upd:close",
+        )
+    )
+    return keyboard.as_markup()
+
+
+async def _fetch_remote_version() -> str | None:
+    timeout = aiohttp.ClientTimeout(total=15)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(get_remote_version_url()) as response:
+                if response.status != 200:
+                    bot_logger.warning(f"Version check failed: HTTP {response.status}")
+                    return None
+                return (await response.text()).strip() or None
+    except Exception as exc:
+        bot_logger.warning(f"Version check error: {exc}")
+        return None
+
+
+async def _collect_admin_ids() -> list[int]:
+    ids = {int(x) for x in admin_id_list if int(x) > 10}
+    for user in await get_admins():
+        if int(user.user_id) > 10:
+            ids.add(int(user.user_id))
+    return sorted(ids)
+
+
+async def _safe_send(chat_id: int, text: str, include_snooze: bool = True) -> bool:
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=_notification_keyboard(include_snooze=include_snooze),
+        )
+        return True
+    except Exception as exc:
+        bot_logger.warning(f"Cannot send update notification to {chat_id}: {exc}")
+        return False
+
+
+def _restart_process() -> None:
+    restart_current_process()
+
+
+async def _run_auto_update(target_ids: Iterable[int], current_version: str, latest_version: str) -> None:
+    ids = list({int(x) for x in target_ids if int(x) > 10})
+    if not ids:
+        return
+
+    start_text = constant_text.AUTO_UPDATE_START_TEXT.format(
+        from_version=current_version,
+        to_version=latest_version,
+    )
+    for admin_id in ids:
+        await _safe_send(admin_id, start_text, include_snooze=False)
+
+    ok = await asyncio.to_thread(download_and_extract_github_repo)
+
+    if not ok:
+        for admin_id in ids:
+            await _safe_send(admin_id, constant_text.AUTO_UPDATE_FAILED_TEXT, include_snooze=False)
+        return
+
+    done_text = constant_text.AUTO_UPDATE_DONE_TEXT.format(to_version=latest_version)
+    for admin_id in ids:
+        await _safe_send(admin_id, done_text, include_snooze=False)
+
+    await asyncio.sleep(2)
+    _restart_process()
+
+
+@update_scheduler.scheduled_job("interval", minutes=30)
+async def version_check_job() -> None:
+    async with _update_lock:
+        current_version = get_local_version()
+        latest_version = await _fetch_remote_version()
+
+        if not latest_version or not is_newer_version(current_version, latest_version):
+            return
+
+        now_ts = int(time.time())
+        notify_text = constant_text.UPDATE_NOTIFY_TEXT.format(
+            current_version=current_version,
+            latest_version=latest_version,
+        )
+
+        admin_ids = await _collect_admin_ids()
+        auto_update_targets: list[int] = []
+
+        for admin_id in admin_ids:
+            snooze_until, last_notified = await get_user_update_notification_state(admin_id)
+            auto_update_enabled = await get_user_auto_update_enabled(admin_id)
+
+            if auto_update_enabled == 1:
+                auto_update_targets.append(admin_id)
+
+            if now_ts < int(snooze_until):
+                continue
+
+            if (now_ts - int(last_notified)) < NOTIFY_INTERVAL_SEC:
+                continue
+
+            sent = await _safe_send(admin_id, notify_text, include_snooze=True)
+            if sent:
+                await set_user_update_last_notified(admin_id, now_ts)
+
+        if auto_update_targets:
+            await _run_auto_update(auto_update_targets, current_version, latest_version)
+
+
+async def start_update_notifier() -> None:
+    if update_scheduler.running:
+        return
+
+    bot_logger.info("Starting update notifier scheduler")
+    update_scheduler.start()

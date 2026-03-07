@@ -1,18 +1,16 @@
-from dateutil import tz
-
-from datetime import datetime, timedelta
+﻿from datetime import datetime, timedelta, timezone
 
 
-
-def get_difference_time(date: datetime):
-    _tz = tz.gettz("Europe/Moscow")
-    date = date.replace(tzinfo=_tz)
-    return abs(int(date.timestamp() - datetime.now(tz=_tz).timestamp()))
+def get_difference_time(date: datetime, offset_hours: int = 3):
+    tz = timezone(timedelta(hours=offset_hours))
+    date = date.replace(tzinfo=tz)
+    return abs(int(date.timestamp() - datetime.now(tz=tz).timestamp()))
 
 
 class DateTime:
-    def __init__(self):
-        self.time_zone = tz.gettz("Europe/Moscow")
+    def __init__(self, offset_hours: int = 3):
+        self.offset_hours = int(offset_hours)
+        self.time_zone = timezone(timedelta(hours=self.offset_hours))
 
     def now(self):
         return datetime.now(tz=self.time_zone)
@@ -30,8 +28,6 @@ class DateTime:
         return self.now() + timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
 
     def get_normalize_delta_time(self, days: int = 0):
-        # 05.30 00:00 (-1) ->
-
         if self.now().hour != 0 and self.now().minute != 0:
             days += 1
 
@@ -41,10 +37,5 @@ class DateTime:
         dt_object = datetime.fromtimestamp(_timestamp, tz=self.time_zone)
         return {
             "dt": dt_object,
-            "str": dt_object.strftime(strftime)
+            "str": dt_object.strftime(strftime),
         }
-
-
-
-
-
