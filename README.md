@@ -1,9 +1,12 @@
 ﻿# Gemini Message Manager TG
 
+> ⚠️ **Use at your own risk:** только личные аккаунты и личное использование. Возможна блокировка Telegram-аккаунта при частых запросах.
+
 ![Python](https://img.shields.io/badge/Python-3.14-blue)
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D6)
 ![Database](https://img.shields.io/badge/Database-PostgreSQL-336791)
 ![ORM](https://img.shields.io/badge/ORM-SQLModel-0F766E)
+![Bot](https://img.shields.io/badge/aiogram-3.x-2f7ed8)
 
 Менеджер Telegram-аккаунтов для личного использования.
 
@@ -17,13 +20,18 @@
   - удалённые чаты
   - опционально: боты и каналы
 - Получение временных вложений (TTL/спойлер-медиа) в админ-бот
+- ИИ-ответы через Gemini:
+  - команда через префикс `.` (например: `.привет`)
+  - поддержка текста, фото, видео, video note (кружок), voice/audio
+  - учитывает контекст текущего диалога
 - Статистика стабильности сессий и проверок (по часам/дням)
 
 ## Технический стек
 - Python: `3.14.x`
-- Telegram Bot API: `aiogram`
+- Telegram Bot API: `aiogram 3.x`
 - User-аккаунты Telegram: `pyrofork`
-- База данных: `PostgreSQL` (локально)
+- ИИ: `google-generativeai` (Gemini)
+- База данных: `PostgreSQL` (локальная рекомендуется)
 - ORM: `SQLModel` + `SQLAlchemy Async`
 
 ## База данных
@@ -31,6 +39,8 @@
 - создаёт БД (если отсутствует)
 - создаёт таблицы
 - добавляет недостающие колонки (базовая авто-миграция схемы)
+
+Можно использовать удалённую PostgreSQL БД, но это не рекомендуется из-за рисков утечки данных/сессий.
 
 ## Запуск
 1. Скопировать `data/config_sample.py` в `data/config.py`.
