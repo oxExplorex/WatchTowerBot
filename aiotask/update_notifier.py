@@ -12,6 +12,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import data.text as constant_text
 from core.logging import bot_logger
 from core.process_control import restart_current_process
+from core.session_runtime import stop_all_clients
 from core.versioning import get_local_version, get_remote_version_url, is_newer_version
 from data.config import admin_id_list
 from db.main import (
@@ -98,6 +99,7 @@ async def _run_auto_update(target_ids: Iterable[int], current_version: str, late
     for admin_id in ids:
         await _safe_send(admin_id, start_text, include_snooze=False)
 
+    await stop_all_clients()
     ok = await asyncio.to_thread(download_and_extract_github_repo)
 
     if not ok:

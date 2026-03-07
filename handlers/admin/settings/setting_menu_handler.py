@@ -12,7 +12,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import data.text as constant_text
 from core.process_control import restart_current_process
-from core.session_runtime import stop_client
+from core.session_runtime import stop_all_clients
 from core.versioning import get_local_version, get_remote_version_url, is_newer_version
 from db.main import (
     get_accounts_overview,
@@ -25,7 +25,7 @@ from db.main import (
     set_user_update_snooze_until,
 )
 from filters.all_filters import IsAdmin, IsPrivate
-from loader import apps_session, router
+from loader import router
 from update_bot import download_and_extract_github_repo
 from utils.datetime_tools import DateTime
 from utils.others import not_warning_delete_message
@@ -252,18 +252,30 @@ async def _settings_text(admin_id: int) -> str:
 async def _settings_inline(admin_id: int):
     tz_offset = await get_user_timezone_offset(admin_id)
     auto_update = await get_user_auto_update_enabled(admin_id)
+    local_version = get_local_version()
+    _, _, latest_version = await _get_version_state(force=False)
+    has_update = bool(latest_version and is_newer_version(local_version, latest_version))
 
     keyboard = InlineKeyboardBuilder()
-    keyboard.row(
-        InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_RUN_UPDATE,
-            callback_data="set:update:run",
-        ),
-        InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_CHECK_UPDATE,
-            callback_data="set:update:check",
-        ),
-    )
+    if has_update:
+        keyboard.row(
+            InlineKeyboardButton(
+                text=constant_text.SETTINGS_BTN_RUN_UPDATE,
+                callback_data="set:update:run",
+            ),
+            InlineKeyboardButton(
+                text=constant_text.SETTINGS_BTN_CHECK_UPDATE,
+                callback_data="set:update:check",
+            ),
+        )
+    else:
+        keyboard.row(
+            InlineKeyboardButton(
+                text=constant_text.SETTINGS_BTN_CHECK_UPDATE,
+                callback_data="set:update:check",
+            ),
+        )
+
     keyboard.row(
         InlineKeyboardButton(
             text=constant_text.SETTINGS_BTN_AUTO_UPDATE.format(state=_auto_update_label(auto_update)),
@@ -378,8 +390,7 @@ async def run_update_now_handler(call: CallbackQuery, state: FSMContext):
         constant_text.AUTO_UPDATE_START_TEXT.format(from_version=local_version, to_version=latest_version)
     )
 
-    for app in list(apps_session):
-        await stop_client(app)
+    await stop_all_clients()
 
     ok = await asyncio.to_thread(download_and_extract_github_repo)
     if not ok:
@@ -469,9 +480,7 @@ async def reboot_from_settings_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
     await call.message.edit_text(constant_text.RESTARTING_TEXT)
-    for app in list(apps_session):
-        await stop_client(app)
-
+    await stop_all_clients()
     restart_current_process()
 
 

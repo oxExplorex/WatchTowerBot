@@ -1,3 +1,4 @@
+import asyncio
 import os
 import traceback
 
@@ -15,13 +16,31 @@ def session_number_from_client(app_session) -> str | None:
 
 async def stop_client(app_session) -> None:
     try:
-        if getattr(app_session, "is_initialized", False):
-            await app_session.stop()
-            return
-        if getattr(app_session, "is_connected", False):
-            await app_session.disconnect()
+        stop_method = getattr(app_session, "stop", None)
+        if callable(stop_method):
+            await stop_method()
+
+        disconnect_method = getattr(app_session, "disconnect", None)
+        if callable(disconnect_method):
+            await disconnect_method()
     except Exception:
         bot_logger.error(traceback.format_exc())
+
+
+async def stop_all_clients(clear_runtime: bool = True) -> int:
+    from loader import apps_session
+
+    stopped = 0
+    for app_session in list(apps_session):
+        await stop_client(app_session)
+        stopped += 1
+
+    if clear_runtime:
+        apps_session.clear()
+
+    # Give Windows file handles a short grace period to release .session files.
+    await asyncio.sleep(0.2)
+    return stopped
 
 
 async def remove_client_from_runtime(app_session) -> None:
@@ -65,6 +84,7 @@ def is_session_running(number: str) -> bool:
             return True
 
     return False
+
 
 def get_client_by_number(number: str):
     from loader import apps_session
