@@ -176,6 +176,13 @@ async def _get_version_state(force: bool = False) -> tuple[str, int, str | None]
     return state, now_ts, latest_version
 
 
+def _get_cached_version_state() -> tuple[str, int, str | None]:
+    return (
+        str(_VERSION_CACHE["state"]),
+        int(_VERSION_CACHE["checked_at"] or 0),
+        _VERSION_CACHE["latest"],
+    )
+
 def _minutes_ago(ts_value: int) -> int:
     if ts_value <= 0:
         return 0
@@ -231,7 +238,7 @@ async def _send_stats(message: Message, admin_only: bool) -> None:
 
 async def _settings_text(admin_id: int) -> str:
     tz_offset = await get_user_timezone_offset(admin_id)
-    version_state, checked_at, _ = await _get_version_state(force=False)
+    version_state, checked_at, _ = _get_cached_version_state()
 
     return constant_text.SETTINGS_MENU_TITLE.format(
         bot_version=get_local_version(),
@@ -245,7 +252,7 @@ async def _settings_inline(admin_id: int):
     tz_offset = await get_user_timezone_offset(admin_id)
     auto_update = await get_user_auto_update_enabled(admin_id)
     local_version = get_local_version()
-    _, _, latest_version = await _get_version_state(force=False)
+    _, _, latest_version = _get_cached_version_state()
     has_update = bool(latest_version and is_newer_version(local_version, latest_version))
 
     keyboard = InlineKeyboardBuilder()
