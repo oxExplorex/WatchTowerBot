@@ -18,6 +18,7 @@ def _is_expected_stop_error(exc: Exception) -> bool:
     expected_markers = (
         "already terminated",
         "already disconnected",
+        "can't disconnect an initialized client",
         "not been started yet",
         "already stopped",
         "client is stopped",
@@ -26,6 +27,12 @@ def _is_expected_stop_error(exc: Exception) -> bool:
 
 
 async def _disconnect_client(app_session) -> None:
+    # In pyrofork disconnect() is valid only for connected-not-initialized clients.
+    if getattr(app_session, "is_initialized", False):
+        return
+    if not getattr(app_session, "is_connected", False):
+        return
+
     disconnect_method = getattr(app_session, "disconnect", None)
     try:
         if callable(disconnect_method):
