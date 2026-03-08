@@ -16,6 +16,7 @@ from core.process_control import restart_current_process
 from core.session_runtime import stop_all_clients
 from core.versioning import fetch_remote_version, get_local_version, get_remote_version_url, is_newer_version
 from db.main import (
+    disable_user_gemini_proxy,
     get_accounts_overview,
     get_admin_health_events,
     get_all_health_events,
@@ -89,7 +90,7 @@ def _gemini_runtime_label(proxy_cfg: dict) -> str:
     proxy = (proxy_cfg.get("proxy") or "").strip()
 
     if not enabled or not proxy:
-        return "direct (no proxy)"
+        return constant_text.SETTINGS_GEMINI_STATUS_PROXY_MISSING_TEXT
     if status == 1:
         return constant_text.SETTINGS_GEMINI_STATUS_OK_TEXT
 
@@ -101,9 +102,14 @@ def _gemini_runtime_label(proxy_cfg: dict) -> str:
 def _proxy_status_label(proxy_cfg: dict) -> str:
     enabled = int(proxy_cfg.get("enabled", 0) or 0)
     status = int(proxy_cfg.get("status", 0) or 0)
+    checked_at = int(proxy_cfg.get("checked_at", 0) or 0)
+    last_error = (proxy_cfg.get("last_error") or "").strip()
+
     if not enabled:
         return constant_text.SETTINGS_PROXY_STATE_OFF_TEXT
     if status == 1:
+        return constant_text.SETTINGS_PROXY_STATE_OK_TEXT
+    if checked_at > 0 and not last_error:
         return constant_text.SETTINGS_PROXY_STATE_OK_TEXT
     return constant_text.SETTINGS_PROXY_STATE_PENDING_TEXT
 
@@ -306,17 +312,19 @@ async def _settings_inline(admin_id: int):
 
     keyboard = InlineKeyboardBuilder()
 
-    update_row = [
+    keyboard.row(
         InlineKeyboardButton(
             text=constant_text.SETTINGS_BTN_AUTO_UPDATE.format(state=_auto_update_label(auto_update)),
             callback_data=f"set:au:{0 if auto_update else 1}",
-        ),
+        )
+    )
+
+    keyboard.row(
         InlineKeyboardButton(
             text=constant_text.SETTINGS_BTN_CHECK_UPDATE,
             callback_data="set:update:check",
-        ),
-    ]
-    keyboard.row(*update_row)
+        )
+    )
 
     if has_update:
         keyboard.row(
@@ -330,6 +338,12 @@ async def _settings_inline(admin_id: int):
         InlineKeyboardButton(
             text=constant_text.SETTINGS_BTN_PROXY.format(state=_proxy_status_label(proxy_cfg)),
             callback_data="set:proxy:open",
+        )
+    )
+    keyboard.row(
+        InlineKeyboardButton(
+            text=constant_text.SETTINGS_BTN_PROXY_DISABLE,
+            callback_data="set:proxy:disable",
         ),
         InlineKeyboardButton(
             text=constant_text.SETTINGS_BTN_PROXY_CHECK,
@@ -483,6 +497,14 @@ async def run_update_now_handler(call: CallbackQuery, state: FSMContext):
         done_text=constant_text.MANUAL_UPDATE_DONE_TEXT,
         failed_text=constant_text.MANUAL_UPDATE_FAILED_TEXT,
     )
+
+
+@router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:proxy:disable", StateFilter("*"))
+async def disable_proxy_from_settings_handler(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await disable_user_gemini_proxy(call.from_user.id, reason="manual_disable")
+    await call.answer(constant_text.PROXY_DISABLED_TEXT)
+    await _safe_edit_settings(call)
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("set:au:"), StateFilter("*"))

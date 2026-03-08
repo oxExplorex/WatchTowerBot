@@ -8,7 +8,6 @@ from aiogram.types import CallbackQuery, Message
 import data.text as constant_text
 from data.config import GEMINI_KEY
 from db.main import (
-    disable_user_gemini_proxy,
     get_user_gemini_proxy_config,
     get_user_timezone_offset,
     set_user_gemini_proxy,
@@ -24,9 +23,13 @@ from utils.proxy_utils import compact_proxy_display, normalize_http_proxy_input
 def _proxy_status_label(proxy_cfg: dict) -> str:
     enabled = int(proxy_cfg.get("enabled", 0) or 0)
     status = int(proxy_cfg.get("status", 0) or 0)
+    checked_at = int(proxy_cfg.get("checked_at", 0) or 0)
+    last_error = (proxy_cfg.get("last_error") or "").strip()
     if not enabled:
         return constant_text.PROXY_STATUS_DISABLED_TEXT
     if status == 1:
+        return constant_text.PROXY_STATUS_OK_TEXT
+    if checked_at > 0 and not last_error:
         return constant_text.PROXY_STATUS_OK_TEXT
     return constant_text.PROXY_STATUS_PENDING_TEXT
 
@@ -129,15 +132,6 @@ async def save_proxy_handler(message: Message, state: FSMContext):
     if text in {"/start", "/cancel", constant_text.ACTION_CANCEL_TEXT, constant_text.SETTINGS_BOT_KEYBOARD[2]}:
         await state.clear()
         await message.answer(constant_text.ACTION_CANCELLED_TEXT)
-        return
-
-    if text == "0":
-        await disable_user_gemini_proxy(message.from_user.id, reason="manual_disable")
-        cfg = await get_user_gemini_proxy_config(message.from_user.id)
-        tz_offset = await get_user_timezone_offset(message.from_user.id)
-        await message.answer(constant_text.PROXY_DISABLED_TEXT)
-        await message.answer(_proxy_menu_text(cfg, tz_offset))
-        await state.set_state(AdminStates.wait_proxy_manager)
         return
 
     proxy_url = normalize_http_proxy_input(text)
