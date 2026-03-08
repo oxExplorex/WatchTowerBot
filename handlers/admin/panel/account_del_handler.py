@@ -1,3 +1,4 @@
+import asyncio
 import glob
 import os
 from contextlib import suppress
@@ -62,9 +63,10 @@ async def account_delete_handler(call: CallbackQuery, state: FSMContext):
     await stop_and_remove_session(account.number)
 
     if await del_account_uuid(account.uuid, call.from_user.id):
-        for session_path in glob.glob(f"data/session/{account.number}*"):
+        session_paths = await asyncio.to_thread(glob.glob, f"data/session/{account.number}*")
+        for session_path in session_paths:
             with suppress(OSError):
-                os.remove(session_path)
+                await asyncio.to_thread(os.remove, session_path)
 
         await call.message.edit_text(constant_text.SUCCESS_DEL_ACCOUNT_TEXT)
         return

@@ -1,3 +1,4 @@
+import asyncio
 import glob
 import os
 from contextlib import suppress
@@ -103,6 +104,19 @@ def _session_files_exist(number: str | None) -> bool:
     return bool(glob.glob(f"data/session/{number}*"))
 
 
+async def _session_files_exist_async(number: str | None) -> bool:
+    return await asyncio.to_thread(_session_files_exist, number)
+
+
+async def _remove_session_files(number: str | None) -> None:
+    if not number:
+        return
+    session_paths = await asyncio.to_thread(glob.glob, f"data/session/{number}*")
+    for session_path in session_paths:
+        with suppress(OSError):
+            await asyncio.to_thread(os.remove, session_path)
+
+
 def _is_fatal_session_error(exc: Exception) -> bool:
     if exc.__class__.__name__ in FATAL_SESSION_ERROR_NAMES:
         return True
@@ -160,9 +174,7 @@ async def _drop_dead_session_from_editor(call: CallbackQuery, account: Account, 
         reason=f"manual_drop:{reason}",
     )
 
-    for session_path in glob.glob(f"data/session/{account.number}*"):
-        with suppress(OSError):
-            os.remove(session_path)
+    await _remove_session_files(account.number)
 
     with suppress(Exception):
         await call.message.answer(constant_text.ACCOUNT_INVALID_REMOVED_TEXT)
@@ -350,7 +362,7 @@ async def account_check_handler(call: CallbackQuery, state: FSMContext):
     if client is None:
         await add_account_health_event(account.uuid, account.admin_id, account.user_id, 0, now_ts, "not_running")
 
-        if account.is_active and not _session_files_exist(account.number):
+        if account.is_active and not await _session_files_exist_async(account.number):
             await _drop_dead_session_from_editor(call, account, "not_running_no_session_file")
             await call.answer(constant_text.ACCOUNT_SESSION_REMOVED_NO_FILE_TOAST)
             return await _show_accounts_or_close(call)

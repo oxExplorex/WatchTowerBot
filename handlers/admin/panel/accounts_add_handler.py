@@ -33,7 +33,7 @@ async def _cleanup_session_files(number: str) -> None:
     for path in session_paths:
         for attempt in range(3):
             try:
-                os.remove(path)
+                await asyncio.to_thread(os.remove, path)
                 break
             except FileNotFoundError:
                 break

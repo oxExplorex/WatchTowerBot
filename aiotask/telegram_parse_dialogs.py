@@ -153,6 +153,8 @@ async def __tg_parse_dialogs_handler() -> None:
         runtime_sessions: list[Client] = [app for app in apps_session if isinstance(app, Client)]
 
         for app_session in runtime_sessions:
+            # Yield control between sessions to keep the event loop responsive.
+            await asyncio.sleep(0)
             account_settings = None
             try:
                 session_number = session_number_from_client(app_session)
@@ -208,7 +210,12 @@ async def __tg_parse_dialogs_handler() -> None:
                 filtered_out_count = 0
 
                 try:
+                    scanned_count = 0
                     async for dialog in app_session.get_dialogs(limit=total_dialogs + 15):
+                        scanned_count += 1
+                        if scanned_count % 100 == 0:
+                            # Long scans should not monopolize the loop.
+                            await asyncio.sleep(0)
                         chat = dialog.chat
                         chat_id = chat.id
                         seen_chat_ids.add(chat_id)
