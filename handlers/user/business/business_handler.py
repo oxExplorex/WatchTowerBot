@@ -19,8 +19,6 @@ async def any_business_message_handler(message: Message):
     username = message.chat.username
     chat_name = message.chat.full_name or message.chat.title
 
-    bot_logger.info(f"message: {message}")
-
     if await get_dump_chat_user(admin_id, chat_id):
         return
 
