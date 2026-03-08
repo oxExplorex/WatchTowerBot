@@ -6,6 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 import data.text as constant_text
+from core.logging import bot_logger
 from data.config import GEMINI_KEY
 from db.main import (
     get_user_gemini_proxy_config,
@@ -49,16 +50,15 @@ def _proxy_menu_text(proxy_cfg: dict, tz_offset: int) -> str:
     checked_line = _checked_at_label(checked_at, tz_offset)
     error_line = last_error[:120] if last_error else constant_text.PROXY_MENU_NO_DATA_TEXT
 
-    rendered = constant_text.PROXY_MENU_PROMPT_TEXT.format(
+    return constant_text.PROXY_MENU_PROMPT_TEXT.format(
         proxy=proxy_text,
         status=status_text,
         checked_at=checked_line,
         error=error_line,
-    )
-    return rendered.replace("(unix)", "")
+    ).replace("(unix)", "")
 
 
-async def _check_proxy(admin_id: int, proxy_url: str) -> tuple[bool, str]:
+async def _check_proxy_now(admin_id: int, proxy_url: str) -> tuple[bool, str]:
     if not GEMINI_KEY:
         return False, constant_text.PROXY_GEMINI_KEY_EMPTY_TEXT
 
@@ -70,15 +70,16 @@ async def _check_proxy(admin_id: int, proxy_url: str) -> tuple[bool, str]:
 
     try:
         await client.aio.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3.1-flash-lite-preview",
             contents="ping",
         )
         await set_user_gemini_proxy_health(admin_id, is_ok=True)
         return True, "ok"
     except Exception as exc:
-        err = str(exc)[:220]
-        await set_user_gemini_proxy_health(admin_id, is_ok=False, error=err)
-        return False, err
+        error_text = str(exc)[:220]
+        bot_logger.exception("Proxy check failed in proxy_menu_handler")
+        await set_user_gemini_proxy_health(admin_id, is_ok=False, error=error_text)
+        return False, error_text
 
 
 @router.message(IsPrivate(), IsAdmin(), F.text.in_(constant_text.PROXY_USER_KEYBOARD), StateFilter("*"))
@@ -100,31 +101,6 @@ async def open_proxy_menu_from_settings_handler(call: CallbackQuery, state: FSMC
     await call.answer()
 
 
-@router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:proxy:check", StateFilter("*"))
-async def check_proxy_handler(call: CallbackQuery, state: FSMContext):
-    await state.clear()
-    cfg = await get_user_gemini_proxy_config(call.from_user.id)
-    proxy = cfg.get("proxy")
-    enabled = int(cfg.get("enabled", 0) or 0)
-
-    if not enabled or not proxy:
-        await call.answer(getattr(constant_text, "PROXY_CHECK_SKIPPED_NO_PROXY_TEXT", "Proxy is disabled"))
-        tz_offset = await get_user_timezone_offset(call.from_user.id)
-        await call.message.edit_text(_proxy_menu_text(cfg, tz_offset))
-        return
-
-    ok, reason = await _check_proxy(call.from_user.id, str(proxy))
-    cfg = await get_user_gemini_proxy_config(call.from_user.id)
-
-    if ok:
-        await call.answer(constant_text.PROXY_CHECK_OK_TEXT)
-    else:
-        await call.answer(constant_text.PROXY_CHECK_FAIL_TEXT.format(reason=reason[:80]))
-
-    tz_offset = await get_user_timezone_offset(call.from_user.id)
-    await call.message.edit_text(_proxy_menu_text(cfg, tz_offset))
-
-
 @router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.wait_proxy_manager))
 async def save_proxy_handler(message: Message, state: FSMContext):
     text = (message.text or "").strip()
@@ -141,9 +117,12 @@ async def save_proxy_handler(message: Message, state: FSMContext):
         return
 
     await set_user_gemini_proxy(message.from_user.id, proxy_url)
-    cfg = await get_user_gemini_proxy_config(message.from_user.id)
-    tz_offset = await get_user_timezone_offset(message.from_user.id)
+    await state.clear()
 
-    await message.answer(constant_text.PROXY_SET_TEXT)
-    await message.answer(_proxy_menu_text(cfg, tz_offset))
-    await state.set_state(AdminStates.wait_proxy_manager)
+    probe = await message.answer(constant_text.PROXY_CHECKING_TEXT)
+    ok, reason = await _check_proxy_now(message.from_user.id, proxy_url)
+
+    if ok:
+        await probe.edit_text(constant_text.PROXY_SET_AND_CHECK_OK_TEXT)
+    else:
+        await probe.edit_text(constant_text.PROXY_CHECK_FAIL_TEXT.format(reason=reason[:160]))

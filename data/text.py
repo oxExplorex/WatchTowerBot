@@ -1,6 +1,6 @@
 ﻿EMOJI_YES_OR_NO_TEXT = ["✅", "❌"]
 
-START_MESSAGE_TEXT = "Бот запущен. Откройте «⚙️ Настройки» для информации и управления."
+START_MESSAGE_TEXT = "Бот запущен. Перейдите в раздел «⚙️ Настройки»."
 NOTICE_ADMINISTRATOR_TO_ACTIVE_BOT = "Бот запущен"
 
 APPS_COUNT_INFO_TEXT = (
@@ -147,7 +147,7 @@ PROXY_MENU_PROMPT_TEXT = (
     "• <code>ip:port@user:password</code>\n"
     "• <code>http://user:password@ip:port</code>"
 )
-PROXY_SET_TEXT = "✅ Прокси сохранен и включен"
+PROXY_SET_TEXT = "✅ Прокси сохранен"
 PROXY_DISABLED_TEXT = "✅ Прокси отключен. Gemini попробует работать без него."
 PROXY_INVALID_FORMAT_TEXT = "❌ Формат прокси некорректный. Поддерживаются только HTTP: ip:port:user:password, ip:port@user:password или http://user:password@ip:port"
 RESTARTING_TEXT = "Перезапускаю..."
@@ -232,13 +232,15 @@ TIMEZONE_BTN_SELECTED = "✅ {label}"
 TIMEZONE_BTN_RESET = "🔄 Сбросить до +3"
 
 SETTINGS_MENU_TITLE = (
-    "<b>⚙️ Настройки</b>\n\n"
+    "<b>Настройки</b>\n\n"
     "Версия бота: <code>{bot_version}</code>\n"
     "Статус версии: <b>{version_state}</b>\n"
     "Последняя проверка: <b>{last_check_ago}</b> мин назад\n\n"
-    "Парсер чатов: <b>{parser_status}</b>\n"
-    "Gemini: <b>{gemini_status}</b>\n"
-    "Прокси Gemini: <b>{proxy_status}</b>\n\n"
+    "Мониторинг аккаунтов: <b>{parser_status}</b>\n"
+    "Gemini-ответы: <b>{gemini_status}</b>\n"
+    "HTTP-прокси Gemini: <b>{proxy_status}</b>\n"
+    "Текущий HTTP-прокси: <code>{current_proxy}</code>\n\n"
+    "***\n\n"
     "<code>{date}</code>"
 )
 VERSION_STATE_UNKNOWN = "⚪ Неизвестно"
@@ -335,20 +337,23 @@ PROXY_MENU_NO_DATA_TEXT = "нет данных"
 PROXY_GEMINI_KEY_EMPTY_TEXT = "GEMINI_KEY пустой"
 
 SETTINGS_STATUS_NO_DATA_TEXT = "⚫ нет данных"
-SETTINGS_PARSER_STATUS_OK_TEXT = "🟢 работает"
-SETTINGS_PARSER_STATUS_STALE_TEXT = "🟡 давно не проверялся"
-SETTINGS_PARSER_STATUS_ERROR_TEXT = "🔴 ошибка"
+SETTINGS_PARSER_STATUS_OK_TEXT = "🟢 активен"
+SETTINGS_PARSER_STATUS_STALE_TEXT = "🟡 давно не было активности"
+SETTINGS_PARSER_STATUS_ERROR_TEXT = "🔴 ошибка (см. логи)"
 
 SETTINGS_GEMINI_STATUS_KEY_MISSING_TEXT = "🔴 ключ не задан"
 SETTINGS_GEMINI_STATUS_PROXY_MISSING_TEXT = "🟡 без прокси"
 SETTINGS_GEMINI_STATUS_OK_TEXT = "🟢 работает"
 SETTINGS_GEMINI_STATUS_PROXY_ERROR_TEXT = "🔴 ошибка прокси"
-SETTINGS_GEMINI_STATUS_PENDING_TEXT = "🟡 не проверен"
+SETTINGS_GEMINI_STATUS_PENDING_TEXT = "🟡 не было проверки"
 
 SETTINGS_PROXY_STATE_OFF_TEXT = "🔴 выключен"
-SETTINGS_PROXY_STATE_OK_TEXT = "🟢 ok"
-SETTINGS_PROXY_STATE_PENDING_TEXT = "🟡 check"
+SETTINGS_PROXY_STATE_OK_TEXT = "🟢 работает"
+SETTINGS_PROXY_STATE_PENDING_TEXT = "🟡 не проверен"
 
 GEMINI_PROMPT_ADMIN_PLACEHOLDER = "[Здесь перечислить user_id через запятую]"
 
 GEMINI_TEST_PROMPT_TEXT = "Привет, напиши небольшой рассказ на любую тему в пределах 1000 символов"
+
+PROXY_CHECKING_TEXT = "⏳ Проверяю прокси..."
+PROXY_SET_AND_CHECK_OK_TEXT = "✅ Прокси сохранен и прошел проверку"

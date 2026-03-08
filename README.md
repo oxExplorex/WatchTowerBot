@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Ubuntu-4c9a2a" alt="Platform" />
 </p>
 
-<p><b>Менеджер Telegram-аккаунтов для персональной автоматизации.</b></p>
+<p><b>Менеджер Telegram-аккаунтов для личной автоматизации.</b></p>
 
 
 

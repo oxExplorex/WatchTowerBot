@@ -21,7 +21,7 @@ from loader import bot, gemini_system_instruction
 from utils.proxy_utils import normalize_http_proxy_input
 
 
-_GEMINI_MODEL_NAME = "gemini-2.0-flash"
+_GEMINI_MODEL_NAME = "gemini-3.1-flash-lite-preview"
 
 
 def _response_text(response: object) -> str:
