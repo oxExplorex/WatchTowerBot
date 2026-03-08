@@ -1,4 +1,4 @@
-﻿from google import genai
+from google import genai
 from google.genai import types
 from aiogram import F
 from aiogram.filters import StateFilter
@@ -10,12 +10,14 @@ from data.config import GEMINI_KEY
 from db.main import (
     disable_user_gemini_proxy,
     get_user_gemini_proxy_config,
+    get_user_timezone_offset,
     set_user_gemini_proxy,
     set_user_gemini_proxy_health,
 )
 from filters.all_filters import IsAdmin, IsPrivate
 from handlers.admin.states import AdminStates
 from loader import router
+from utils.datetime_tools import DateTime
 from utils.proxy_utils import compact_proxy_display, normalize_http_proxy_input
 
 
@@ -29,21 +31,28 @@ def _proxy_status_label(proxy_cfg: dict) -> str:
     return constant_text.PROXY_STATUS_PENDING_TEXT
 
 
-def _proxy_menu_text(proxy_cfg: dict) -> str:
+def _checked_at_label(checked_at: int, tz_offset: int) -> str:
+    if checked_at <= 0:
+        return constant_text.PROXY_MENU_NO_DATA_TEXT
+    return DateTime(tz_offset).convert_timestamp(checked_at, "%d.%m.%Y %H:%M:%S")["str"]
+
+
+def _proxy_menu_text(proxy_cfg: dict, tz_offset: int) -> str:
     proxy_text = compact_proxy_display(proxy_cfg.get("proxy"))
     status_text = _proxy_status_label(proxy_cfg)
     checked_at = int(proxy_cfg.get("checked_at", 0) or 0)
     last_error = (proxy_cfg.get("last_error") or "").strip()
 
-    checked_line = f"{checked_at}" if checked_at > 0 else constant_text.PROXY_MENU_NO_DATA_TEXT
+    checked_line = _checked_at_label(checked_at, tz_offset)
     error_line = last_error[:120] if last_error else constant_text.PROXY_MENU_NO_DATA_TEXT
 
-    return constant_text.PROXY_MENU_PROMPT_TEXT.format(
+    rendered = constant_text.PROXY_MENU_PROMPT_TEXT.format(
         proxy=proxy_text,
         status=status_text,
         checked_at=checked_line,
         error=error_line,
     )
+    return rendered.replace("(unix)", "")
 
 
 async def _check_proxy(admin_id: int, proxy_url: str) -> tuple[bool, str]:
@@ -73,7 +82,8 @@ async def _check_proxy(admin_id: int, proxy_url: str) -> tuple[bool, str]:
 async def open_proxy_menu_handler(message: Message, state: FSMContext):
     await state.clear()
     cfg = await get_user_gemini_proxy_config(message.from_user.id)
-    await message.answer(_proxy_menu_text(cfg))
+    tz_offset = await get_user_timezone_offset(message.from_user.id)
+    await message.answer(_proxy_menu_text(cfg, tz_offset))
     await state.set_state(AdminStates.wait_proxy_manager)
 
 
@@ -81,7 +91,8 @@ async def open_proxy_menu_handler(message: Message, state: FSMContext):
 async def open_proxy_menu_from_settings_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
     cfg = await get_user_gemini_proxy_config(call.from_user.id)
-    await call.message.edit_text(_proxy_menu_text(cfg))
+    tz_offset = await get_user_timezone_offset(call.from_user.id)
+    await call.message.edit_text(_proxy_menu_text(cfg, tz_offset))
     await state.set_state(AdminStates.wait_proxy_manager)
     await call.answer()
 
@@ -94,7 +105,9 @@ async def check_proxy_handler(call: CallbackQuery, state: FSMContext):
     enabled = int(cfg.get("enabled", 0) or 0)
 
     if not enabled or not proxy:
-        await call.answer(constant_text.GEMINI_PROXY_REQUIRED_TEXT)
+        await call.answer(getattr(constant_text, "PROXY_CHECK_SKIPPED_NO_PROXY_TEXT", "Proxy is disabled"))
+        tz_offset = await get_user_timezone_offset(call.from_user.id)
+        await call.message.edit_text(_proxy_menu_text(cfg, tz_offset))
         return
 
     ok, reason = await _check_proxy(call.from_user.id, str(proxy))
@@ -105,7 +118,8 @@ async def check_proxy_handler(call: CallbackQuery, state: FSMContext):
     else:
         await call.answer(constant_text.PROXY_CHECK_FAIL_TEXT.format(reason=reason[:80]))
 
-    await call.message.edit_text(_proxy_menu_text(cfg))
+    tz_offset = await get_user_timezone_offset(call.from_user.id)
+    await call.message.edit_text(_proxy_menu_text(cfg, tz_offset))
 
 
 @router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.wait_proxy_manager))
@@ -120,8 +134,9 @@ async def save_proxy_handler(message: Message, state: FSMContext):
     if text == "0":
         await disable_user_gemini_proxy(message.from_user.id, reason="manual_disable")
         cfg = await get_user_gemini_proxy_config(message.from_user.id)
+        tz_offset = await get_user_timezone_offset(message.from_user.id)
         await message.answer(constant_text.PROXY_DISABLED_TEXT)
-        await message.answer(_proxy_menu_text(cfg))
+        await message.answer(_proxy_menu_text(cfg, tz_offset))
         await state.set_state(AdminStates.wait_proxy_manager)
         return
 
@@ -133,9 +148,8 @@ async def save_proxy_handler(message: Message, state: FSMContext):
 
     await set_user_gemini_proxy(message.from_user.id, proxy_url)
     cfg = await get_user_gemini_proxy_config(message.from_user.id)
+    tz_offset = await get_user_timezone_offset(message.from_user.id)
 
     await message.answer(constant_text.PROXY_SET_TEXT)
-    await message.answer(_proxy_menu_text(cfg))
+    await message.answer(_proxy_menu_text(cfg, tz_offset))
     await state.set_state(AdminStates.wait_proxy_manager)
-
-

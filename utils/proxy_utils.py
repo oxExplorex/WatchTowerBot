@@ -1,4 +1,4 @@
-﻿import re
+import re
 
 import data.text as constant_text
 
@@ -21,7 +21,7 @@ def _valid_host(host: str) -> bool:
 
 
 def normalize_http_proxy_input(raw_value: str) -> str | None:
-    value = (raw_value or "").strip()
+    value = (raw_value or "").strip().rstrip("/")
     if not value:
         return None
 
@@ -36,27 +36,36 @@ def normalize_http_proxy_input(raw_value: str) -> str | None:
     else:
         core = value
 
+    core = core.strip()
+
+    # format: user:password@ip:port (already normalized without scheme)
+    if "@" in core:
+        left, right = core.split("@", 1)
+        left_parts = left.split(":", 1)
+        right_parts = right.split(":")
+        if len(left_parts) == 2 and len(right_parts) == 2:
+            user, password = left_parts
+            host, port = right_parts
+            if _valid_host(host) and _valid_port(port) and user and password:
+                return f"http://{user}:{password}@{host}:{port}"
+
     # format: ip:port:user:password
     parts = core.split(":")
     if len(parts) == 4:
         host, port, user, password = parts
-        if not (_valid_host(host) and _valid_port(port) and user and password):
-            return None
-        return f"http://{user}:{password}@{host}:{port}"
+        if _valid_host(host) and _valid_port(port) and user and password:
+            return f"http://{user}:{password}@{host}:{port}"
 
     # format: ip:port@user:password
     if "@" in core:
         left, right = core.split("@", 1)
         left_parts = left.split(":")
         right_parts = right.split(":")
-        if len(left_parts) != 2 or len(right_parts) != 2:
-            return None
-
-        host, port = left_parts
-        user, password = right_parts
-        if not (_valid_host(host) and _valid_port(port) and user and password):
-            return None
-        return f"http://{user}:{password}@{host}:{port}"
+        if len(left_parts) == 2 and len(right_parts) == 2:
+            host, port = left_parts
+            user, password = right_parts
+            if _valid_host(host) and _valid_port(port) and user and password:
+                return f"http://{user}:{password}@{host}:{port}"
 
     return None
 
@@ -75,5 +84,3 @@ def compact_proxy_display(proxy_url: str | None) -> str:
     else:
         user = creds
     return f"{user}:***@{hostpart}"
-
-

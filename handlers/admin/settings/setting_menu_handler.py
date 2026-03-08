@@ -89,7 +89,7 @@ def _gemini_runtime_label(proxy_cfg: dict) -> str:
     proxy = (proxy_cfg.get("proxy") or "").strip()
 
     if not enabled or not proxy:
-        return constant_text.SETTINGS_GEMINI_STATUS_PROXY_MISSING_TEXT
+        return "direct (no proxy)"
     if status == 1:
         return constant_text.SETTINGS_GEMINI_STATUS_OK_TEXT
 

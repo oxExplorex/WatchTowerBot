@@ -1,4 +1,4 @@
-﻿import traceback
+import traceback
 
 from google import genai
 from google.genai import types
@@ -124,6 +124,29 @@ def _build_text(text: str, message: Message, has_media: bool) -> str:
     return f"{prefix} {text}".strip()
 
 
+async def _request_gemini(parts: list[types.Part], proxy_url: str | None) -> str:
+    if proxy_url:
+        http_options = types.HttpOptions(
+            client_args={"proxy": proxy_url},
+            async_client_args={"proxy": proxy_url},
+        )
+        client = genai.Client(api_key=GEMINI_KEY, http_options=http_options)
+    else:
+        client = genai.Client(api_key=GEMINI_KEY)
+
+    config = types.GenerateContentConfig(
+        system_instruction=gemini_system_instruction or None,
+        safety_settings=SAFETY_SETTINGS,
+    )
+
+    response = await client.aio.models.generate_content(
+        model=_GEMINI_MODEL_NAME,
+        contents=[types.Content(role="user", parts=parts)],
+        config=config,
+    )
+    return _response_text(response)
+
+
 async def _generate_with_gemini(admin_id: int, parts: list[types.Part]) -> str:
     if not GEMINI_KEY:
         return constant_text.GEMINI_UNAVAILABLE_TEXT
@@ -132,43 +155,35 @@ async def _generate_with_gemini(admin_id: int, parts: list[types.Part]) -> str:
     proxy_raw = proxy_config.get("proxy")
     enabled = int(proxy_config.get("enabled", 0) or 0)
 
-    if not enabled or not proxy_raw:
-        return constant_text.GEMINI_PROXY_REQUIRED_TEXT
-
-    proxy_url = normalize_http_proxy_input(str(proxy_raw))
-    if not proxy_url:
-        await disable_user_gemini_proxy(admin_id, reason="invalid_proxy_format")
-        return constant_text.GEMINI_PROXY_INVALID_TEXT
-
-    http_options = types.HttpOptions(
-        client_args={"proxy": proxy_url},
-        async_client_args={"proxy": proxy_url},
-    )
-    client = genai.Client(api_key=GEMINI_KEY, http_options=http_options)
-
-    config = types.GenerateContentConfig(
-        system_instruction=gemini_system_instruction or None,
-        safety_settings=SAFETY_SETTINGS,
-    )
+    proxy_url: str | None = None
+    if enabled and proxy_raw:
+        proxy_url = normalize_http_proxy_input(str(proxy_raw))
+        if not proxy_url:
+            await disable_user_gemini_proxy(admin_id, reason="invalid_proxy_format")
+            await set_user_gemini_proxy_health(admin_id, is_ok=False, error="invalid_proxy_format")
+            return constant_text.GEMINI_PROXY_INVALID_TEXT
 
     try:
-        response = await client.aio.models.generate_content(
-            model=_GEMINI_MODEL_NAME,
-            contents=[types.Content(role="user", parts=parts)],
-            config=config,
-        )
+        answer = await _request_gemini(parts, proxy_url=proxy_url)
         await set_user_gemini_proxy_health(admin_id, is_ok=True)
-        return _response_text(response)
+        return answer
     except Exception as exc:
         error_text = str(exc)
         await set_user_gemini_proxy_health(admin_id, is_ok=False, error=error_text[:250])
 
-        if _is_proxy_transport_error(exc):
+        # Proxy mode failed at transport layer: disable it and retry once without proxy.
+        if proxy_url and _is_proxy_transport_error(exc):
             await disable_user_gemini_proxy(admin_id, reason=error_text[:250])
             await _notify_proxy_disabled(admin_id, reason=error_text[:120])
-            return constant_text.GEMINI_PROXY_DOWN_TEXT
+            try:
+                return await _request_gemini(parts, proxy_url=None)
+            except Exception:
+                bot_logger.error(traceback.format_exc())
+                return getattr(constant_text, "GEMINI_PROXY_OR_VPN_HINT_TEXT", constant_text.GEMINI_UNAVAILABLE_TEXT)
 
         bot_logger.error(traceback.format_exc())
+        if not proxy_url:
+            return getattr(constant_text, "GEMINI_PROXY_OR_VPN_HINT_TEXT", constant_text.GEMINI_UNAVAILABLE_TEXT)
         return constant_text.GEMINI_UNAVAILABLE_TEXT
 
 
@@ -210,5 +225,3 @@ async def gemini_app_handler(client: Client, message: Message):
     except Exception:
         bot_logger.exception("Gemini generation failed")
         await message.edit_text(text=constant_text.GEMINI_UNAVAILABLE_TEXT)
-
-
