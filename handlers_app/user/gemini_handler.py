@@ -1,4 +1,5 @@
 import traceback
+import time
 
 from google import genai
 from google.genai import types
@@ -9,7 +10,7 @@ import data.text as constant_text
 import loader
 from core.logging import bot_logger
 from core.session_runtime import session_number_from_client
-from data.config import GEMINI_KEY
+from data.config import GEMINI_ACTION_DEBUG, GEMINI_KEY
 from data.gemini_safety import SAFETY_SETTINGS
 from db.main import (
     disable_user_gemini_proxy,
@@ -23,6 +24,13 @@ from utils.proxy_utils import normalize_http_proxy_input
 
 
 _GEMINI_MODEL_NAME = "gemini-3.1-flash-lite-preview"
+
+
+def _ai_debug(event: str, **fields) -> None:
+    if not GEMINI_ACTION_DEBUG:
+        return
+    payload = " ".join(f"{key}={value}" for key, value in fields.items())
+    bot_logger.debug(f"[ai] {event} {payload}".strip())
 
 
 def _response_text(response: object) -> str:
@@ -189,13 +197,35 @@ async def _generate_with_gemini(admin_id: int, parts: list[types.Part]) -> str:
 
 
 async def gemini_app_handler(client: Client, message: Message):
+    started_at = time.monotonic()
     session_number = session_number_from_client(client)
     account = await get_account_by_number(session_number) if session_number else None
     if not account or not account.is_active:
+        _ai_debug(
+            "skip_account",
+            session=session_number or "-",
+            message_id=message.id,
+        )
         return
 
     if not message.from_user or int(account.user_id) != int(message.from_user.id):
+        _ai_debug(
+            "skip_user_mismatch",
+            session=session_number or "-",
+            account_user_id=getattr(account, "user_id", None),
+            incoming_user_id=getattr(getattr(message, "from_user", None), "id", None),
+            message_id=message.id,
+        )
         return
+
+    owner_id = int(account.admin_id or account.user_id)
+    _ai_debug(
+        "start",
+        admin_id=owner_id,
+        user_id=message.from_user.id,
+        session=session_number or "-",
+        message_id=message.id,
+    )
 
     prompt_root = (message.text or message.caption or "").replace(".", "", 1).strip()
     reply_message = message.reply_to_message
@@ -219,10 +249,35 @@ async def gemini_app_handler(client: Client, message: Message):
     if not parts:
         parts = [types.Part.from_text(text=_build_text("?", message, has_media=False))]
 
+    _ai_debug(
+        "prepared",
+        admin_id=owner_id,
+        user_id=message.from_user.id,
+        session=session_number or "-",
+        message_id=message.id,
+        parts=len(parts),
+        has_media=1 if mime_type else 0,
+    )
+
     try:
-        owner_id = int(account.admin_id or account.user_id)
         answer_text = await _generate_with_gemini(owner_id, parts)
         await message.edit_text(text=answer_text)
+        _ai_debug(
+            "success",
+            admin_id=owner_id,
+            user_id=message.from_user.id,
+            session=session_number or "-",
+            message_id=message.id,
+            took_ms=int((time.monotonic() - started_at) * 1000),
+        )
     except Exception:
         bot_logger.exception("Gemini generation failed")
         await message.edit_text(text=constant_text.GEMINI_UNAVAILABLE_TEXT)
+        _ai_debug(
+            "failed",
+            admin_id=owner_id,
+            user_id=message.from_user.id,
+            session=session_number or "-",
+            message_id=message.id,
+            took_ms=int((time.monotonic() - started_at) * 1000),
+        )

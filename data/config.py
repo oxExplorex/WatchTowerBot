@@ -46,8 +46,21 @@ def _env_int_list(name: str, default: list[int] | None = None) -> list[int]:
     return result
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    token = value.strip().lower()
+    if token in {"1", "true", "yes", "y", "on"}:
+        return True
+    if token in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 TOKEN_BOT = _env_str("TOKEN_BOT", "")
 GEMINI_KEY = _env_str("GEMINI_KEY", "")
+GEMINI_ACTION_DEBUG = _env_bool("GEMINI_ACTION_DEBUG", False)
 
 # Database connection
 user = _env_str("DB_USER", "postgres")
