@@ -28,9 +28,15 @@ NOTIFY_INTERVAL_SEC = 60 * 60 * 24
 
 update_scheduler = AsyncIOScheduler()
 _update_lock = asyncio.Lock()
+_update_run_lock = asyncio.Lock()
+_update_running = False
 
 
-def _notification_keyboard(include_snooze: bool = True, include_update: bool = False):
+def _notification_keyboard(
+    include_snooze: bool = True,
+    include_update: bool = False,
+    include_close: bool = True,
+):
     keyboard = InlineKeyboardBuilder()
     if include_update:
         keyboard.row(
@@ -46,12 +52,13 @@ def _notification_keyboard(include_snooze: bool = True, include_update: bool = F
                 callback_data="upd:snooze",
             )
         )
-    keyboard.row(
-        InlineKeyboardButton(
-            text=constant_text.UPDATE_NOTIFY_BTN_CLOSE,
-            callback_data="upd:close",
+    if include_close:
+        keyboard.row(
+            InlineKeyboardButton(
+                text=constant_text.UPDATE_NOTIFY_BTN_CLOSE,
+                callback_data="upd:close",
+            )
         )
-    )
     return keyboard.as_markup()
 
 
@@ -68,6 +75,7 @@ async def _safe_send(
     text: str,
     include_snooze: bool = True,
     include_update: bool = False,
+    include_close: bool = True,
 ) -> bool:
     try:
         await bot.send_message(
@@ -76,6 +84,7 @@ async def _safe_send(
             reply_markup=_notification_keyboard(
                 include_snooze=include_snooze,
                 include_update=include_update,
+                include_close=include_close,
             ),
         )
         return True
@@ -88,32 +97,58 @@ def _restart_process() -> None:
     restart_current_process()
 
 
+async def try_acquire_update_run() -> bool:
+    global _update_running
+    async with _update_run_lock:
+        if _update_running:
+            return False
+        _update_running = True
+        return True
+
+
+async def release_update_run() -> None:
+    global _update_running
+    async with _update_run_lock:
+        _update_running = False
+
+
 async def _run_auto_update(target_ids: Iterable[int], current_version: str, latest_version: str) -> None:
     ids = list({int(x) for x in target_ids if int(x) > 10})
     if not ids:
         return
-
-    start_text = constant_text.AUTO_UPDATE_START_TEXT.format(
-        from_version=current_version,
-        to_version=latest_version,
-    )
-    for admin_id in ids:
-        await _safe_send(admin_id, start_text, include_snooze=False)
-
-    await stop_all_clients(for_restart=True)
-    ok = await asyncio.to_thread(download_and_extract_github_repo)
-
-    if not ok:
-        for admin_id in ids:
-            await _safe_send(admin_id, constant_text.AUTO_UPDATE_FAILED_TEXT, include_snooze=False)
+    if not await try_acquire_update_run():
+        bot_logger.info("Skip auto update: another update flow already running")
         return
 
-    done_text = constant_text.AUTO_UPDATE_DONE_TEXT.format(to_version=latest_version)
-    for admin_id in ids:
-        await _safe_send(admin_id, done_text, include_snooze=False)
+    try:
+        start_text = constant_text.AUTO_UPDATE_START_TEXT.format(
+            from_version=current_version,
+            to_version=latest_version,
+        )
+        for admin_id in ids:
+            await _safe_send(admin_id, start_text, include_snooze=False, include_close=False)
 
-    await asyncio.sleep(2)
-    _restart_process()
+        await stop_all_clients(for_restart=True)
+        ok = await asyncio.to_thread(download_and_extract_github_repo)
+
+        if not ok:
+            for admin_id in ids:
+                await _safe_send(
+                    admin_id,
+                    constant_text.AUTO_UPDATE_FAILED_TEXT,
+                    include_snooze=False,
+                    include_close=False,
+                )
+            return
+
+        done_text = constant_text.AUTO_UPDATE_DONE_TEXT.format(to_version=latest_version)
+        for admin_id in ids:
+            await _safe_send(admin_id, done_text, include_snooze=False, include_close=False)
+
+        await asyncio.sleep(2)
+        _restart_process()
+    finally:
+        await release_update_run()
 
 
 @update_scheduler.scheduled_job("interval", minutes=30)

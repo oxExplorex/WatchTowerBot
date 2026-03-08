@@ -30,6 +30,7 @@ from db.main import (
     set_version_state_cache,
 )
 from filters.all_filters import IsAdmin, IsPrivate
+from aiotask.update_notifier import release_update_run, try_acquire_update_run
 from handlers.admin.proxy_manager.proxy_checker import check_proxy_now
 from handlers.admin.settings.settings_helpers import (
     auto_update_label,
@@ -256,17 +257,24 @@ async def _run_update_flow(
     done_text: str,
     failed_text: str,
 ) -> None:
-    await message.edit_text(start_text.format(from_version=local_version, to_version=latest_version))
-
-    await stop_all_clients(for_restart=True)
-    ok = await asyncio.to_thread(download_and_extract_github_repo)
-    if not ok:
-        await message.answer(failed_text)
+    if not await try_acquire_update_run():
+        await message.answer(constant_text.SETTINGS_UPDATE_RUNNING_TOAST)
         return
 
-    await message.answer(done_text.format(to_version=latest_version))
-    await asyncio.sleep(2)
-    restart_current_process()
+    await message.edit_text(start_text.format(from_version=local_version, to_version=latest_version))
+
+    try:
+        await stop_all_clients(for_restart=True)
+        ok = await asyncio.to_thread(download_and_extract_github_repo)
+        if not ok:
+            await message.answer(failed_text)
+            return
+
+        await message.answer(done_text.format(to_version=latest_version))
+        await asyncio.sleep(2)
+        restart_current_process()
+    finally:
+        await release_update_run()
 
 
 @router.message(IsPrivate(), IsAdmin(), F.text == constant_text.SETTINGS_BOT_KEYBOARD[0], StateFilter("*"))
