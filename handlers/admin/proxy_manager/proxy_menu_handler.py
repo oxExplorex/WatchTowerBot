@@ -1,20 +1,16 @@
-from google import genai
-from google.genai import types
 from aiogram import F
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 import data.text as constant_text
-from core.logging import bot_logger
-from data.config import GEMINI_KEY
 from db.main import (
     get_user_gemini_proxy_config,
     get_user_timezone_offset,
     set_user_gemini_proxy,
-    set_user_gemini_proxy_health,
 )
 from filters.all_filters import IsAdmin, IsPrivate
+from handlers.admin.proxy_manager.proxy_checker import check_proxy_now
 from handlers.admin.states import AdminStates
 from loader import router
 from utils.datetime_tools import DateTime
@@ -58,30 +54,6 @@ def _proxy_menu_text(proxy_cfg: dict, tz_offset: int) -> str:
     ).replace("(unix)", "")
 
 
-async def _check_proxy_now(admin_id: int, proxy_url: str) -> tuple[bool, str]:
-    if not GEMINI_KEY:
-        return False, constant_text.PROXY_GEMINI_KEY_EMPTY_TEXT
-
-    http_options = types.HttpOptions(
-        client_args={"proxy": proxy_url},
-        async_client_args={"proxy": proxy_url},
-    )
-    client = genai.Client(api_key=GEMINI_KEY, http_options=http_options)
-
-    try:
-        await client.aio.models.generate_content(
-            model="gemini-3.1-flash-lite-preview",
-            contents="ping",
-        )
-        await set_user_gemini_proxy_health(admin_id, is_ok=True)
-        return True, "ok"
-    except Exception as exc:
-        error_text = str(exc)[:220]
-        bot_logger.exception("Proxy check failed in proxy_menu_handler")
-        await set_user_gemini_proxy_health(admin_id, is_ok=False, error=error_text)
-        return False, error_text
-
-
 @router.message(IsPrivate(), IsAdmin(), F.text.in_(constant_text.PROXY_USER_KEYBOARD), StateFilter("*"))
 async def open_proxy_menu_handler(message: Message, state: FSMContext):
     await state.clear()
@@ -120,7 +92,7 @@ async def save_proxy_handler(message: Message, state: FSMContext):
     await state.clear()
 
     probe = await message.answer(constant_text.PROXY_CHECKING_TEXT)
-    ok, reason = await _check_proxy_now(message.from_user.id, proxy_url)
+    ok, reason = await check_proxy_now(message.from_user.id, proxy_url, log_source="proxy_menu_handler")
 
     if ok:
         await probe.edit_text(constant_text.PROXY_SET_AND_CHECK_OK_TEXT)

@@ -1,4 +1,4 @@
-﻿import math
+import math
 
 from aiogram import F
 from aiogram.filters import StateFilter
@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery, Message
 import data.text as constant_text
 from db.main import get_account_user_id, get_app_tg_user_id
 from filters.all_filters import IsAdmin, IsPrivate
-from keyboards.inline.account_managet.account_menu_inline import account_tg_admin_inline
+from keyboards.inline.account_manage.account_menu_inline import account_tg_admin_inline
 from loader import router
 from utils.datetime_tools import DateTime
 
@@ -55,7 +55,11 @@ async def open_accounts_menu_handler(message: Message, state: FSMContext):
 async def paginate_accounts_menu_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
-    page = int(call.data.split(":")[-1])
+    try:
+        page = int(call.data.split(":")[-1])
+    except (TypeError, ValueError, IndexError):
+        return await call.answer(constant_text.ERROR_FORMAT_TEXT)
+
     _, apps_count = await get_app_tg_user_id(call.from_user.id)
 
     total, total_pages, _ = await _get_accounts_page(call.from_user.id, 1)
@@ -72,3 +76,4 @@ async def paginate_accounts_menu_handler(call: CallbackQuery, state: FSMContext)
         ),
         reply_markup=keyboard,
     )
+

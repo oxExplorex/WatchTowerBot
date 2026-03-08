@@ -47,7 +47,11 @@ async def open_apps_menu_handler(message: Message, state: FSMContext):
 async def paginate_apps_menu_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
-    page = int(call.data.split(":")[-1])
+    try:
+        page = int(call.data.split(":")[-1])
+    except (TypeError, ValueError, IndexError):
+        return await call.answer(constant_text.ERROR_FORMAT_TEXT)
+
     total, total_pages, _ = await _get_apps_page(call.from_user.id, 1)
     if page < 1 or page > total_pages:
         return await call.answer(constant_text.WARNING_PAGE_EDGE)

@@ -63,31 +63,32 @@ def _register_pyrogram_handlers() -> None:
 async def start_polling_bot():
     bot_logger.info("Starting bot bootstrap")
     await connect_database()
+    try:
+        router.message.middleware(AlbumMiddleware())
+        router.business_message.middleware(AlbumMiddleware())
 
-    router.message.middleware(AlbumMiddleware())
-    router.business_message.middleware(AlbumMiddleware())
+        router.message.middleware(UpdateUserMiddleware())
+        router.business_message.middleware(UpdateUserMiddleware())
 
-    router.message.middleware(UpdateUserMiddleware())
-    router.business_message.middleware(UpdateUserMiddleware())
+        dispatcher = Dispatcher()
+        dispatcher.include_router(router)
 
-    dispatcher = Dispatcher()
-    dispatcher.include_router(router)
+        _register_pyrogram_handlers()
 
-    _register_pyrogram_handlers()
+        compose_task = loop.create_task(compose(apps_session))
+        compose_task.add_done_callback(_handle_compose_task_result)
 
-    compose_task = loop.create_task(compose(apps_session))
-    compose_task.add_done_callback(_handle_compose_task_result)
+        # Technical delay for stable startup of pyrogram sessions.
+        await asyncio.sleep(5)
+        asyncio.create_task(starting_tg_parse_dialogs_handler())
+        asyncio.create_task(start_update_notifier())
 
-    # Technical delay for stable startup of pyrogram sessions.
-    await asyncio.sleep(5)
-    asyncio.create_task(starting_tg_parse_dialogs_handler())
-    asyncio.create_task(start_update_notifier())
+        await send_log_to_active_bot(bot)
+        bot_logger.info("Bot was started")
 
-    await send_log_to_active_bot(bot)
-    bot_logger.info("Bot was started")
-
-    await dispatcher.start_polling(bot)
-    await close_database()
+        await dispatcher.start_polling(bot)
+    finally:
+        await close_database()
 
 
 if __name__ == "__main__":

@@ -1,9 +1,5 @@
-﻿import asyncio
-
-from google import genai
-from google.genai import types
+import asyncio
 import time
-from datetime import timedelta
 
 from aiogram import F
 from aiogram.exceptions import TelegramBadRequest
@@ -13,7 +9,6 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import data.text as constant_text
-from data.config import GEMINI_KEY
 from core.logging import bot_logger
 from core.process_control import restart_current_process
 from core.session_runtime import stop_all_clients
@@ -35,6 +30,21 @@ from db.main import (
     set_version_state_cache,
 )
 from filters.all_filters import IsAdmin, IsPrivate
+from handlers.admin.proxy_manager.proxy_checker import check_proxy_now
+from handlers.admin.settings.settings_helpers import (
+    auto_update_label,
+    build_daily_rows_desc,
+    build_hourly_rows_desc,
+    gemini_runtime_label,
+    minutes_ago,
+    parser_runtime_label,
+    proxy_status_label,
+    recent_failures,
+    success_percent,
+    timezone_rows_text,
+    tz_full_label,
+    tz_offset_label,
+)
 from loader import router
 from scripts.update_bot import download_and_extract_github_repo
 from utils.datetime_tools import DateTime
@@ -42,187 +52,6 @@ from utils.others import not_warning_delete_message
 from utils.proxy_utils import compact_proxy_display, normalize_http_proxy_input
 
 DEFAULT_TIMEZONE_OFFSET = 3
-
-
-def _tz_offset_label(offset: int) -> str:
-    sign = "+" if int(offset) >= 0 else ""
-    return f"{sign}{int(offset)}"
-
-
-def _tz_full_label(offset: int) -> str:
-    value = int(offset)
-    sign = "+" if value >= 0 else ""
-    city = constant_text.TIMEZONE_LABELS.get(value)
-    if city:
-        return f"{sign}{value} {city}"
-    return f"{sign}{value}"
-
-
-def _timezone_rows_text() -> str:
-    rows: list[str] = []
-    for offset in range(-12, 15):
-        sign = "+" if offset >= 0 else ""
-        city = constant_text.TIMEZONE_LABELS.get(offset, "")
-        rows.append(f"{sign}{offset} {city}".strip())
-    return "\n".join(rows)
-
-
-def _auto_update_label(enabled: int) -> str:
-    return constant_text.AUTO_UPDATE_ON_TEXT if int(enabled) == 1 else constant_text.AUTO_UPDATE_OFF_TEXT
-
-
-def _parser_runtime_label(last_event, now_ts: int) -> str:
-    if not last_event:
-        return constant_text.SETTINGS_STATUS_NO_DATA_TEXT
-
-    event_ts = int(getattr(last_event, "date", 0) or 0)
-    event_status = int(getattr(last_event, "status", 0) or 0)
-    age_sec = max(0, now_ts - event_ts)
-
-    if event_status == 1 and age_sec <= 60 * 40:
-        return constant_text.SETTINGS_PARSER_STATUS_OK_TEXT
-    if event_status == 1:
-        return constant_text.SETTINGS_PARSER_STATUS_STALE_TEXT
-    return constant_text.SETTINGS_PARSER_STATUS_ERROR_TEXT
-
-
-def _gemini_runtime_label(proxy_cfg: dict) -> str:
-    if not GEMINI_KEY:
-        return constant_text.SETTINGS_GEMINI_STATUS_KEY_MISSING_TEXT
-
-    enabled = int(proxy_cfg.get("enabled", 0) or 0)
-    status = int(proxy_cfg.get("status", 0) or 0)
-    proxy = (proxy_cfg.get("proxy") or "").strip()
-
-    if not enabled or not proxy:
-        return constant_text.SETTINGS_GEMINI_STATUS_PROXY_MISSING_TEXT
-    if status == 1:
-        return constant_text.SETTINGS_GEMINI_STATUS_OK_TEXT
-
-    last_error = (proxy_cfg.get("last_error") or "").strip()
-    if last_error:
-        return constant_text.SETTINGS_GEMINI_STATUS_PROXY_ERROR_TEXT
-    return constant_text.SETTINGS_GEMINI_STATUS_PENDING_TEXT
-
-def _proxy_status_label(proxy_cfg: dict) -> str:
-    enabled = int(proxy_cfg.get("enabled", 0) or 0)
-    status = int(proxy_cfg.get("status", 0) or 0)
-    checked_at = int(proxy_cfg.get("checked_at", 0) or 0)
-    last_error = (proxy_cfg.get("last_error") or "").strip()
-
-    if not enabled:
-        return constant_text.SETTINGS_PROXY_STATE_OFF_TEXT
-    if status == 1:
-        return constant_text.SETTINGS_PROXY_STATE_OK_TEXT
-    if checked_at > 0 and not last_error:
-        return constant_text.SETTINGS_PROXY_STATE_OK_TEXT
-    return constant_text.SETTINGS_PROXY_STATE_PENDING_TEXT
-
-
-def _status_icon(fails: int, total: int) -> str:
-    if total == 0:
-        return constant_text.STATS_ICON_NO_DATA
-    ratio = fails / total
-    if ratio == 0:
-        return constant_text.STATS_ICON_OK
-    if ratio < 0.35:
-        return constant_text.STATS_ICON_WARN
-    return constant_text.STATS_ICON_FAIL
-
-
-def _success_percent(events) -> float:
-    if not events:
-        return 0.0
-    ok = sum(1 for x in events if int(x.status) == 1)
-    return round((ok / len(events)) * 100, 2)
-
-
-def _build_hourly_rows_desc(events, hours: int, dt: DateTime) -> list[str]:
-    now_hour = dt.now().replace(minute=0, second=0, microsecond=0)
-    rows: list[str] = []
-
-    for i in range(hours):
-        end_dt = now_hour - timedelta(hours=i)
-        start_dt = end_dt - timedelta(hours=1)
-
-        start_ts = int(start_dt.timestamp())
-        end_ts = int(end_dt.timestamp())
-
-        bucket_events = [x for x in events if start_ts <= int(x.date) < end_ts]
-        total = len(bucket_events)
-        fails = sum(1 for x in bucket_events if int(x.status) == 0)
-        pct = 0 if total == 0 else round(((total - fails) / total) * 100)
-
-        end_label = end_dt.strftime("%H:00")
-        start_label = start_dt.strftime("%H:00")
-        rows.append(f"{end_label} - {_status_icon(fails, total)} - {pct}% - {start_label}")
-
-    return rows
-
-
-def _build_daily_rows_desc(events, days: int, dt: DateTime) -> list[str]:
-    today_00 = dt.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    rows: list[str] = []
-
-    for i in range(days):
-        end_dt = today_00 - timedelta(days=i)
-        start_dt = end_dt - timedelta(days=1)
-
-        start_ts = int(start_dt.timestamp())
-        end_ts = int(end_dt.timestamp())
-
-        bucket_events = [x for x in events if start_ts <= int(x.date) < end_ts]
-        total = len(bucket_events)
-        fails = sum(1 for x in bucket_events if int(x.status) == 0)
-        pct = 0 if total == 0 else round(((total - fails) / total) * 100)
-
-        end_label = end_dt.strftime("%d.%m 00:00")
-        start_label = start_dt.strftime("%d.%m 00:00")
-        rows.append(f"{end_label} - {_status_icon(fails, total)} - {pct}% - {start_label}")
-
-    return rows
-
-
-def _recent_failures(events, dt: DateTime, limit: int = 5) -> str:
-    failed = [x for x in events if int(x.status) == 0]
-    failed.sort(key=lambda x: int(x.date), reverse=True)
-
-    if not failed:
-        return constant_text.STATS_RECENT_EMPTY
-
-    rows = []
-    for item in failed[:limit]:
-        stamp = dt.convert_timestamp(int(item.date), "%d.%m %H:%M")["str"]
-        reason = (item.reason or "error").strip()
-        if len(reason) > 28:
-            reason = reason[:28] + "..."
-        rows.append(constant_text.STATS_RECENT_ROW.format(stamp=stamp, reason=reason))
-
-    return "\n".join(rows)
-
-
-async def _check_proxy_now(admin_id: int, proxy_url: str) -> tuple[bool, str]:
-    if not GEMINI_KEY:
-        return False, constant_text.PROXY_GEMINI_KEY_EMPTY_TEXT
-
-    http_options = types.HttpOptions(
-        client_args={"proxy": proxy_url},
-        async_client_args={"proxy": proxy_url},
-    )
-    client = genai.Client(api_key=GEMINI_KEY, http_options=http_options)
-
-    try:
-        await client.aio.models.generate_content(
-            model="gemini-3.1-flash-lite-preview",
-            contents="ping",
-        )
-        await set_user_gemini_proxy_health(admin_id, is_ok=True)
-        return True, "ok"
-    except Exception as exc:
-        error_text = str(exc)[:220]
-        bot_logger.exception("Proxy check failed in setting_menu_handler")
-        await set_user_gemini_proxy_health(admin_id, is_ok=False, error=error_text)
-        return False, error_text
 
 
 async def _fetch_latest_version() -> str | None:
@@ -255,11 +84,6 @@ async def _get_cached_version_state() -> tuple[str, int, str | None]:
     return await get_version_state_cache(default_state=constant_text.VERSION_STATE_UNKNOWN)
 
 
-def _minutes_ago(ts_value: int) -> int:
-    if ts_value <= 0:
-        return 0
-    return max(0, int((time.time() - ts_value) // 60))
-
 async def _send_stats(message: Message, admin_only: bool) -> None:
     admin_id = message.from_user.id
     overview = await get_accounts_overview(admin_id)
@@ -274,20 +98,20 @@ async def _send_stats(message: Message, admin_only: bool) -> None:
     if admin_only:
         events_24h = await get_admin_health_events(admin_id, since_24h)
         events_14d = await get_admin_health_events(admin_id, since_14d)
-        title = f"{constant_text.STATS_TITLE_OWN} ({_tz_offset_label(tz_offset)})"
+        title = f"{constant_text.STATS_TITLE_OWN} ({tz_offset_label(tz_offset)})"
     else:
         events_24h = await get_all_health_events(since_24h)
         events_14d = await get_all_health_events(since_14d)
-        title = f"{constant_text.STATS_TITLE_GLOBAL} ({_tz_offset_label(tz_offset)})"
+        title = f"{constant_text.STATS_TITLE_GLOBAL} ({tz_offset_label(tz_offset)})"
 
     fail_24h = sum(1 for x in events_24h if int(x.status) == 0)
     fail_14d = sum(1 for x in events_14d if int(x.status) == 0)
 
-    success_24h = _success_percent(events_24h)
-    success_14d = _success_percent(events_14d)
+    success_24h = success_percent(events_24h)
+    success_14d = success_percent(events_14d)
 
-    by_hour_text = "\n".join(_build_hourly_rows_desc(events_24h, hours=24, dt=dt))
-    by_day_text = "\n".join(_build_daily_rows_desc(events_14d, days=14, dt=dt))
+    by_hour_text = "\n".join(build_hourly_rows_desc(events_24h, hours=24, dt=dt))
+    by_day_text = "\n".join(build_daily_rows_desc(events_14d, days=14, dt=dt))
 
     await message.answer(
         constant_text.STATS_TEXT.format(
@@ -302,7 +126,7 @@ async def _send_stats(message: Message, admin_only: bool) -> None:
             fail_14d=fail_14d,
             by_hour_text=by_hour_text,
             by_day_text=by_day_text,
-            recent_failures=_recent_failures(events_14d, dt=dt, limit=5),
+            recent_failures=recent_failures(events_14d, dt=dt, limit=5),
         )
     )
 
@@ -315,21 +139,22 @@ async def _settings_text(admin_id: int) -> str:
     last_event = await get_latest_admin_health_event(admin_id)
     proxy_cfg = await get_user_gemini_proxy_config(admin_id)
 
-    parser_status = _parser_runtime_label(last_event, now_ts)
-    gemini_status = _gemini_runtime_label(proxy_cfg)
-    proxy_status = _proxy_status_label(proxy_cfg)
+    parser_status = parser_runtime_label(last_event, now_ts)
+    gemini_status = gemini_runtime_label(proxy_cfg)
+    proxy_status = proxy_status_label(proxy_cfg)
     current_proxy = compact_proxy_display(proxy_cfg.get("proxy"))
 
     return constant_text.SETTINGS_MENU_TITLE.format(
         bot_version=get_local_version(),
         version_state=version_state,
-        last_check_ago=_minutes_ago(checked_at),
+        last_check_ago=minutes_ago(checked_at),
         parser_status=parser_status,
         gemini_status=gemini_status,
         proxy_status=proxy_status,
         current_proxy=current_proxy,
         date=DateTime(tz_offset).time_strftime("%d.%m.%Y %H:%M:%S.%f"),
     )
+
 
 async def _settings_inline(admin_id: int):
     tz_offset = await get_user_timezone_offset(admin_id)
@@ -344,7 +169,7 @@ async def _settings_inline(admin_id: int):
 
     keyboard.row(
         InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_AUTO_UPDATE.format(state=_auto_update_label(auto_update)),
+            text=constant_text.SETTINGS_BTN_AUTO_UPDATE.format(state=auto_update_label(auto_update)),
             callback_data=f"set:au:{0 if auto_update else 1}",
         )
     )
@@ -366,7 +191,7 @@ async def _settings_inline(admin_id: int):
 
     keyboard.row(
         InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_PROXY.format(state=_proxy_status_label(proxy_cfg)),
+            text=constant_text.SETTINGS_BTN_PROXY.format(state=proxy_status_label(proxy_cfg)),
             callback_data="set:proxy:open",
         )
     )
@@ -383,7 +208,7 @@ async def _settings_inline(admin_id: int):
 
     keyboard.row(
         InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_TIMEZONE.format(tz_label=_tz_offset_label(tz_offset)),
+            text=constant_text.SETTINGS_BTN_TIMEZONE.format(tz_label=tz_offset_label(tz_offset)),
             callback_data="set:tz:open",
         )
     )
@@ -549,7 +374,7 @@ async def check_proxy_from_settings_handler(call: CallbackQuery, state: FSMConte
         await _safe_edit_settings(call)
         return
 
-    ok, reason = await _check_proxy_now(call.from_user.id, proxy_url)
+    ok, reason = await check_proxy_now(call.from_user.id, proxy_url, log_source="setting_menu_handler")
     if ok:
         await call.answer(constant_text.PROXY_CHECK_OK_TEXT)
     else:
@@ -572,7 +397,7 @@ async def set_auto_update_handler(call: CallbackQuery, state: FSMContext):
 
     try:
         value = int(call.data.split(":")[-1])
-    except Exception:
+    except (TypeError, ValueError, IndexError):
         return await call.answer(constant_text.ERROR_FORMAT_TEXT)
 
     await set_user_auto_update_enabled(call.from_user.id, value)
@@ -588,8 +413,8 @@ async def open_timezone_menu_handler(call: CallbackQuery, state: FSMContext):
 
     await call.message.edit_text(
         constant_text.TIMEZONE_MENU_TEXT.format(
-            tz_label=_tz_full_label(current_offset),
-            tz_rows=_timezone_rows_text(),
+            tz_label=tz_full_label(current_offset),
+            tz_rows=timezone_rows_text(),
         ),
         reply_markup=_timezone_inline(current_offset),
     )
@@ -607,27 +432,27 @@ async def set_timezone_handler(call: CallbackQuery, state: FSMContext):
         await call.answer(constant_text.TIMEZONE_RESET_TOAST)
         return await call.message.edit_text(
             constant_text.TIMEZONE_MENU_TEXT.format(
-                tz_label=_tz_full_label(saved),
-                tz_rows=_timezone_rows_text(),
+                tz_label=tz_full_label(saved),
+                tz_rows=timezone_rows_text(),
             ),
             reply_markup=_timezone_inline(saved),
         )
 
     try:
         offset = int(call.data.split(":")[-1])
-    except Exception:
+    except (TypeError, ValueError, IndexError):
         return await call.answer(constant_text.TIMEZONE_INVALID_TOAST)
 
     if offset < -12 or offset > 14:
         return await call.answer(constant_text.TIMEZONE_INVALID_TOAST)
 
     saved = await set_user_timezone_offset(call.from_user.id, offset)
-    await call.answer(constant_text.TIMEZONE_SET_TOAST.format(tz_label=_tz_full_label(saved)))
+    await call.answer(constant_text.TIMEZONE_SET_TOAST.format(tz_label=tz_full_label(saved)))
 
     await call.message.edit_text(
         constant_text.TIMEZONE_MENU_TEXT.format(
-            tz_label=_tz_full_label(saved),
-            tz_rows=_timezone_rows_text(),
+            tz_label=tz_full_label(saved),
+            tz_rows=timezone_rows_text(),
         ),
         reply_markup=_timezone_inline(saved),
     )
@@ -653,9 +478,6 @@ async def update_notice_close_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await not_warning_delete_message(message=call)
     await call.answer(constant_text.UPDATE_NOTIFY_CLOSED_TOAST)
-
-
-
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "upd:update", StateFilter("*"))
 async def update_notice_run_handler(call: CallbackQuery, state: FSMContext):
@@ -699,17 +521,5 @@ async def update_notice_snooze_handler(call: CallbackQuery, state: FSMContext):
 
     await call.message.edit_reply_markup(reply_markup=keyboard.as_markup())
     await call.answer(constant_text.UPDATE_NOTIFY_SNOOZE_TOAST)
-
-
-
-
-
-
-
-
-
-
-
-
 
 

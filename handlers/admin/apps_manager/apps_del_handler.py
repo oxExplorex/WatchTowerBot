@@ -13,7 +13,11 @@ from loader import router
 async def delete_app_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
-    app_uuid = call.data.split(":")[1]
+    try:
+        app_uuid = call.data.split(":")[1]
+    except (TypeError, IndexError):
+        return await call.answer(constant_text.ERROR_FORMAT_TEXT)
+
     user_id = call.from_user.id
 
     if await del_app_tg_uuid(app_uuid, user_id):

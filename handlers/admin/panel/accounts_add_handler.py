@@ -48,7 +48,11 @@ async def start_add_account_handler(call: CallbackQuery, state: FSMContext):
     await close_state_pyrogram_client(state)
     await state.clear()
 
-    uuid_app = call.data.split(":")[-1]
+    try:
+        uuid_app = call.data.split(":")[-1]
+    except (AttributeError, IndexError, TypeError):
+        return await call.answer(constant_text.ERROR_FORMAT_TEXT)
+
     prompt_message = await call.message.answer(
         text=constant_text.ACCOUNT_INPUT_NUMBER_TEXT,
         reply_markup=back_inline(),
@@ -56,8 +60,6 @@ async def start_add_account_handler(call: CallbackQuery, state: FSMContext):
 
     await state.update_data(prompt_message=prompt_message, uuid_app=uuid_app)
     await state.set_state(AdminStates.account_add_number)
-
-
 
 @router.message(
     IsPrivate(),
@@ -81,6 +83,8 @@ async def cancel_add_account_handler(message: Message, state: FSMContext):
         text=constant_text.ACTION_CANCELLED_TEXT,
         reply_markup=static_admin_keyboard(),
     )
+
+
 @router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.account_add_number))
 async def receive_account_number_handler(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -190,10 +194,13 @@ async def receive_account_password_handler(message: Message, state: FSMContext):
     data = await state.get_data()
     app_temp = data["app_temp"]
     user_id = message.from_user.id
-    password = message.text
+    password = (message.text or "").strip()
 
     await not_warning_delete_message(message=data.get("prompt_message"))
     await not_warning_delete_message(message=message)
+
+    if not password:
+        return await message.answer(constant_text.ERROR_FORMAT_TEXT)
 
     try:
         result = await app_temp.check_password(password)

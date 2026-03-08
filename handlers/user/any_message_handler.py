@@ -7,6 +7,5 @@ from loader import router
 
 @router.message(StateFilter("*"))
 async def any_message_handler(message: Message, state: FSMContext):
-
-    return False
-
+    _ = message
+    _ = state

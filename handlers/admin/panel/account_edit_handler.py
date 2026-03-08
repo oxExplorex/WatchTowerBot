@@ -1,5 +1,6 @@
-﻿import glob
+import glob
 import os
+from contextlib import suppress
 from datetime import timedelta
 
 from aiogram import F, html
@@ -9,6 +10,7 @@ from aiogram.types import CallbackQuery
 
 import data.text as constant_text
 from core.session_runtime import get_client_by_number, is_session_running, stop_and_remove_session
+from db.models import Account
 from db.main import (
     add_account_health_event,
     delete_account_by_number,
@@ -21,8 +23,8 @@ from db.main import (
     update_account_uuid,
 )
 from filters.all_filters import IsAdmin, IsPrivate
-from keyboards.inline.account_managet.account_edit_inline import account_edit_admin_inline
-from keyboards.inline.account_managet.account_menu_inline import account_tg_admin_inline
+from keyboards.inline.account_manage.account_edit_inline import account_edit_admin_inline
+from keyboards.inline.account_manage.account_menu_inline import account_tg_admin_inline
 from loader import router
 from utils.datetime_tools import DateTime
 
@@ -52,13 +54,13 @@ def _format_last_update(ts_value, dt: DateTime) -> str:
 
 def _status_icon(fails: int, total: int) -> str:
     if total == 0:
-        return "⬛"
+        return constant_text.STATS_ICON_NO_DATA
     ratio = fails / total
     if ratio == 0:
-        return "🟩"
+        return constant_text.STATS_ICON_OK
     if ratio < 0.35:
-        return "🟨"
-    return "🟥"
+        return constant_text.STATS_ICON_WARN
+    return constant_text.STATS_ICON_FAIL
 
 
 def _build_hourly_rows_desc(events, hours: int, dt: DateTime) -> list[str]:
@@ -88,6 +90,13 @@ def _spoil(value) -> str:
     return f"<tg-spoiler>{html.quote(str(value))}</tg-spoiler>"
 
 
+def _account_uuid_from_callback(call: CallbackQuery) -> str | None:
+    try:
+        return call.data.split(":")[-1]
+    except (AttributeError, IndexError, TypeError):
+        return None
+
+
 def _session_files_exist(number: str | None) -> bool:
     if not number:
         return False
@@ -113,10 +122,8 @@ def _is_fatal_session_error(exc: Exception) -> bool:
 async def _show_accounts_or_close(call: CallbackQuery) -> None:
     accounts, count = await get_account_user_id(call.from_user.id, 0)
     if count <= 0:
-        try:
+        with suppress(Exception):
             await call.message.delete()
-        except Exception:
-            pass
         return
 
     tz_offset = await get_user_timezone_offset(call.from_user.id)
@@ -136,7 +143,7 @@ async def _show_accounts_or_close(call: CallbackQuery) -> None:
     )
 
 
-async def _drop_dead_session_from_editor(call: CallbackQuery, account, reason: str) -> None:
+async def _drop_dead_session_from_editor(call: CallbackQuery, account: Account, reason: str) -> None:
     await stop_and_remove_session(account.number)
 
     deleted = await delete_account_by_number(account.number)
@@ -154,18 +161,23 @@ async def _drop_dead_session_from_editor(call: CallbackQuery, account, reason: s
     )
 
     for session_path in glob.glob(f"data/session/{account.number}*"):
-        try:
+        with suppress(OSError):
             os.remove(session_path)
-        except OSError:
-            pass
 
-    try:
+    with suppress(Exception):
         await call.message.answer(constant_text.ACCOUNT_INVALID_REMOVED_TEXT)
-    except Exception:
-        pass
 
 
-async def _render_account_editor(call: CallbackQuery, account):
+async def _update_account_or_close(call: CallbackQuery, account: Account, **fields) -> Account | None:
+    updated = await update_account_uuid(account.uuid, call.from_user.id, **fields)
+    if updated is None:
+        await call.answer(constant_text.ERROR_NOT_FOUND_ACCOUNT_ID)
+        await _show_accounts_or_close(call)
+        return None
+    return updated
+
+
+async def _render_account_editor(call: CallbackQuery, account: Account) -> None:
     app_tg = await get_app_tg_uuid(account.app_tg, call.from_user.id)
     if not app_tg:
         return await call.answer(constant_text.ERROR_NOT_FOUND_APP_ID)
@@ -204,8 +216,10 @@ async def _render_account_editor(call: CallbackQuery, account):
     return None
 
 
-async def _get_account_from_callback(call: CallbackQuery):
-    account_uuid = call.data.split(":")[-1]
+async def _get_account_from_callback(call: CallbackQuery) -> Account | None:
+    account_uuid = _account_uuid_from_callback(call)
+    if account_uuid is None:
+        return None
     return await get_account_uuid(account_uuid, call.from_user.id)
 
 
@@ -231,7 +245,9 @@ async def account_toggle_session_handler(call: CallbackQuery, state: FSMContext)
         return await _show_accounts_or_close(call)
 
     new_active = 0 if account.is_active else 1
-    account = await update_account_uuid(account.uuid, call.from_user.id, is_active=new_active)
+    account = await _update_account_or_close(call, account, is_active=new_active)
+    if account is None:
+        return
 
     if new_active == 0:
         await stop_and_remove_session(account.number)
@@ -250,11 +266,13 @@ async def account_toggle_new_chat_alert_handler(call: CallbackQuery, state: FSMC
         await call.answer(constant_text.ERROR_NOT_FOUND_ACCOUNT_ID)
         return await _show_accounts_or_close(call)
 
-    account = await update_account_uuid(
-        account.uuid,
-        call.from_user.id,
+    account = await _update_account_or_close(
+        call,
+        account,
         alert_new_chat=0 if account.alert_new_chat else 1,
     )
+    if account is None:
+        return
     await _render_account_editor(call, account)
 
 
@@ -267,11 +285,13 @@ async def account_toggle_deleted_chat_alert_handler(call: CallbackQuery, state: 
         await call.answer(constant_text.ERROR_NOT_FOUND_ACCOUNT_ID)
         return await _show_accounts_or_close(call)
 
-    account = await update_account_uuid(
-        account.uuid,
-        call.from_user.id,
+    account = await _update_account_or_close(
+        call,
+        account,
         alert_del_chat=0 if account.alert_del_chat else 1,
     )
+    if account is None:
+        return
     await _render_account_editor(call, account)
 
 
@@ -284,11 +304,13 @@ async def account_toggle_bot_alert_handler(call: CallbackQuery, state: FSMContex
         await call.answer(constant_text.ERROR_NOT_FOUND_ACCOUNT_ID)
         return await _show_accounts_or_close(call)
 
-    account = await update_account_uuid(
-        account.uuid,
-        call.from_user.id,
+    account = await _update_account_or_close(
+        call,
+        account,
         alert_bot=0 if account.alert_bot else 1,
     )
+    if account is None:
+        return
     await _render_account_editor(call, account)
 
 
@@ -302,11 +324,13 @@ async def account_toggle_media_spoiler_handler(call: CallbackQuery, state: FSMCo
         return await _show_accounts_or_close(call)
 
     current = int(getattr(account, "alert_spoiler_media", 1) or 0)
-    account = await update_account_uuid(
-        account.uuid,
-        call.from_user.id,
+    account = await _update_account_or_close(
+        call,
+        account,
         alert_spoiler_media=0 if current else 1,
     )
+    if account is None:
+        return
     await _render_account_editor(call, account)
 
 
@@ -354,3 +378,4 @@ async def account_check_handler(call: CallbackQuery, state: FSMContext):
         return await _show_accounts_or_close(call)
 
     await _render_account_editor(call, account)
+

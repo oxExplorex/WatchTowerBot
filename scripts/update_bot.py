@@ -62,7 +62,6 @@ PROTECTED_PATHS = {
     "data/session",
     "data/logs",
     "data/temp",
-    "migrations",
 }
 
 
