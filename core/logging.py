@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import os
 import sys
 from pathlib import Path
@@ -32,7 +32,7 @@ def _build_logger() -> logging.Logger:
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     file_log = logging.FileHandler(log_path, "a+", "utf-8")
-    # Use stdout to make logs visible in IDE run consoles that do not show stderr by default.
+    # Stdout keeps logs visible in common Windows/PyCharm run consoles.
     console_out = logging.StreamHandler(sys.stdout)
 
     formatter = colorlog.ColoredFormatter(

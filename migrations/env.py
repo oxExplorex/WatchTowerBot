@@ -11,8 +11,10 @@ import db.models  # noqa: F401
 
 config = context.config
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# Do not override application logging when Alembic is executed from app runtime.
+skip_file_config = bool(getattr(config, "attributes", {}).get("skip_file_config", False))
+if config.config_file_name is not None and not skip_file_config:
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 
 target_metadata = SQLModel.metadata

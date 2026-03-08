@@ -6,6 +6,7 @@ from pyrogram import Client
 from pyrogram.types import Message
 
 import data.text as constant_text
+import loader
 from core.logging import bot_logger
 from core.session_runtime import session_number_from_client
 from data.config import GEMINI_KEY
@@ -17,7 +18,7 @@ from db.main import (
     get_user_gemini_proxy_config,
     set_user_gemini_proxy_health,
 )
-from loader import bot, gemini_system_instruction
+from loader import bot
 from utils.proxy_utils import normalize_http_proxy_input
 
 
@@ -135,7 +136,7 @@ async def _request_gemini(parts: list[types.Part], proxy_url: str | None) -> str
         client = genai.Client(api_key=GEMINI_KEY)
 
     config = types.GenerateContentConfig(
-        system_instruction=gemini_system_instruction or None,
+        system_instruction=loader.gemini_system_instruction or None,
         safety_settings=SAFETY_SETTINGS,
     )
 

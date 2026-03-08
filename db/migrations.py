@@ -42,6 +42,8 @@ def _build_alembic_config(connection_string: str) -> Config:
     config = Config(str(ini_path))
     config.set_main_option("script_location", str(script_path))
     config.set_main_option("sqlalchemy.url", connection_string)
+    # Keep application logger configuration intact when migrations run in-process.
+    config.attributes["skip_file_config"] = True
     return config
 
 

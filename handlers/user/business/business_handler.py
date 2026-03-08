@@ -11,7 +11,11 @@ from utils.others import get_user_log_text
 
 @router.business_message(StateFilter("*"))
 async def any_business_message_handler(message: Message):
-    admin_id = (await bot.get_business_connection(message.business_connection_id)).user.id
+    try:
+        admin_id = (await bot.get_business_connection(message.business_connection_id)).user.id
+    except Exception:
+        bot_logger.exception("Failed to resolve business connection admin")
+        return
 
     chat_id = message.chat.id
     username = message.chat.username

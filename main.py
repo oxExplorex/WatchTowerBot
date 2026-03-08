@@ -24,7 +24,7 @@ from handlers import router
 from handlers_app.user.chat_presence_sync import chat_presence_sync_handler
 from handlers_app.user.file_spoiler import file_spoiler_handler
 from handlers_app.user.gemini_handler import gemini_app_handler
-from loader import apps_session, bot, loop
+from loader import apps_session, bot, initialize_runtime_state, loop
 from middlewares.media_group import AlbumMiddleware
 from middlewares.update_user import UpdateUserMiddleware
 from utils.others import send_log_to_active_bot
@@ -64,6 +64,8 @@ async def start_polling_bot():
     bot_logger.info("Starting bot bootstrap")
     await connect_database()
     try:
+        await initialize_runtime_state()
+
         router.message.middleware(AlbumMiddleware())
         router.business_message.middleware(AlbumMiddleware())
 

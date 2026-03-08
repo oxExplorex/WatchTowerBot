@@ -10,8 +10,7 @@ from pyrogram import Client
 from core.logging import bot_logger
 import data.text as constant_text
 from data.config import GEMINI_KEY, TOKEN_BOT
-from db.main import close_database, connect_database, get_account_all, get_app_tg_uuid_aio
-from db.migrations import run_db_migrations
+from db.main import connect_database, get_account_all, get_app_tg_uuid_aio
 
 
 _PROMPT_PATH = Path("data/promt_ai_userbot.txt")
@@ -42,16 +41,11 @@ def _build_system_instruction(admin_ids_text: str) -> str:
 
 loop = _get_or_create_event_loop()
 asyncio_lock = asyncio.Lock()
-
-
-async def _bootstrap_db() -> None:
-    await run_db_migrations()
+_runtime_initialized = False
 
 
 async def _get_apps_user() -> list[Client]:
     try:
-        await connect_database()
-
         apps: list[Client] = []
         for account in await get_account_all(active_only=True):
             app_tg = await get_app_tg_uuid_aio(account.app_tg)
@@ -66,15 +60,9 @@ async def _get_apps_user() -> list[Client]:
                     phone_number=f"{account.number}",
                 )
             )
-
-        await close_database()
         return apps
     except Exception:
         bot_logger.info(traceback.format_exc())
-        try:
-            await close_database()
-        except Exception:
-            pass
         return []
 
 
@@ -84,26 +72,30 @@ async def _build_gemini_system_instruction() -> str:
         return ""
 
     try:
-        await connect_database()
         accounts = await get_account_all(active_only=True)
         admin_ids = sorted({int(x.user_id) for x in accounts if x.user_id is not None})
         admin_ids_text = ", ".join(str(x) for x in admin_ids)
         system_instruction = _build_system_instruction(admin_ids_text)
-
-        await close_database()
         return system_instruction
     except Exception:
         bot_logger.info(traceback.format_exc())
-        try:
-            await close_database()
-        except Exception:
-            pass
         return ""
 
+apps_session: list[Client] = []
+gemini_system_instruction = ""
 
-_ = loop.run_until_complete(_bootstrap_db())
-apps_session: list[Client] = loop.run_until_complete(_get_apps_user())
-gemini_system_instruction = loop.run_until_complete(_build_gemini_system_instruction())
+
+async def initialize_runtime_state() -> None:
+    global _runtime_initialized, gemini_system_instruction
+    if _runtime_initialized:
+        return
+
+    await connect_database()
+    apps = await _get_apps_user()
+    apps_session.clear()
+    apps_session.extend(apps)
+    gemini_system_instruction = await _build_gemini_system_instruction()
+    _runtime_initialized = True
 
 router = Router()
 bot = Bot(

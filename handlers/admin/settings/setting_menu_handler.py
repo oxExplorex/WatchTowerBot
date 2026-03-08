@@ -357,28 +357,29 @@ async def run_update_now_handler(call: CallbackQuery, state: FSMContext):
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:proxy:check", StateFilter("*"))
 async def check_proxy_from_settings_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
+    await call.answer(constant_text.PROXY_CHECKING_TEXT)
 
     cfg = await get_user_gemini_proxy_config(call.from_user.id)
     proxy = cfg.get("proxy")
     enabled = int(cfg.get("enabled", 0) or 0)
 
     if not enabled or not proxy:
-        await call.answer(constant_text.PROXY_CHECK_SKIPPED_NO_PROXY_TEXT)
+        await call.message.answer(constant_text.PROXY_CHECK_SKIPPED_NO_PROXY_TEXT)
         await _safe_edit_settings(call)
         return
 
     proxy_url = normalize_http_proxy_input(str(proxy))
     if not proxy_url:
         await set_user_gemini_proxy_health(call.from_user.id, is_ok=False, error="invalid_proxy_format")
-        await call.answer(constant_text.PROXY_INVALID_FORMAT_TEXT)
+        await call.message.answer(constant_text.PROXY_INVALID_FORMAT_TEXT)
         await _safe_edit_settings(call)
         return
 
     ok, reason = await check_proxy_now(call.from_user.id, proxy_url, log_source="setting_menu_handler")
     if ok:
-        await call.answer(constant_text.PROXY_CHECK_OK_TEXT)
+        await call.message.answer(constant_text.PROXY_CHECK_OK_TEXT)
     else:
-        await call.answer(constant_text.PROXY_CHECK_FAIL_TEXT.format(reason=reason[:80]))
+        await call.message.answer(constant_text.PROXY_CHECK_FAIL_TEXT.format(reason=reason[:160]))
 
     await _safe_edit_settings(call)
 
