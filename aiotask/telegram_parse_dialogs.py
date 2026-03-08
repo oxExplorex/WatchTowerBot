@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import traceback
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -254,11 +254,11 @@ async def __tg_parse_dialogs_handler() -> None:
                     quote = html.quote(chat_name) if chat_name else chat_name
 
                     if chat_id in new_chats:
-                        bot_logger.info(f"USER: {user_id} | Новый чат {chat_id} @{username} | {chat_name}")
+                        bot_logger.info(constant_text.PARSER_LOG_NEW_CHAT_TEXT.format(user_id=user_id, chat_id=chat_id, username=username, chat_name=chat_name))
                         await create_dump_chat_user(user_id, chat_id)
                         log_new.append(get_user_log_text(1, chat_id, username, quote))
                     else:
-                        bot_logger.info(f"USER: {user_id} | Удалённый чат {chat_id} @{username} | {chat_name}")
+                        bot_logger.info(constant_text.PARSER_LOG_DELETED_CHAT_TEXT.format(user_id=user_id, chat_id=chat_id, username=username, chat_name=chat_name))
                         await del_dump_chat_user(user_id, chat_id)
                         log_del.append(get_user_log_text(2, chat_id, username, quote))
 
@@ -320,3 +320,4 @@ async def starting_tg_parse_dialogs_handler() -> None:
     bot_logger.debug("starting tg_parse_dialogs_handler")
     await __tg_parse_dialogs_handler()
     scheduler.start()
+

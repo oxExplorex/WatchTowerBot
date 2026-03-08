@@ -1,4 +1,4 @@
-import os
+﻿import os
 import re
 import time
 from contextlib import asynccontextmanager
@@ -13,6 +13,7 @@ from sqlalchemy.sql.sqltypes import BigInteger, Integer, String
 from sqlmodel import SQLModel
 
 import data.config as config
+import data.text as constant_text
 from core.logging import bot_logger
 from db.models import account_health_db, app_tg_db, apps_db, dump_chat_user_db, user_db, version_state_db
 
@@ -172,7 +173,7 @@ async def _sync_bigint_columns_postgres() -> None:
 
     bigint_columns = {
         "username_history_db": ["user_id", "date"],
-        "user_db": ["user_id", "update_snooze_until", "update_last_notified"],
+        "user_db": ["user_id", "gemini_proxy_checked_at", "update_snooze_until", "update_last_notified"],
         "app_tg_db": ["user_id", "app_id"],
         "apps_db": [
             "admin_id",
@@ -311,7 +312,7 @@ async def _session_scope() -> AsyncIterator[AsyncSession]:
 
 
 
-async def get_version_state_cache(default_state: str = "⚪ Неизвестно") -> tuple[str, int, str | None]:
+async def get_version_state_cache(default_state: str = constant_text.VERSION_STATE_UNKNOWN) -> tuple[str, int, str | None]:
     async with _session_scope() as session:
         result = await session.execute(select(version_state_db).where(version_state_db.id == 1))
         state_row = result.scalars().first()
@@ -890,5 +891,139 @@ async def get_all_health_events(since_ts):
 
 
 
+
+
+
+
+async def _ensure_user_row_for_settings(user_id: int) -> user_db:
+    async with _session_scope() as session:
+        result = await session.execute(select(user_db).where(user_db.user_id == int(user_id)))
+        user = result.scalars().first()
+
+        if not user:
+            roles = "admin" if int(user_id) in admin_id_list else None
+            user = user_db(user_id=int(user_id), roles=roles, timezone_offset=3)
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+
+        return user
+
+
+async def get_user_gemini_proxy_config(user_id: int) -> dict[str, Any]:
+    async with _session_scope() as session:
+        result = await session.execute(select(user_db).where(user_db.user_id == int(user_id)))
+        user = result.scalars().first()
+
+        if not user:
+            return {
+                "proxy": None,
+                "enabled": 0,
+                "status": 0,
+                "checked_at": 0,
+                "last_error": None,
+            }
+
+        return {
+            "proxy": (user.gemini_proxy or "").strip() or None,
+            "enabled": int(getattr(user, "gemini_proxy_enabled", 0) or 0),
+            "status": int(getattr(user, "gemini_proxy_status", 0) or 0),
+            "checked_at": int(getattr(user, "gemini_proxy_checked_at", 0) or 0),
+            "last_error": (getattr(user, "gemini_proxy_last_error", None) or None),
+        }
+
+
+async def set_user_gemini_proxy(user_id: int, proxy_value: str) -> dict[str, Any]:
+    proxy_clean = (proxy_value or "").strip()
+
+    async with _session_scope() as session:
+        result = await session.execute(select(user_db).where(user_db.user_id == int(user_id)))
+        user = result.scalars().first()
+
+        if not user:
+            roles = "admin" if int(user_id) in admin_id_list else None
+            user = user_db(user_id=int(user_id), roles=roles, timezone_offset=3)
+
+        user.gemini_proxy = proxy_clean
+        user.gemini_proxy_enabled = 1
+        user.gemini_proxy_status = 0
+        user.gemini_proxy_checked_at = int(time.time())
+        user.gemini_proxy_last_error = None
+
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+        return {
+            "proxy": user.gemini_proxy,
+            "enabled": int(user.gemini_proxy_enabled or 0),
+            "status": int(user.gemini_proxy_status or 0),
+            "checked_at": int(user.gemini_proxy_checked_at or 0),
+            "last_error": user.gemini_proxy_last_error,
+        }
+
+
+async def disable_user_gemini_proxy(user_id: int, reason: str | None = None) -> dict[str, Any]:
+    async with _session_scope() as session:
+        result = await session.execute(select(user_db).where(user_db.user_id == int(user_id)))
+        user = result.scalars().first()
+
+        if not user:
+            roles = "admin" if int(user_id) in admin_id_list else None
+            user = user_db(user_id=int(user_id), roles=roles, timezone_offset=3)
+
+        user.gemini_proxy_enabled = 0
+        user.gemini_proxy_status = 0
+        user.gemini_proxy_checked_at = int(time.time())
+        user.gemini_proxy_last_error = (reason or None)
+
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+        return {
+            "proxy": (user.gemini_proxy or "").strip() or None,
+            "enabled": int(user.gemini_proxy_enabled or 0),
+            "status": int(user.gemini_proxy_status or 0),
+            "checked_at": int(user.gemini_proxy_checked_at or 0),
+            "last_error": user.gemini_proxy_last_error,
+        }
+
+
+async def set_user_gemini_proxy_health(user_id: int, is_ok: bool, error: str | None = None) -> dict[str, Any]:
+    async with _session_scope() as session:
+        result = await session.execute(select(user_db).where(user_db.user_id == int(user_id)))
+        user = result.scalars().first()
+
+        if not user:
+            roles = "admin" if int(user_id) in admin_id_list else None
+            user = user_db(user_id=int(user_id), roles=roles, timezone_offset=3)
+
+        user.gemini_proxy_status = 1 if is_ok else 0
+        user.gemini_proxy_checked_at = int(time.time())
+        user.gemini_proxy_last_error = None if is_ok else (error or "proxy_check_failed")
+
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+        return {
+            "proxy": (user.gemini_proxy or "").strip() or None,
+            "enabled": int(user.gemini_proxy_enabled or 0),
+            "status": int(user.gemini_proxy_status or 0),
+            "checked_at": int(user.gemini_proxy_checked_at or 0),
+            "last_error": user.gemini_proxy_last_error,
+        }
+
+
+async def get_latest_admin_health_event(admin_id: int):
+    async with _session_scope() as session:
+        result = await session.execute(
+            select(account_health_db)
+            .where(account_health_db.admin_id == int(admin_id))
+            .order_by(account_health_db.date.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
 
 

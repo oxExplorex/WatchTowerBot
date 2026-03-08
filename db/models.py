@@ -1,4 +1,4 @@
-from typing import Optional
+﻿from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import BigInteger, Integer
@@ -18,8 +18,17 @@ class user_db(SQLModel, table=True):
     username: Optional[str] = Field(default=None)
     full_name: Optional[str] = Field(default=None)
     roles: Optional[str] = Field(default=None, index=True)
+
     timezone_offset: int = Field(default=3, sa_type=Integer)
     auto_update_enabled: int = Field(default=0, sa_type=Integer)
+
+    # Gemini proxy settings (1 user/admin -> 1 proxy)
+    gemini_proxy: Optional[str] = Field(default=None)
+    gemini_proxy_enabled: int = Field(default=0, sa_type=Integer)
+    gemini_proxy_status: int = Field(default=0, sa_type=Integer)
+    gemini_proxy_checked_at: Optional[int] = Field(default=None, sa_type=BigInteger)
+    gemini_proxy_last_error: Optional[str] = Field(default=None)
+
     update_snooze_until: Optional[int] = Field(default=None, sa_type=BigInteger)
     update_last_notified: Optional[int] = Field(default=None, sa_type=BigInteger)
 

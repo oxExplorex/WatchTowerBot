@@ -59,5 +59,6 @@ migrations/
 
 # Local scripts
 test.py
+test*.py
 _test.py
 

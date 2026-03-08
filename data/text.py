@@ -1,4 +1,4 @@
-EMOJI_YES_OR_NO_TEXT = ["✅", "❌"]
+﻿EMOJI_YES_OR_NO_TEXT = ["✅", "❌"]
 
 START_MESSAGE_TEXT = "Бот запущен. Откройте «⚙️ Настройки» для информации и управления."
 NOTICE_ADMINISTRATOR_TO_ACTIVE_BOT = "Бот запущен"
@@ -137,13 +137,19 @@ GEMINI_ANALYZING_CONTENT_TEXT = "Analyzing content..."
 
 # Proxy/restart texts
 PROXY_MENU_PROMPT_TEXT = (
-    "Введите прокси для работы с Gemini\n\n"
-    "Формат: {ip}:{port}:{user}:{password}\n"
-    "Или отправьте 0 для отключения"
+    "<b>🌐 Gemini прокси</b>\n\n"
+    "Текущий: <code>{proxy}</code>\n"
+    "Статус: <b>{status}</b>\n"
+    "Последняя проверка (unix): <code>{checked_at}</code>\n"
+    "Ошибка: <code>{error}</code>\n\n"
+    "Отправьте новый HTTP-прокси:\n"
+    "• <code>ip:port:user:password</code>\n"
+    "• <code>ip:port@user:password</code>\n\n"
+    "Чтобы отключить прокси, отправьте <code>0</code>."
 )
-PROXY_SET_TEXT = "Прокси установлены"
-PROXY_DISABLED_TEXT = "Прокси выключены"
-PROXY_INVALID_FORMAT_TEXT = "Неверный формат прокси"
+PROXY_SET_TEXT = "✅ Прокси сохранен"
+PROXY_DISABLED_TEXT = "✅ Прокси отключен"
+PROXY_INVALID_FORMAT_TEXT = "❌ Неверный формат. Доступны только HTTP: ip:port:user:password или ip:port@user:password"
 RESTARTING_TEXT = "Перезапускаю..."
 
 # Parser/runtime notifications
@@ -230,6 +236,9 @@ SETTINGS_MENU_TITLE = (
     "Версия бота: <code>{bot_version}</code>\n"
     "Статус версии: <b>{version_state}</b>\n"
     "Последняя проверка: <b>{last_check_ago}</b> мин назад\n\n"
+    "Парсер чатов: <b>{parser_status}</b>\n"
+    "Gemini: <b>{gemini_status}</b>\n"
+    "Прокси Gemini: <b>{proxy_status}</b>\n\n"
     "<code>{date}</code>"
 )
 VERSION_STATE_UNKNOWN = "⚪ Неизвестно"
@@ -242,7 +251,7 @@ SETTINGS_BTN_RUN_UPDATE = "⬇️ Обновиться"
 SETTINGS_BTN_TIMEZONE = "🕓 Часовой пояс: {tz_label}"
 SETTINGS_BTN_RESTART = "♻️ Перезагрузить"
 SETTINGS_BTN_CLOSE = "❌ Закрыть"
-SETTINGS_BTN_CHECK_UPDATE = "🔎 Проверить обновление"
+SETTINGS_BTN_CHECK_UPDATE = "🔎 Проверить"
 SETTINGS_TOAST_UPDATED = "✅ Настройки обновлены"
 SETTINGS_UPDATE_OK_TOAST = "✅ У вас актуальная версия"
 SETTINGS_UPDATE_AVAILABLE_TOAST = "🆕 Доступна новая версия: {latest_version}"
@@ -300,3 +309,44 @@ ACCOUNT_MENU_TITLE = "{status} {name} [{user_id}]"
 APPS_MENU_ADD = "➕ Добавить приложение"
 APPS_MENU_USE = "🧩 {tag_name} [{app_id}] • профилей: {linked_count}"
 APPS_MENU_DELETE = "🗑 Удалить"
+
+SETTINGS_BTN_PROXY = "🌐 Прокси: {state}"
+SETTINGS_BTN_PROXY_CHECK = "🧪 Проверить прокси"
+PROXY_CHECK_OK_TEXT = "✅ Прокси работает"
+PROXY_CHECK_FAIL_TEXT = "❌ Прокси не работает: {reason}"
+
+GEMINI_PROXY_REQUIRED_TEXT = "❌ Для Gemini нужен HTTP-прокси или VPN. Установите прокси в настройках."
+GEMINI_PROXY_INVALID_TEXT = "❌ Формат прокси некорректный. Обновите прокси в настройках."
+GEMINI_PROXY_DOWN_TEXT = "❌ Gemini временно недоступен: прокси не отвечает."
+GEMINI_PROXY_AUTO_DISABLED_TEXT = "⚠️ Gemini-прокси автоматически отключен. Причина: <code>{reason}</code>"
+
+
+# Shared status/log labels (moved from code)
+PARSER_LOG_NEW_CHAT_TEXT = "USER: {user_id} | Новый чат {chat_id} @{username} | {chat_name}"
+PARSER_LOG_DELETED_CHAT_TEXT = "USER: {user_id} | Удалённый чат {chat_id} @{username} | {chat_name}"
+
+PROXY_STATUS_DISABLED_TEXT = "🔴 выключен"
+PROXY_STATUS_OK_TEXT = "🟢 работает"
+PROXY_STATUS_PENDING_TEXT = "🟡 не проверен"
+PROXY_NOT_SET_TEXT = "не задан"
+PROXY_MENU_NO_DATA_TEXT = "нет"
+PROXY_GEMINI_KEY_EMPTY_TEXT = "GEMINI_KEY пустой"
+
+SETTINGS_STATUS_NO_DATA_TEXT = "⚫ нет данных"
+SETTINGS_PARSER_STATUS_OK_TEXT = "🟢 работает"
+SETTINGS_PARSER_STATUS_STALE_TEXT = "🟡 давно не проверялся"
+SETTINGS_PARSER_STATUS_ERROR_TEXT = "🔴 ошибка"
+
+SETTINGS_GEMINI_STATUS_KEY_MISSING_TEXT = "🔴 ключ не задан"
+SETTINGS_GEMINI_STATUS_PROXY_MISSING_TEXT = "🔴 прокси не задан"
+SETTINGS_GEMINI_STATUS_OK_TEXT = "🟢 работает"
+SETTINGS_GEMINI_STATUS_PROXY_ERROR_TEXT = "🔴 ошибка прокси"
+SETTINGS_GEMINI_STATUS_PENDING_TEXT = "🟡 не проверен"
+
+SETTINGS_PROXY_STATE_OFF_TEXT = "🔴 выключен"
+SETTINGS_PROXY_STATE_OK_TEXT = "🟢 ok"
+SETTINGS_PROXY_STATE_PENDING_TEXT = "🟡 check"
+
+GEMINI_PROMPT_ADMIN_PLACEHOLDER = "[Здесь перечислить user_id через запятую]"
+
+GEMINI_TEST_PROMPT_TEXT = "Привет, напиши небольшой рассказ на любую тему в пределах 1000 символов"

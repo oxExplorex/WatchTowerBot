@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import time
 from datetime import timedelta
 
@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import data.text as constant_text
+from data.config import GEMINI_KEY
 from core.logging import bot_logger
 from core.process_control import restart_current_process
 from core.session_runtime import stop_all_clients
@@ -18,7 +19,9 @@ from db.main import (
     get_accounts_overview,
     get_admin_health_events,
     get_all_health_events,
+    get_latest_admin_health_event,
     get_user_auto_update_enabled,
+    get_user_gemini_proxy_config,
     get_user_timezone_offset,
     get_version_state_cache,
     set_user_auto_update_enabled,
@@ -60,6 +63,49 @@ def _timezone_rows_text() -> str:
 
 def _auto_update_label(enabled: int) -> str:
     return constant_text.AUTO_UPDATE_ON_TEXT if int(enabled) == 1 else constant_text.AUTO_UPDATE_OFF_TEXT
+
+
+def _parser_runtime_label(last_event, now_ts: int) -> str:
+    if not last_event:
+        return constant_text.SETTINGS_STATUS_NO_DATA_TEXT
+
+    event_ts = int(getattr(last_event, "date", 0) or 0)
+    event_status = int(getattr(last_event, "status", 0) or 0)
+    age_sec = max(0, now_ts - event_ts)
+
+    if event_status == 1 and age_sec <= 60 * 40:
+        return constant_text.SETTINGS_PARSER_STATUS_OK_TEXT
+    if event_status == 1:
+        return constant_text.SETTINGS_PARSER_STATUS_STALE_TEXT
+    return constant_text.SETTINGS_PARSER_STATUS_ERROR_TEXT
+
+
+def _gemini_runtime_label(proxy_cfg: dict) -> str:
+    if not GEMINI_KEY:
+        return constant_text.SETTINGS_GEMINI_STATUS_KEY_MISSING_TEXT
+
+    enabled = int(proxy_cfg.get("enabled", 0) or 0)
+    status = int(proxy_cfg.get("status", 0) or 0)
+    proxy = (proxy_cfg.get("proxy") or "").strip()
+
+    if not enabled or not proxy:
+        return constant_text.SETTINGS_GEMINI_STATUS_PROXY_MISSING_TEXT
+    if status == 1:
+        return constant_text.SETTINGS_GEMINI_STATUS_OK_TEXT
+
+    last_error = (proxy_cfg.get("last_error") or "").strip()
+    if last_error:
+        return constant_text.SETTINGS_GEMINI_STATUS_PROXY_ERROR_TEXT
+    return constant_text.SETTINGS_GEMINI_STATUS_PENDING_TEXT
+
+def _proxy_status_label(proxy_cfg: dict) -> str:
+    enabled = int(proxy_cfg.get("enabled", 0) or 0)
+    status = int(proxy_cfg.get("status", 0) or 0)
+    if not enabled:
+        return constant_text.SETTINGS_PROXY_STATE_OFF_TEXT
+    if status == 1:
+        return constant_text.SETTINGS_PROXY_STATE_OK_TEXT
+    return constant_text.SETTINGS_PROXY_STATE_PENDING_TEXT
 
 
 def _status_icon(fails: int, total: int) -> str:
@@ -230,10 +276,21 @@ async def _settings_text(admin_id: int) -> str:
     tz_offset = await get_user_timezone_offset(admin_id)
     version_state, checked_at, _ = await _get_cached_version_state()
 
+    now_ts = int(time.time())
+    last_event = await get_latest_admin_health_event(admin_id)
+    proxy_cfg = await get_user_gemini_proxy_config(admin_id)
+
+    parser_status = _parser_runtime_label(last_event, now_ts)
+    gemini_status = _gemini_runtime_label(proxy_cfg)
+    proxy_status = _proxy_status_label(proxy_cfg)
+
     return constant_text.SETTINGS_MENU_TITLE.format(
         bot_version=get_local_version(),
         version_state=version_state,
         last_check_ago=_minutes_ago(checked_at),
+        parser_status=parser_status,
+        gemini_status=gemini_status,
+        proxy_status=proxy_status,
         date=DateTime(tz_offset).time_strftime("%d.%m.%Y %H:%M:%S.%f"),
     )
 
@@ -241,36 +298,45 @@ async def _settings_text(admin_id: int) -> str:
 async def _settings_inline(admin_id: int):
     tz_offset = await get_user_timezone_offset(admin_id)
     auto_update = await get_user_auto_update_enabled(admin_id)
+    proxy_cfg = await get_user_gemini_proxy_config(admin_id)
+
     local_version = get_local_version()
     _, _, latest_version = await _get_cached_version_state()
     has_update = bool(latest_version and is_newer_version(local_version, latest_version))
 
     keyboard = InlineKeyboardBuilder()
+
+    update_row = [
+        InlineKeyboardButton(
+            text=constant_text.SETTINGS_BTN_AUTO_UPDATE.format(state=_auto_update_label(auto_update)),
+            callback_data=f"set:au:{0 if auto_update else 1}",
+        ),
+        InlineKeyboardButton(
+            text=constant_text.SETTINGS_BTN_CHECK_UPDATE,
+            callback_data="set:update:check",
+        ),
+    ]
+    keyboard.row(*update_row)
+
     if has_update:
         keyboard.row(
             InlineKeyboardButton(
                 text=constant_text.SETTINGS_BTN_RUN_UPDATE,
                 callback_data="set:update:run",
-            ),
-            InlineKeyboardButton(
-                text=constant_text.SETTINGS_BTN_CHECK_UPDATE,
-                callback_data="set:update:check",
-            ),
-        )
-    else:
-        keyboard.row(
-            InlineKeyboardButton(
-                text=constant_text.SETTINGS_BTN_CHECK_UPDATE,
-                callback_data="set:update:check",
-            ),
+            )
         )
 
     keyboard.row(
         InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_AUTO_UPDATE.format(state=_auto_update_label(auto_update)),
-            callback_data=f"set:au:{0 if auto_update else 1}",
+            text=constant_text.SETTINGS_BTN_PROXY.format(state=_proxy_status_label(proxy_cfg)),
+            callback_data="set:proxy:open",
+        ),
+        InlineKeyboardButton(
+            text=constant_text.SETTINGS_BTN_PROXY_CHECK,
+            callback_data="set:proxy:check",
         ),
     )
+
     keyboard.row(
         InlineKeyboardButton(
             text=constant_text.SETTINGS_BTN_TIMEZONE.format(tz_label=_tz_offset_label(tz_offset)),
@@ -552,4 +618,17 @@ async def update_notice_snooze_handler(call: CallbackQuery, state: FSMContext):
 
     await call.message.edit_reply_markup(reply_markup=keyboard.as_markup())
     await call.answer(constant_text.UPDATE_NOTIFY_SNOOZE_TOAST)
+
+
+
+
+
+
+
+
+
+
+
+
+
 

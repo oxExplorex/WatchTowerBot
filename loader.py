@@ -1,19 +1,21 @@
 ﻿import asyncio
-import os
 import traceback
+from pathlib import Path
 
-import google.generativeai as genai
 from aiogram import Bot, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from google.generativeai import ChatSession
 from pyrogram import Client
 
 from core.logging import bot_logger
-from data.gemini_safety import SAFETY_SETTINGS
+import data.text as constant_text
 from data.config import GEMINI_KEY, TOKEN_BOT
 from db.main import close_database, connect_database, get_account_all, get_app_tg_uuid_aio
 from db.migrations import run_db_migrations
+
+
+_PROMPT_PATH = Path("data/promt_ai_userbot.txt")
+_PROMPT_ADMIN_PLACEHOLDER = constant_text.GEMINI_PROMPT_ADMIN_PLACEHOLDER
 
 
 def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
@@ -23,6 +25,19 @@ def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         return loop
+
+
+def _build_system_instruction(admin_ids_text: str) -> str:
+    if not _PROMPT_PATH.exists():
+        return ""
+
+    try:
+        prompt_raw = _PROMPT_PATH.read_text(encoding="utf-8")
+    except Exception:
+        bot_logger.exception("Failed to read Gemini prompt file")
+        return ""
+
+    return prompt_raw.replace(_PROMPT_ADMIN_PLACEHOLDER, admin_ids_text)
 
 
 loop = _get_or_create_event_loop()
@@ -37,7 +52,7 @@ async def _get_apps_user() -> list[Client]:
     try:
         await connect_database()
 
-        apps = []
+        apps: list[Client] = []
         for account in await get_account_all(active_only=True):
             app_tg = await get_app_tg_uuid_aio(account.app_tg)
             if not app_tg:
@@ -63,61 +78,37 @@ async def _get_apps_user() -> list[Client]:
         return []
 
 
-_ = loop.run_until_complete(_bootstrap_db())
-apps_session: list[Client] = loop.run_until_complete(_get_apps_user())
+async def _build_gemini_system_instruction() -> str:
+    if not GEMINI_KEY:
+        bot_logger.warning("GEMINI_KEY is empty; Gemini disabled")
+        return ""
 
-router = Router()
-bot = Bot(
-    token=TOKEN_BOT,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-)
-
-
-async def _get_gemini_chat():
     try:
         await connect_database()
-
-        if os.path.exists("data/proxy.txt"):
-            with open("data/proxy.txt", "r", encoding="utf-8") as file:
-                proxy_raw = file.read().strip()
-                if proxy_raw and proxy_raw != "0":
-                    ip, port, user, password = proxy_raw.split(":")
-                    proxy = f"http://{user}:{password}@{ip}:{port}"
-                    bot_logger.info(f"Proxy enabled: {proxy}")
-
-                    os.environ["http_proxy"] = proxy
-                    os.environ["HTTP_PROXY"] = proxy
-                    os.environ["https_proxy"] = proxy
-                    os.environ["HTTPS_PROXY"] = proxy
-                    os.environ["grpc_proxy"] = proxy
-                    os.environ["GRPC_PROXY"] = proxy
-
-        genai.configure(api_key=GEMINI_KEY)
-
-        with open("data/promt_ai_userbot.txt", "r", encoding="utf-8") as file:
-            system_instruction = file.read()
-
-        admin_ids = list(set(x.user_id for x in await get_account_all(active_only=True)))
+        accounts = await get_account_all(active_only=True)
+        admin_ids = sorted({int(x.user_id) for x in accounts if x.user_id is not None})
         admin_ids_text = ", ".join(str(x) for x in admin_ids)
-
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",
-            system_instruction=system_instruction.replace("[Здесь перечислить user_id через запятую]", admin_ids_text),
-            safety_settings=SAFETY_SETTINGS,
-        )
-        chat_gemini = model.start_chat(history=[])
+        system_instruction = _build_system_instruction(admin_ids_text)
 
         await close_database()
-        return chat_gemini
+        return system_instruction
     except Exception:
         bot_logger.info(traceback.format_exc())
         try:
             await close_database()
         except Exception:
             pass
-        return None
+        return ""
 
 
-chat_gemini: ChatSession = loop.run_until_complete(_get_gemini_chat())
+_ = loop.run_until_complete(_bootstrap_db())
+apps_session: list[Client] = loop.run_until_complete(_get_apps_user())
+gemini_system_instruction = loop.run_until_complete(_build_gemini_system_instruction())
+
+router = Router()
+bot = Bot(
+    token=TOKEN_BOT,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+)
 
 
