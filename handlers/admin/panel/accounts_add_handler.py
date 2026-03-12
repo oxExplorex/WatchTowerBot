@@ -150,7 +150,12 @@ async def receive_account_code_handler(message: Message, state: FSMContext):
     await not_warning_delete_message(message=message)
 
     if not code:
-        return await message.answer(constant_text.ERROR_FORMAT_TEXT)
+        await close_state_pyrogram_client(state)
+        await state.clear()
+        return await message.answer(
+            text=constant_text.ERROR_FORMAT_TEXT,
+            reply_markup=static_admin_keyboard(),
+        )
 
     app_info = await get_app_tg_uuid(data["uuid_app"], user_id)
     if not app_info:
