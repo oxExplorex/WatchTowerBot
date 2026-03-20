@@ -55,8 +55,8 @@ Thumbs.db
 Desktop.ini
 
 # Local scripts
-test.py
-test*.py
-_test.py
+/test.py
+/test*.py
+/_test.py
 local_*.bat
 
