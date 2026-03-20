@@ -35,6 +35,7 @@ ACTION_REFRESH_TEXT = "🔄 Обновить"
 ACTION_BACK_TEXT = "⬅️ Назад"
 ACTION_PAGE_PREV_TEXT = "◀️"
 ACTION_PAGE_NEXT_TEXT = "▶️"
+UNKNOWN_TEXT = "unknown"
 
 STARTUP_MISSING_ENCRYPTION_KEY_TEXT = (
     "⚠️ Бот не запустился: не задан DB_ENCRYPTION_KEY.\n"

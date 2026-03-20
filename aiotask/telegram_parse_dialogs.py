@@ -117,7 +117,7 @@ def _ids_signature(ids: set[int]) -> str:
 
 async def _drop_dead_session(app_session: Client, error: Exception) -> None:
     number = session_number_from_client(app_session)
-    bot_logger.error(f"Session dropped: {number or 'unknown'} | {error.__class__.__name__}: {error}")
+    bot_logger.error(f"Session dropped: {number or constant_text.UNKNOWN_TEXT} | {error.__class__.__name__}: {error}")
 
     if app_session in apps_session:
         await remove_client_from_runtime(app_session)
@@ -147,7 +147,7 @@ async def _drop_dead_session(app_session: Client, error: Exception) -> None:
         await bot.send_message(
             chat_id=account.admin_id,
             text=constant_text.PARSER_SESSION_DROPPED_TEXT.format(
-                number=html.quote(str(account.number or "unknown"))
+                number=html.quote(str(account.number or constant_text.UNKNOWN_TEXT))
             ),
         )
     except Exception:
