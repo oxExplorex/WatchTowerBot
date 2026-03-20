@@ -36,3 +36,9 @@ ACTION_BACK_TEXT = "⬅️ Назад"
 ACTION_PAGE_PREV_TEXT = "◀️"
 ACTION_PAGE_NEXT_TEXT = "▶️"
 
+STARTUP_MISSING_ENCRYPTION_KEY_TEXT = (
+    "⚠️ Бот не запустился: не задан DB_ENCRYPTION_KEY.\n"
+    "Сгенерируйте ключ и добавьте в .env:\n"
+    "<code>python -c \"import secrets; print(secrets.token_urlsafe(48))\"</code>\n"
+    "После этого перезапустите бота."
+)

@@ -18,6 +18,8 @@ from pyrogram.handlers import MessageHandler
 from aiotask.telegram_parse_dialogs import starting_tg_parse_dialogs_handler
 from aiotask.update_notifier import start_update_notifier
 from core.logging import bot_logger
+import data.text as constant_text
+from data.config import admin_id_list
 from db.main import close_database, connect_database
 from filters.all_filters_app import file_spoiler_filter
 from handlers import router
@@ -60,9 +62,23 @@ def _register_pyrogram_handlers() -> None:
         )
 
 
+async def _notify_admins_startup_failure(text: str) -> None:
+    admin_ids = sorted({int(x) for x in admin_id_list if int(x) > 10})
+    for admin_id in admin_ids:
+        try:
+            await bot.send_message(admin_id, text)
+        except Exception:
+            bot_logger.exception(f"Failed to send startup failure notification to admin_id={admin_id}")
+
+
 async def start_polling_bot():
     bot_logger.info("Starting bot bootstrap")
-    await connect_database()
+    try:
+        await connect_database()
+    except RuntimeError as exc:
+        if "DB_ENCRYPTION_KEY is required" in str(exc):
+            await _notify_admins_startup_failure(constant_text.STARTUP_MISSING_ENCRYPTION_KEY_TEXT)
+        raise
     try:
         await initialize_runtime_state()
 
