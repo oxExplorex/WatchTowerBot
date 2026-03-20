@@ -29,7 +29,7 @@ async def _get_accounts_page(admin_id: int, page: int):
     return count, total_pages, keyboard
 
 
-@router.message(IsPrivate(), IsAdmin(), F.text.in_(constant_text.ACCOUNTS_USER_KEYBOARD), StateFilter("*"))
+@router.message(IsPrivate(), IsAdmin(), F.text == constant_text.ACCOUNTS_USER_KEYBOARD[0], StateFilter("*"))
 async def open_accounts_menu_handler(message: Message, state: FSMContext):
     await state.clear()
 

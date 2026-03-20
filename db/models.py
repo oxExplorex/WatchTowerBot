@@ -9,10 +9,14 @@ from sqlmodel import Field, SQLModel
 
 class UsernameHistory(SQLModel, table=True):
     __tablename__ = "username_history_db"
+    __table_args__ = (
+        UniqueConstraint("user_id", "username_hash", name="uq_username_history_db_user_username_hash"),
+    )
 
     uuid: UUID = Field(default_factory=uuid4, primary_key=True)
     user_id: Optional[int] = Field(default=None, sa_type=BigInteger, index=True)
     username: Optional[str] = Field(default=None)
+    username_hash: Optional[str] = Field(default=None, index=True)
     date: int = Field(sa_type=BigInteger)
 
 
@@ -26,6 +30,7 @@ class User(SQLModel, table=True):
     user_id: int = Field(sa_type=BigInteger, index=True)
     username: Optional[str] = Field(default=None)
     full_name: Optional[str] = Field(default=None)
+    username_hash: Optional[str] = Field(default=None, index=True)
     roles: Optional[str] = Field(default=None, index=True)
 
     timezone_offset: int = Field(default=3, sa_type=Integer)
@@ -66,6 +71,7 @@ class Account(SQLModel, table=True):
 
     app_tg: Optional[UUID] = Field(default=None, index=True, foreign_key="app_tg_db.uuid")
     number: Optional[str] = Field(default=None)
+    number_hash: Optional[str] = Field(default=None, index=True)
 
     alert_black_list: int = Field(default=1, sa_type=Integer)
     alert_black_list_id: int = Field(default=1, sa_type=BigInteger)
@@ -82,6 +88,10 @@ class Account(SQLModel, table=True):
     last_update: Optional[int] = Field(default=None, sa_type=BigInteger)
     last_dialogs_count: Optional[int] = Field(default=None, sa_type=BigInteger)
     last_full_dialogs_scan: Optional[int] = Field(default=None, sa_type=BigInteger)
+    baseline_sync_done: int = Field(default=0, sa_type=Integer)
+    pending_delete_signature: Optional[str] = Field(default=None)
+    pending_delete_count: int = Field(default=0, sa_type=Integer)
+    pending_delete_since: Optional[int] = Field(default=None, sa_type=BigInteger)
     is_active: int = Field(default=1, sa_type=Integer, index=True)
 
 
@@ -90,9 +100,12 @@ class HistoryUser(SQLModel, table=True):
 
     uuid: UUID = Field(default_factory=uuid4, primary_key=True)
     admin_id: int = Field(sa_type=BigInteger)
+    # Legacy field (historically stored chat_id).
     user_id: int = Field(sa_type=BigInteger)
+    chat_id: Optional[int] = Field(default=None, sa_type=BigInteger, index=True)
+    account_user_id: Optional[int] = Field(default=None, sa_type=BigInteger, index=True)
     action_id: int = Field(sa_type=Integer)
-    date: int = Field(sa_type=BigInteger)
+    date: int = Field(sa_type=BigInteger, index=True)
 
 
 class DumpChatUser(SQLModel, table=True):
@@ -137,4 +150,3 @@ history_users_db = HistoryUser
 dump_chat_user_db = DumpChatUser
 account_health_db = AccountHealth
 version_state_db = VersionState
-

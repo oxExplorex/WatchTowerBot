@@ -20,7 +20,10 @@ ACCOUNT_INPUT_NUMBER_TEXT = "Введите номер в формате +790011
 ACCOUNT_INPUT_CODE_TEXT = "Введите код подтверждения из Telegram"
 ACCOUNT_INPUT_PASSWORD_TEXT = "Введите пароль 2FA"
 
-ACCOUNTS_USER_KEYBOARD = ["👤 Аккаунты"]
+ACCOUNTS_USER_KEYBOARD = ["👤 Аккаунты", "🔍 Поиск чата"]
+CHAT_HISTORY_SEARCH_PROMPT_TEXT = "Введите chat_id или @username"
+CHAT_HISTORY_SEARCH_EMPTY_TEXT = "История по запросу не найдена"
+CHAT_HISTORY_SEARCH_USAGE_TEXT = "Пример: 123456789 или @username"
 
 ACCOUNT_STATUS_ENABLED_TEXT = "✅ включен"
 ACCOUNT_STATUS_DISABLED_TEXT = "⛔ выключен"
@@ -57,4 +60,3 @@ ACCOUNT_MENU_UNKNOWN_NAME = "Unknown"
 ACCOUNT_MENU_ACTIVE_ICON = "🟢"
 ACCOUNT_MENU_INACTIVE_ICON = "⛔"
 ACCOUNT_MENU_TITLE = "{status} {name} [{user_id}]"
-

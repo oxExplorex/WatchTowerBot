@@ -58,4 +58,5 @@ Desktop.ini
 test.py
 test*.py
 _test.py
+local_*.bat
 

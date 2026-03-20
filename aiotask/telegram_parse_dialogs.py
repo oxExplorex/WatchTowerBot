@@ -1,4 +1,5 @@
 ﻿import asyncio
+import hashlib
 import traceback
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -13,8 +14,8 @@ from core.logging import bot_logger
 from core.session_runtime import remove_client_from_runtime, session_number_from_client
 from db.main import (
     add_account_health_event,
+    add_chat_history_event,
     create_dump_chat_user,
-    delete_dump_chat_admin_all,
     del_dump_chat_user,
     delete_account_by_number,
     get_account_by_number,
@@ -29,6 +30,9 @@ from utils.others import get_user_log_text
 
 scheduler = AsyncIOScheduler()
 FULL_SCAN_FORCE_INTERVAL_SEC = 60 * 60 * 24
+MASS_DELETE_MIN_EXISTING = 20
+MASS_DELETE_MIN_COUNT = 10
+MASS_DELETE_MIN_RATIO = 0.25
 
 FATAL_SESSION_ERROR_NAMES = {
     "AuthKeyDuplicated",
@@ -104,6 +108,13 @@ def _is_bot_or_channel(chat_obj) -> bool:
     return "bot" in chat_type or "channel" in chat_type
 
 
+def _ids_signature(ids: set[int]) -> str:
+    if not ids:
+        return ""
+    payload = ",".join(str(x) for x in sorted(ids))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 async def _drop_dead_session(app_session: Client, error: Exception) -> None:
     number = session_number_from_client(app_session)
     bot_logger.error(f"Session dropped: {number or 'unknown'} | {error.__class__.__name__}: {error}")
@@ -114,7 +125,7 @@ async def _drop_dead_session(app_session: Client, error: Exception) -> None:
     if not number:
         return
 
-    account = await delete_account_by_number(number)
+    account = await get_account_by_number(number)
     if not account:
         bot_logger.warning(f"Failed to find account in DB for dead session number={number}")
         return
@@ -127,7 +138,7 @@ async def _drop_dead_session(app_session: Client, error: Exception) -> None:
         date=DateTime().timestamp(),
         reason=f"drop:{error.__class__.__name__}",
     )
-    await delete_dump_chat_admin_all(account.user_id)
+    await delete_account_by_number(number)
 
     if not account.admin_id:
         return
@@ -246,9 +257,72 @@ async def __tg_parse_dialogs_handler() -> None:
                     f"filtered_out={filtered_out_count}"
                 )
 
+                if not existing_chat_ids and current_chat_ids:
+                    bot_logger.warning(
+                        f"Baseline sync activated for user={user_id}: "
+                        f"existing_dump_empty, bootstrap_size={len(current_chat_ids)}"
+                    )
+                    for chat_id in current_chat_ids:
+                        await create_dump_chat_user(user_id, chat_id)
+
+                    await update_account_uuid(
+                        account_settings.uuid,
+                        account_settings.admin_id,
+                        last_update=now_ts,
+                        last_dialogs_count=total_dialogs,
+                        last_full_dialogs_scan=now_ts,
+                        baseline_sync_done=1,
+                        pending_delete_signature=None,
+                        pending_delete_count=0,
+                        pending_delete_since=None,
+                    )
+                    await add_account_health_event(
+                        account_uuid=account_settings.uuid,
+                        admin_id=account_settings.admin_id,
+                        user_id=account_settings.user_id,
+                        status=1,
+                        date=now_ts,
+                        reason="baseline_sync",
+                    )
+                    continue
+
                 # Deletions are computed from all seen dialogs, not only filtered subset,
                 # so toggling bot/channel filter doesn't create false "deleted" events.
                 deleted_chats = existing_chat_ids - seen_chat_ids
+                existing_count = len(existing_chat_ids)
+                deleted_count = len(deleted_chats)
+                deleted_ratio = (deleted_count / existing_count) if existing_count else 0.0
+                is_mass_delete_candidate = (
+                    existing_count >= MASS_DELETE_MIN_EXISTING
+                    and deleted_count >= MASS_DELETE_MIN_COUNT
+                    and deleted_ratio >= MASS_DELETE_MIN_RATIO
+                )
+
+                mass_delete_guard_triggered = False
+                pending_delete_signature = None
+                pending_delete_count = 0
+                pending_delete_since = None
+
+                if is_mass_delete_candidate:
+                    signature = _ids_signature(deleted_chats)
+                    prev_signature = getattr(account_settings, "pending_delete_signature", None)
+                    prev_count = int(getattr(account_settings, "pending_delete_count", 0) or 0)
+                    if prev_signature == signature and prev_count == deleted_count:
+                        bot_logger.warning(
+                            f"Mass delete confirmed for user={user_id}: "
+                            f"deleted={deleted_count}/{existing_count} ({deleted_ratio:.2%})"
+                        )
+                    else:
+                        mass_delete_guard_triggered = True
+                        pending_delete_signature = signature
+                        pending_delete_count = deleted_count
+                        pending_delete_since = now_ts
+                        bot_logger.warning(
+                            f"Mass delete guard for user={user_id}: "
+                            f"deleted={deleted_count}/{existing_count} ({deleted_ratio:.2%}), "
+                            "waiting for next scan confirmation"
+                        )
+                        deleted_chats = set()
                 all_changes = new_chats + list(deleted_chats)
 
                 log_new = []
@@ -263,10 +337,24 @@ async def __tg_parse_dialogs_handler() -> None:
                     if chat_id in new_chats:
                         bot_logger.info(constant_text.PARSER_LOG_NEW_CHAT_TEXT.format(user_id=user_id, chat_id=chat_id, username=username, chat_name=chat_name))
                         await create_dump_chat_user(user_id, chat_id)
+                        await add_chat_history_event(
+                            admin_id=int(account_settings.admin_id or user_id),
+                            chat_id=int(chat_id),
+                            action_id=1,
+                            account_user_id=int(account_settings.user_id or 0),
+                            date=now_ts,
+                        )
                         log_new.append(get_user_log_text(1, chat_id, username, quote))
                     else:
                         bot_logger.info(constant_text.PARSER_LOG_DELETED_CHAT_TEXT.format(user_id=user_id, chat_id=chat_id, username=username, chat_name=chat_name))
                         await del_dump_chat_user(user_id, chat_id)
+                        await add_chat_history_event(
+                            admin_id=int(account_settings.admin_id or user_id),
+                            chat_id=int(chat_id),
+                            action_id=2,
+                            account_user_id=int(account_settings.user_id or 0),
+                            date=now_ts,
+                        )
                         log_del.append(get_user_log_text(2, chat_id, username, quote))
 
                 await update_account_uuid(
@@ -275,6 +363,10 @@ async def __tg_parse_dialogs_handler() -> None:
                     last_update=now_ts,
                     last_dialogs_count=total_dialogs,
                     last_full_dialogs_scan=now_ts,
+                    baseline_sync_done=1,
+                    pending_delete_signature=pending_delete_signature if mass_delete_guard_triggered else None,
+                    pending_delete_count=pending_delete_count if mass_delete_guard_triggered else 0,
+                    pending_delete_since=pending_delete_since if mass_delete_guard_triggered else None,
                 )
                 await add_account_health_event(
                     account_uuid=account_settings.uuid,
@@ -282,7 +374,7 @@ async def __tg_parse_dialogs_handler() -> None:
                     user_id=account_settings.user_id,
                     status=1,
                     date=now_ts,
-                    reason="ok",
+                    reason="mass_delete_guard" if mass_delete_guard_triggered else "ok",
                 )
 
                 if account_settings.alert_new_chat:

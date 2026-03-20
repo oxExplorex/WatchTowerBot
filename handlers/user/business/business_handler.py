@@ -4,7 +4,7 @@ from aiogram.types import Message
 
 import data.text as constant_text
 from core.logging import bot_logger
-from db.main import create_dump_chat_user, get_account_tg_to_user_id, get_dump_chat_user
+from db.main import add_chat_history_event, create_dump_chat_user, get_account_tg_to_user_id, get_dump_chat_user
 from loader import bot, router
 from utils.others import get_user_log_text
 
@@ -33,10 +33,17 @@ async def any_business_message_handler(message: Message):
         )
     )
     await create_dump_chat_user(admin_id, chat_id)
+    settings = await get_account_tg_to_user_id(admin_id)
+    if settings:
+        await add_chat_history_event(
+            admin_id=int(settings.admin_id or admin_id),
+            chat_id=int(chat_id),
+            action_id=1,
+            account_user_id=int(settings.user_id or admin_id),
+        )
 
     quote = html.quote(chat_name) if chat_name else chat_name
 
-    settings = await get_account_tg_to_user_id(admin_id)
     if not settings or not settings.is_active:
         return
 

@@ -13,13 +13,10 @@ from core.session_runtime import session_number_from_client
 from data.config import GEMINI_ACTION_DEBUG, GEMINI_KEY
 from data.gemini_safety import SAFETY_SETTINGS
 from db.main import (
-    disable_user_gemini_proxy,
     get_account_by_number,
-    get_admins,
     get_user_gemini_proxy_config,
     set_user_gemini_proxy_health,
 )
-from loader import bot
 from utils.proxy_utils import normalize_http_proxy_input
 
 
@@ -68,23 +65,6 @@ def _is_proxy_transport_error(exc: Exception) -> bool:
         "nodename nor servname provided",
     )
     return any(marker in text for marker in markers)
-
-
-async def _notify_proxy_disabled(admin_id: int, reason: str) -> None:
-    admin_ids = {int(admin_id)}
-    try:
-        for item in await get_admins():
-            if item.user_id and int(item.user_id) > 10:
-                admin_ids.add(int(item.user_id))
-    except Exception:
-        bot_logger.error(traceback.format_exc())
-
-    text = constant_text.GEMINI_PROXY_AUTO_DISABLED_TEXT.format(reason=reason)
-    for target in admin_ids:
-        try:
-            await bot.send_message(target, text)
-        except Exception:
-            bot_logger.error(traceback.format_exc())
 
 
 def get_answer_text_pre(reply_message: Message | None) -> str:
@@ -168,7 +148,6 @@ async def _generate_with_gemini(admin_id: int, parts: list[types.Part]) -> str:
     if enabled and proxy_raw:
         proxy_url = normalize_http_proxy_input(str(proxy_raw))
         if not proxy_url:
-            await disable_user_gemini_proxy(admin_id, reason="invalid_proxy_format")
             await set_user_gemini_proxy_health(admin_id, is_ok=False, error="invalid_proxy_format")
             return constant_text.GEMINI_PROXY_INVALID_TEXT
 
@@ -180,10 +159,8 @@ async def _generate_with_gemini(admin_id: int, parts: list[types.Part]) -> str:
         error_text = str(exc)
         await set_user_gemini_proxy_health(admin_id, is_ok=False, error=error_text[:250])
 
-        # Proxy mode failed at transport layer: disable it and retry once without proxy.
+        # Proxy mode failed at transport layer: keep saved proxy and retry once without proxy.
         if proxy_url and _is_proxy_transport_error(exc):
-            await disable_user_gemini_proxy(admin_id, reason=error_text[:250])
-            await _notify_proxy_disabled(admin_id, reason=error_text[:120])
             try:
                 return await _request_gemini(parts, proxy_url=None)
             except Exception:

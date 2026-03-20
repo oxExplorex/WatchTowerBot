@@ -61,6 +61,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 TOKEN_BOT = _env_str("TOKEN_BOT", "")
 GEMINI_KEY = _env_str("GEMINI_KEY", "")
 GEMINI_ACTION_DEBUG = _env_bool("GEMINI_ACTION_DEBUG", False)
+DB_ENCRYPTION_KEY = _env_str("DB_ENCRYPTION_KEY", "")
 
 # Database connection
 user = _env_str("DB_USER", "postgres")

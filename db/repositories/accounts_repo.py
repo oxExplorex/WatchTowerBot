@@ -5,12 +5,13 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import or_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
-from db.models import Account, AccountHealth, DumpChatUser, TelegramApp
+from db.models import Account, AccountHealth, DumpChatUser, HistoryUser, TelegramApp
 from db.repositories.base import BaseRepository, SessionLease
+from utils.crypto_store import blind_index, decrypt_text, encrypt_text
 
 
 def _to_uuid(value: Any) -> UUID | None:
@@ -33,6 +34,12 @@ class AccountsRepository(BaseRepository):
         await self._commit(lease.session, lease.owns_session)
         if refresh and lease.owns_session:
             await lease.session.refresh(entity)
+
+    def _hydrate_account(self, account: Account | None) -> Account | None:
+        if not account:
+            return None
+        account.number = decrypt_text(account.number)
+        return account
 
     async def get_app_tg_user_id(
         self,
@@ -155,7 +162,7 @@ class AccountsRepository(BaseRepository):
             count_result = await lease.session.execute(
                 select(func.count()).select_from(Account).where(col(Account.admin_id) == admin_id)
             )
-            return result.scalars().all(), int(count_result.scalar() or 0)
+            return [self._hydrate_account(x) for x in result.scalars().all()], int(count_result.scalar() or 0)
 
     async def get_account_all(
         self,
@@ -167,7 +174,7 @@ class AccountsRepository(BaseRepository):
             if active_only:
                 query = query.where(col(Account.is_active) == 1)
             result = await lease.session.execute(query)
-            return result.scalars().all()
+            return [self._hydrate_account(x) for x in result.scalars().all()]
 
     async def get_account_tg_to_user_id(
         self,
@@ -181,7 +188,7 @@ class AccountsRepository(BaseRepository):
                 query = query.where(col(Account.admin_id) == admin_id)
 
             result = await lease.session.execute(query)
-            return result.scalars().first()
+            return self._hydrate_account(result.scalars().first())
 
     async def get_account_uuid(self, uuid: Any, admin_id: int, session: AsyncSession | None = None) -> Account | None:
         uuid_value = _to_uuid(uuid)
@@ -192,7 +199,7 @@ class AccountsRepository(BaseRepository):
             result = await lease.session.execute(
                 select(Account).where(col(Account.uuid) == uuid_value, col(Account.admin_id) == admin_id)
             )
-            return result.scalars().first()
+            return self._hydrate_account(result.scalars().first())
 
     async def del_account_uuid(self, uuid: Any, admin_id: int, session: AsyncSession | None = None) -> bool:
         uuid_value = _to_uuid(uuid)
@@ -232,10 +239,14 @@ class AccountsRepository(BaseRepository):
 
             for key, value in fields.items():
                 if hasattr(temp, key):
-                    setattr(temp, key, value)
+                    if key == "number":
+                        temp.number = encrypt_text(value)
+                        temp.number_hash = blind_index(value)
+                    else:
+                        setattr(temp, key, value)
 
             await self._save(lease, temp, refresh=True)
-            return temp
+            return self._hydrate_account(temp)
 
     async def create_account_tg(
         self,
@@ -257,18 +268,20 @@ class AccountsRepository(BaseRepository):
 
             if account:
                 account.app_tg = app_tg_uuid
-                account.number = number
+                account.number = encrypt_text(number)
+                account.number_hash = blind_index(number)
                 account.is_active = 1
                 if getattr(account, "alert_spoiler_media", None) is None:
                     account.alert_spoiler_media = 1
                 await self._save(lease, account, refresh=True)
-                return account
+                return self._hydrate_account(account)
 
             account = Account(
                 admin_id=admin_id,
                 user_id=user_id,
                 app_tg=app_tg_uuid,
-                number=number,
+                number=encrypt_text(number),
+                number_hash=blind_index(number),
                 alert_del_chat_id=admin_id,
                 alert_new_chat_id=admin_id,
                 alert_bot=0,
@@ -276,7 +289,7 @@ class AccountsRepository(BaseRepository):
                 is_active=1,
             )
             await self._save(lease, account, refresh=True)
-            return account
+            return self._hydrate_account(account)
 
     async def get_dump_chat_admin_all(
         self,
@@ -344,10 +357,83 @@ class AccountsRepository(BaseRepository):
             await self._save(lease, DumpChatUser(admin_id=int(admin_id), chat_id=int(chat_id)))
             return True
 
+    async def add_chat_history_event(
+        self,
+        admin_id: int,
+        chat_id: int,
+        action_id: int,
+        account_user_id: int | None = None,
+        date: int | None = None,
+        session: AsyncSession | None = None,
+    ) -> None:
+        async with self._session(session) as lease:
+            await self._save(
+                lease,
+                HistoryUser(
+                    admin_id=int(admin_id),
+                    user_id=int(chat_id),
+                    chat_id=int(chat_id),
+                    account_user_id=int(account_user_id) if account_user_id is not None else None,
+                    action_id=int(action_id),
+                    date=int(date) if date is not None else int(time.time()),
+                ),
+            )
+
+    async def get_chat_history_events(
+        self,
+        admin_id: int,
+        chat_id: int,
+        limit: int = 100,
+        session: AsyncSession | None = None,
+    ) -> list[HistoryUser]:
+        lim = max(1, min(int(limit), 500))
+        async with self._session(session) as lease:
+            result = await lease.session.execute(
+                select(HistoryUser)
+                .where(
+                    col(HistoryUser.admin_id) == int(admin_id),
+                    (col(HistoryUser.chat_id) == int(chat_id)) | (col(HistoryUser.user_id) == int(chat_id)),
+                )
+                .order_by(col(HistoryUser.date).asc())
+                .limit(lim)
+            )
+            return result.scalars().all()
+
+    async def get_chat_history_events_by_chat_ids(
+        self,
+        admin_id: int,
+        chat_ids: list[int],
+        limit: int = 200,
+        session: AsyncSession | None = None,
+    ) -> list[HistoryUser]:
+        unique_ids = sorted({int(x) for x in chat_ids if x is not None})
+        if not unique_ids:
+            return []
+
+        lim = max(1, min(int(limit), 1000))
+        async with self._session(session) as lease:
+            result = await lease.session.execute(
+                select(HistoryUser)
+                .where(
+                    col(HistoryUser.admin_id) == int(admin_id),
+                    (col(HistoryUser.chat_id).in_(unique_ids)) | (col(HistoryUser.user_id).in_(unique_ids)),
+                )
+                .order_by(col(HistoryUser.date).asc())
+                .limit(lim)
+            )
+            return result.scalars().all()
+
     async def get_account_by_number(self, number: str, session: AsyncSession | None = None) -> Account | None:
         async with self._session(session) as lease:
-            result = await lease.session.execute(select(Account).where(col(Account.number) == str(number)))
-            return result.scalars().first()
+            number_value = str(number)
+            idx = blind_index(number_value)
+            conditions = [col(Account.number) == number_value]
+            if idx:
+                conditions.append(col(Account.number_hash) == idx)
+            result = await lease.session.execute(
+                select(Account).where(or_(*conditions))
+            )
+            return self._hydrate_account(result.scalars().first())
 
     async def delete_account_by_number(
         self,
@@ -355,30 +441,24 @@ class AccountsRepository(BaseRepository):
         session: AsyncSession | None = None,
     ) -> Account | None:
         async with self._session(session) as lease:
-            result = await lease.session.execute(select(Account).where(col(Account.number) == str(number)))
+            number_value = str(number)
+            idx = blind_index(number_value)
+            conditions = [col(Account.number) == number_value]
+            if idx:
+                conditions.append(col(Account.number_hash) == idx)
+            result = await lease.session.execute(
+                select(Account).where(or_(*conditions))
+            )
             records = result.scalars().all()
             if not records:
                 return None
 
-            account = records[0]
+            account = self._hydrate_account(records[0])
             for item in records:
                 await lease.session.delete(item)
 
             await self._commit(lease.session, lease.owns_session)
             return account
-
-    async def delete_dump_chat_admin_all(self, admin_id: int, session: AsyncSession | None = None) -> int:
-        async with self._session(session) as lease:
-            result = await lease.session.execute(select(DumpChatUser).where(col(DumpChatUser.admin_id) == admin_id))
-            records = result.scalars().all()
-            if not records:
-                return 0
-
-            for item in records:
-                await lease.session.delete(item)
-
-            await self._commit(lease.session, lease.owns_session)
-            return len(records)
 
     async def add_account_health_event(
         self,

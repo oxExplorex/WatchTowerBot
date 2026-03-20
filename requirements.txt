@@ -12,3 +12,4 @@ aiosqlite>=0.20.0
 alembic>=1.16.0
 pytest>=8.3.0
 pytest-asyncio>=0.24.0
+cryptography>=45.0.0

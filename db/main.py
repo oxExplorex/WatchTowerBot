@@ -11,7 +11,7 @@ from db.migrations import run_db_migrations
 from db.repositories.accounts_repo import AccountsRepository
 from db.repositories.settings_repo import SettingsRepository
 from db.repositories.users_repo import UsersRepository
-from db.models import Account, AccountHealth, DumpChatUser, TelegramApp, User
+from db.models import Account, AccountHealth, DumpChatUser, HistoryUser, TelegramApp, User
 from db.session import (
     close_engine,
     connect_engine,
@@ -20,6 +20,7 @@ from db.session import (
     session_scope as _session_scope,
 )
 from db.unit_of_work import UnitOfWork
+from utils.crypto_store import blind_index, encryption_enabled, is_encrypted
 
 
 def _cfg(name: str, default: Any = None) -> Any:
@@ -41,15 +42,22 @@ def _normalize_timezone_offset(offset: Any, default: int = 3) -> int:
 accounts_repository = AccountsRepository(_session_scope)
 settings_repository = SettingsRepository(_session_scope, admin_id_list, _normalize_timezone_offset)
 users_repository = UsersRepository(_session_scope, admin_id_list)
+_ENCRYPTION_BACKFILL_DONE = False
 
 
 async def connect_database() -> None:
+    global _ENCRYPTION_BACKFILL_DONE
     if is_connected():
         return
+    if not encryption_enabled():
+        raise RuntimeError("DB_ENCRYPTION_KEY is required. Set it in .env before starting the bot.")
 
     await ensure_database_exists(db_settings)
     await run_db_migrations(db_settings=db_settings)
     await connect_engine(db_settings.connection_string)
+    if not _ENCRYPTION_BACKFILL_DONE:
+        await run_encryption_backfill()
+        _ENCRYPTION_BACKFILL_DONE = True
 
 
 async def close_database() -> None:
@@ -126,6 +134,58 @@ async def get_admins() -> list[User]:
     return await users_repository.get_admins()
 
 
+async def find_user_ids_by_username(username: str) -> list[int]:
+    return await users_repository.find_user_ids_by_username(username=username)
+
+
+async def get_all_users() -> list[User]:
+    return await users_repository.get_all_users()
+
+
+async def run_encryption_backfill() -> dict[str, int]:
+    users_touched = 0
+    accounts_touched = 0
+
+    users = await get_all_users()
+    for user in users:
+        before_username = user.username
+        before_full_name = user.full_name
+        before_hash = getattr(user, "username_hash", None)
+        current_idx = None
+        if before_username:
+            current_idx = blind_index(before_username)
+
+        needs = (
+            (before_username and (not is_encrypted(before_username) or before_hash != current_idx))
+            or (before_full_name and not is_encrypted(before_full_name))
+        )
+        if not needs:
+            continue
+        await update_user(int(user.user_id), before_username, before_full_name)
+        users_touched += 1
+
+    accounts = await get_account_all(active_only=False)
+    for account in accounts:
+        if not account.number:
+            continue
+        current_idx = blind_index(account.number)
+        if is_encrypted(account.number) and getattr(account, "number_hash", None) == current_idx:
+            continue
+
+        admin_id = int(account.admin_id or 0)
+        if admin_id <= 0:
+            continue
+        await update_account_uuid(account.uuid, admin_id, number=account.number)
+        accounts_touched += 1
+
+    history_touched = await users_repository.backfill_username_history_encryption()
+    return {
+        "users": users_touched,
+        "accounts": accounts_touched,
+        "username_history": history_touched,
+    }
+
+
 async def get_app_tg_user_id(user_id: int, offset: int = 0) -> tuple[list[TelegramApp], int]:
     return await accounts_repository.get_app_tg_user_id(user_id=user_id, offset=offset)
 
@@ -198,16 +258,48 @@ async def create_dump_chat_user(admin_id: int, chat_id: int) -> bool:
     return await accounts_repository.create_dump_chat_user(admin_id=admin_id, chat_id=chat_id)
 
 
+async def add_chat_history_event(
+    admin_id: int,
+    chat_id: int,
+    action_id: int,
+    account_user_id: int | None = None,
+    date: int | None = None,
+) -> None:
+    return await accounts_repository.add_chat_history_event(
+        admin_id=admin_id,
+        chat_id=chat_id,
+        action_id=action_id,
+        account_user_id=account_user_id,
+        date=date,
+    )
+
+
+async def get_chat_history_events(admin_id: int, chat_id: int, limit: int = 100) -> list[HistoryUser]:
+    return await accounts_repository.get_chat_history_events(
+        admin_id=admin_id,
+        chat_id=chat_id,
+        limit=limit,
+    )
+
+
+async def get_chat_history_events_by_chat_ids(
+    admin_id: int,
+    chat_ids: list[int],
+    limit: int = 200,
+) -> list[HistoryUser]:
+    return await accounts_repository.get_chat_history_events_by_chat_ids(
+        admin_id=admin_id,
+        chat_ids=chat_ids,
+        limit=limit,
+    )
+
+
 async def get_account_by_number(number: str) -> Account | None:
     return await accounts_repository.get_account_by_number(number=number)
 
 
 async def delete_account_by_number(number: str) -> Account | None:
     return await accounts_repository.delete_account_by_number(number=number)
-
-
-async def delete_dump_chat_admin_all(admin_id: int) -> int:
-    return await accounts_repository.delete_dump_chat_admin_all(admin_id=admin_id)
 
 
 async def add_account_health_event(

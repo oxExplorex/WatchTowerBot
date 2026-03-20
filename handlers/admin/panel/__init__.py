@@ -2,5 +2,6 @@
 from .accounts_add_handler import router
 from .account_edit_handler import router
 from .account_del_handler import router
+from .chat_history_handler import router
 
 __all__ = ["router"]

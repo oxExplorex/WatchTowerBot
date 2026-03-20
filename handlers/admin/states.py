@@ -12,3 +12,4 @@ class AdminStates(StatesGroup):
     account_add_password = State()
 
     wait_proxy_manager = State()
+    wait_chat_history_search = State()
