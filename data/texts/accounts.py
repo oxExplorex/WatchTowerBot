@@ -23,6 +23,10 @@ ACCOUNT_INPUT_PASSWORD_TEXT = "Введите пароль 2FA"
 ACCOUNTS_USER_KEYBOARD = ["👤 Аккаунты", "🔍 Поиск чата"]
 CHAT_HISTORY_SEARCH_PROMPT_TEXT = "Введите chat_id или @username"
 CHAT_HISTORY_SEARCH_EMPTY_TEXT = "История по запросу не найдена"
+CHAT_HISTORY_EVENTS_EMPTY_WITH_PRESENCE_TEXT = (
+    "История изменений по запросу пока не найдена.\n"
+    "Чат есть сейчас, но событий найден/очищен для него еще не записано."
+)
 CHAT_HISTORY_SEARCH_USAGE_TEXT = "Пример: 123456789 или @username"
 CHAT_HISTORY_UNKNOWN_TEXT = "unknown"
 CHAT_HISTORY_ACTION_FOUND_TEXT = "✅ чат найден"
