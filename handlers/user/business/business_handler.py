@@ -32,7 +32,9 @@ async def any_business_message_handler(message: Message):
             chat_name=chat_name,
         )
     )
-    await create_dump_chat_user(admin_id, chat_id)
+    created = await create_dump_chat_user(admin_id, chat_id)
+    if not created:
+        return
     settings = await get_account_tg_to_user_id(admin_id)
     if settings:
         await add_chat_history_event(

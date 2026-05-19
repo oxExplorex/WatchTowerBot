@@ -335,8 +335,10 @@ async def __tg_parse_dialogs_handler() -> None:
                     quote = html.quote(chat_name) if chat_name else chat_name
 
                     if chat_id in new_chats:
+                        created = await create_dump_chat_user(user_id, chat_id)
+                        if not created:
+                            continue
                         bot_logger.info(constant_text.PARSER_LOG_NEW_CHAT_TEXT.format(user_id=user_id, chat_id=chat_id, username=username, chat_name=chat_name))
-                        await create_dump_chat_user(user_id, chat_id)
                         await add_chat_history_event(
                             admin_id=int(account_settings.admin_id or user_id),
                             chat_id=int(chat_id),

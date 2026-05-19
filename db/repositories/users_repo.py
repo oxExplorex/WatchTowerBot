@@ -4,6 +4,7 @@ import time
 from collections.abc import Callable
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
@@ -79,24 +80,37 @@ class UsersRepository(BaseRepository):
             normalized_old_username = (old_username or "").strip().lstrip("@").lower()
             if normalized_username and normalized_username != normalized_old_username:
                 history_idx = blind_index(normalized_username)
-                conditions = [func.lower(col(UsernameHistory.username)) == normalized_username]
-                if history_idx:
-                    conditions.append(col(UsernameHistory.username_hash) == history_idx)
-                existing = await lease.session.execute(
-                    select(UsernameHistory).where(
-                        col(UsernameHistory.user_id) == int(user_id),
-                        or_(*conditions),
-                    )
-                )
-                if not existing.scalars().first():
-                    lease.session.add(
-                        UsernameHistory(
-                            user_id=int(user_id),
-                            username=encrypt_text(normalized_username),
-                            username_hash=history_idx,
-                            date=int(time.time()),
+                history_payload = {
+                    "user_id": int(user_id),
+                    "username": encrypt_text(normalized_username),
+                    "username_hash": history_idx,
+                    "date": int(time.time()),
+                }
+
+                bind = lease.session.get_bind()
+                dialect_name = bind.dialect.name if bind is not None else ""
+
+                if history_idx and dialect_name == "postgresql":
+                    # Conflict-safe insert for concurrent update_user calls.
+                    stmt = pg_insert(UsernameHistory).values(**history_payload)
+                    stmt = stmt.on_conflict_do_nothing(index_elements=["user_id", "username_hash"])
+                    await lease.session.execute(stmt)
+                else:
+                    conditions = [func.lower(col(UsernameHistory.username)) == normalized_username]
+                    if history_idx:
+                        conditions.append(col(UsernameHistory.username_hash) == history_idx)
+                    existing = await lease.session.execute(
+                        select(UsernameHistory).where(
+                            col(UsernameHistory.user_id) == int(user_id),
+                            or_(*conditions),
                         )
                     )
+                    if not existing.scalars().first():
+                        lease.session.add(
+                            UsernameHistory(
+                                **history_payload,
+                            )
+                        )
 
             if user.timezone_offset is None:
                 user.timezone_offset = 3

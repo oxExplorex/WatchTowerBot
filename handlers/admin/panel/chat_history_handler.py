@@ -72,7 +72,7 @@ async def _send_chunked(message: Message, text: str, chunk_size: int = 3800) -> 
         await message.answer("\n".join(buf))
 
 
-async def _current_presence_lines(admin_id: int, chat_ids: list[int]) -> list[str]:
+async def _current_presence_lines(admin_id: int, chat_ids: list[int]) -> tuple[list[str], bool]:
     accounts = [x for x in await get_account_all(active_only=False) if int(x.admin_id or 0) == int(admin_id)]
     account_names: dict[int, str] = {}
     for account in accounts:
@@ -87,6 +87,7 @@ async def _current_presence_lines(admin_id: int, chat_ids: list[int]) -> list[st
         )
 
     lines = [constant_text.CHAT_HISTORY_PRESENCE_TITLE_TEXT]
+    has_present_chat = False
     for chat_id in chat_ids:
         holders: list[str] = []
         for account in accounts:
@@ -103,6 +104,7 @@ async def _current_presence_lines(admin_id: int, chat_ids: list[int]) -> list[st
             or str(chat_id)
         )
         if holders:
+            has_present_chat = True
             lines.append(
                 constant_text.CHAT_HISTORY_PRESENCE_FOUND_FORMAT_TEXT.format(
                     chat_id=chat_id,
@@ -119,7 +121,7 @@ async def _current_presence_lines(admin_id: int, chat_ids: list[int]) -> list[st
             )
 
     lines.append("")
-    return lines
+    return lines, has_present_chat
 
 
 async def _render_history(message: Message, query: str, admin_id: int) -> None:
@@ -128,7 +130,7 @@ async def _render_history(message: Message, query: str, admin_id: int) -> None:
         await message.answer(constant_text.CHAT_HISTORY_SEARCH_EMPTY_TEXT)
         return
 
-    presence_lines = await _current_presence_lines(admin_id=admin_id, chat_ids=chat_ids)
+    presence_lines, has_present_chat = await _current_presence_lines(admin_id=admin_id, chat_ids=chat_ids)
 
     if len(chat_ids) == 1:
         events = await get_chat_history_events(admin_id=admin_id, chat_id=chat_ids[0], limit=250)
@@ -146,7 +148,10 @@ async def _render_history(message: Message, query: str, admin_id: int) -> None:
     ]
     lines.extend(presence_lines)
     if not events:
-        lines.append(constant_text.CHAT_HISTORY_SEARCH_EMPTY_TEXT)
+        if has_present_chat:
+            lines.append(constant_text.CHAT_HISTORY_EVENTS_EMPTY_WITH_PRESENCE_TEXT)
+        else:
+            lines.append(constant_text.CHAT_HISTORY_SEARCH_EMPTY_TEXT)
         await _send_chunked(message, "\n".join(lines))
         return
 
