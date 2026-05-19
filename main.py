@@ -17,7 +17,8 @@ from pyrogram.handlers import MessageHandler
 
 from aiotask.telegram_parse_dialogs import starting_tg_parse_dialogs_handler
 from aiotask.update_notifier import start_update_notifier
-from core.logging import bot_logger
+from core.async_tools import create_logged_task
+from core.logging import bot_logger, install_global_exception_hooks
 import data.text as constant_text
 from data.config import admin_id_list
 from db.main import close_database, connect_database
@@ -73,6 +74,7 @@ async def _notify_admins_startup_failure(text: str) -> None:
 
 async def start_polling_bot():
     bot_logger.info("Starting bot bootstrap")
+    install_global_exception_hooks(loop)
     try:
         await connect_database()
     except RuntimeError as exc:
@@ -98,8 +100,8 @@ async def start_polling_bot():
 
         # Technical delay for stable startup of pyrogram sessions.
         await asyncio.sleep(5)
-        asyncio.create_task(starting_tg_parse_dialogs_handler())
-        asyncio.create_task(start_update_notifier())
+        create_logged_task(starting_tg_parse_dialogs_handler(), name="tg_parse_dialogs_handler")
+        create_logged_task(start_update_notifier(), name="update_notifier_starter")
 
         await send_log_to_active_bot(bot)
         bot_logger.info("Bot was started")

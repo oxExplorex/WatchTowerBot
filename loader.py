@@ -1,5 +1,4 @@
 ﻿import asyncio
-import traceback
 from pathlib import Path
 
 from aiogram import Bot, Router
@@ -62,7 +61,7 @@ async def _get_apps_user() -> list[Client]:
             )
         return apps
     except Exception:
-        bot_logger.info(traceback.format_exc())
+        bot_logger.exception("Failed to build apps session list")
         return []
 
 
@@ -78,7 +77,7 @@ async def _build_gemini_system_instruction() -> str:
         system_instruction = _build_system_instruction(admin_ids_text)
         return system_instruction
     except Exception:
-        bot_logger.info(traceback.format_exc())
+        bot_logger.exception("Failed to build Gemini system instruction")
         return ""
 
 apps_session: list[Client] = []

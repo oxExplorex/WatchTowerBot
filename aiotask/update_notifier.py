@@ -9,6 +9,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import data.text as constant_text
+from core.async_tools import create_logged_task
 from core.logging import bot_logger
 from core.process_control import restart_current_process
 from core.session_runtime import stop_all_clients
@@ -228,5 +229,5 @@ async def start_update_notifier() -> None:
 
     bot_logger.info("Starting update notifier scheduler")
     update_scheduler.start()
-    asyncio.create_task(version_check_job())
+    create_logged_task(version_check_job(), name="update_notifier_initial_check")
 

@@ -1,6 +1,8 @@
+import asyncio
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 
 import colorlog
@@ -83,3 +85,47 @@ def error_handler(exc_type, value, tb):
 
 
 bot_logger = _build_logger()
+
+
+def install_global_exception_hooks(loop=None) -> None:
+    def _sys_excepthook(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        bot_logger.critical(
+            "Unhandled top-level exception",
+            exc_info=(exc_type, exc_value, exc_traceback),
+        )
+
+    def _thread_excepthook(args: threading.ExceptHookArgs):
+        bot_logger.critical(
+            f"Unhandled thread exception in {args.thread.name}",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    def _asyncio_exception_handler(async_loop, context):
+        exc = context.get("exception")
+        if exc is not None:
+            bot_logger.critical("Unhandled asyncio exception", exc_info=exc)
+            return
+
+        message = context.get("message", "Unhandled asyncio exception (no message)")
+        details = {
+            key: value
+            for key, value in context.items()
+            if key not in {"message", "exception"}
+        }
+        bot_logger.critical(f"{message} | context={details}")
+
+    sys.excepthook = _sys_excepthook
+    threading.excepthook = _thread_excepthook
+
+    target_loop = loop
+    if target_loop is None:
+        try:
+            target_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            target_loop = None
+
+    if target_loop is not None:
+        target_loop.set_exception_handler(_asyncio_exception_handler)
