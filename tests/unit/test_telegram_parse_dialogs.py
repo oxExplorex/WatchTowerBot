@@ -57,6 +57,23 @@ class _FakeClient:
             yield types.SimpleNamespace(chat=chat)
 
 
+@pytest.mark.asyncio
+async def test_safe_call_retries_timeout_error():
+    calls = 0
+
+    async def _flaky_call():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("Request timed out")
+        return 42
+
+    result = await parser_mod.safe_call(_flaky_call, retries=2, delay=0)
+
+    assert result == 42
+    assert calls == 2
+
+
 def _account(**kwargs):
     defaults = dict(
         uuid="acc-uuid",

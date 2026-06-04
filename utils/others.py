@@ -25,7 +25,7 @@ async def send_log_to_active_bot(bot: aiogram.Bot):
                 reply_markup=static_admin_keyboard(),
             )
         except Exception:
-            pass
+            bot_logger.exception(f"Failed to send startup notification to admin_id={admin_id}")
 
 
 def get_user_log_text(action_id, chat_id, username, chat_name):

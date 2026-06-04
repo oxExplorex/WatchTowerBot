@@ -51,4 +51,7 @@ async def any_business_message_handler(message: Message):
 
     if settings.alert_new_chat:
         log_chat_id = settings.admin_id if settings.alert_new_chat_id < 10 else settings.alert_new_chat_id
-        await bot.send_message(log_chat_id, get_user_log_text(1, chat_id, username, quote))
+        try:
+            await bot.send_message(log_chat_id, get_user_log_text(1, chat_id, username, quote))
+        except Exception:
+            bot_logger.exception(f"Failed to send new business chat notification to chat_id={log_chat_id}")

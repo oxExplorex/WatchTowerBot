@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 
 # Force UTF-8 for Windows console/log output.
@@ -112,4 +113,13 @@ async def start_polling_bot():
 
 
 if __name__ == "__main__":
-    loop.run_until_complete(start_polling_bot())
+    install_global_exception_hooks(loop)
+    try:
+        loop.run_until_complete(start_polling_bot())
+    except KeyboardInterrupt:
+        bot_logger.info("Bot stopped by KeyboardInterrupt")
+    except Exception:
+        bot_logger.critical("Fatal error stopped bot process", exc_info=True)
+        raise
+    finally:
+        logging.shutdown()

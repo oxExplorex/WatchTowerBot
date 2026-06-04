@@ -63,7 +63,9 @@ async def safe_call(
             last_error = exc
             bot_logger.warning(f"FloodWait: sleeping for {exc.value} seconds")
             await asyncio.sleep(exc.value)
-        except (RPCError, InternalServerError) as exc:
+        except (RPCError, InternalServerError, OSError) as exc:
+            if _is_fatal_session_error(exc):
+                raise
             last_error = exc
             bot_logger.warning(f"Attempt {i + 1}/{retries} failed: {type(exc).__name__} - {exc}")
             await asyncio.sleep(delay * (2**i))
@@ -151,7 +153,16 @@ async def _drop_dead_session(app_session: Client, error: Exception) -> None:
             ),
         )
     except Exception:
-        bot_logger.error(traceback.format_exc())
+        bot_logger.exception(f"Failed to notify admin_id={account.admin_id} about dropped session")
+
+
+async def _safe_send_parser_message(chat_id: int, text: str, *, context: str) -> bool:
+    try:
+        await bot.send_message(chat_id, text)
+        return True
+    except Exception:
+        bot_logger.exception(f"Failed to send parser notification to chat_id={chat_id} | context={context}")
+        return False
 
 
 @scheduler.scheduled_job("interval", minutes=20)
@@ -386,7 +397,7 @@ async def __tg_parse_dialogs_handler() -> None:
                         else account_settings.alert_new_chat_id
                     )
                     for text_chunk in chunk_text(log_new):
-                        await bot.send_message(target_id, text_chunk)
+                        await _safe_send_parser_message(target_id, text_chunk, context="new_chat")
 
                 if account_settings.alert_del_chat:
                     target_id = (
@@ -395,7 +406,7 @@ async def __tg_parse_dialogs_handler() -> None:
                         else account_settings.alert_del_chat_id
                     )
                     for text_chunk in chunk_text(log_del):
-                        await bot.send_message(target_id, text_chunk)
+                        await _safe_send_parser_message(target_id, text_chunk, context="deleted_chat")
 
             except Exception as exc:
                 if account_settings is not None:
@@ -411,10 +422,10 @@ async def __tg_parse_dialogs_handler() -> None:
                 if _is_fatal_session_error(exc):
                     await _drop_dead_session(app_session, exc)
                 else:
-                    bot_logger.error(traceback.format_exc())
+                    bot_logger.exception("Failed to parse Telegram dialogs")
 
     except Exception:
-        bot_logger.error(traceback.format_exc())
+        bot_logger.exception("Telegram dialogs scheduler job failed")
 
 
 async def starting_tg_parse_dialogs_handler() -> None:

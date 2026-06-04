@@ -22,6 +22,7 @@ pip-wheel-metadata/
 .python-version
 
 # Local runtime data
+docs/*
 data/proxy.txt
 data/session/
 data/logs/
