@@ -1,6 +1,7 @@
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 import data.text as constant_text
+from data.admin_text import MENU_BUTTON as ADMINS_BUTTON
 
 
 def static_admin_keyboard():
@@ -12,6 +13,7 @@ def static_admin_keyboard():
             KeyboardButton(text=constant_text.SETTINGS_BOT_KEYBOARD[1]),
         ],
         [KeyboardButton(text=constant_text.SETTINGS_BOT_KEYBOARD[2])],
+        [KeyboardButton(text=ADMINS_BUTTON)],
     ]
 
     return ReplyKeyboardMarkup(

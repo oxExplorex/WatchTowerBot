@@ -11,6 +11,9 @@ from db.migrations import run_db_migrations
 from db.repositories.accounts_repo import AccountsRepository
 from db.repositories.settings_repo import SettingsRepository
 from db.repositories.users_repo import UsersRepository
+from db.repositories.admins_repo import AdminsRepository
+from db.repositories.messages_repo import MessagesRepository
+from db.repositories.personal_repo import PersonalKeyRepository
 from db.models import Account, AccountHealth, DumpChatUser, HistoryUser, TelegramApp, User
 from db.session import (
     close_engine,
@@ -20,7 +23,7 @@ from db.session import (
     session_scope as _session_scope,
 )
 from db.unit_of_work import UnitOfWork
-from utils.crypto_store import blind_index, encryption_enabled, is_encrypted
+from utils.crypto_store import encryption_enabled
 
 
 def _cfg(name: str, default: Any = None) -> Any:
@@ -42,6 +45,9 @@ def _normalize_timezone_offset(offset: Any, default: int = 3) -> int:
 accounts_repository = AccountsRepository(_session_scope)
 settings_repository = SettingsRepository(_session_scope, admin_id_list, _normalize_timezone_offset)
 users_repository = UsersRepository(_session_scope, admin_id_list)
+messages_repository = MessagesRepository(get_session_factory)
+personal_keys_repository = PersonalKeyRepository(get_session_factory)
+admins_repository = AdminsRepository(get_session_factory, admin_id_list)
 _ENCRYPTION_BACKFILL_DONE = False
 
 
@@ -53,15 +59,23 @@ async def connect_database() -> None:
         raise RuntimeError("DB_ENCRYPTION_KEY is required. Set it in .env before starting the bot.")
 
     await ensure_database_exists(db_settings)
-    await run_db_migrations(db_settings=db_settings)
+    await run_db_migrations(db_settings=db_settings, configured_admin_ids=admin_id_list)
     await connect_engine(db_settings.connection_string)
-    if not _ENCRYPTION_BACKFILL_DONE:
-        await run_encryption_backfill()
-        _ENCRYPTION_BACKFILL_DONE = True
+    try:
+        if not _ENCRYPTION_BACKFILL_DONE:
+            await run_encryption_backfill()
+            _ENCRYPTION_BACKFILL_DONE = True
+    except BaseException:
+        await close_engine()
+        raise
 
 
 async def close_database() -> None:
     await close_engine()
+
+
+async def get_accounts_for_user_id(user_id: int) -> list[Account]:
+    return await accounts_repository.get_accounts_for_user_id(user_id)
 
 
 def create_unit_of_work() -> UnitOfWork:
@@ -134,6 +148,34 @@ async def get_admins() -> list[User]:
     return await users_repository.get_admins()
 
 
+async def get_admin_ids() -> set[int]:
+    return await admins_repository.get_ids()
+
+
+def get_configured_admin_ids() -> frozenset[int]:
+    return admins_repository.configured_ids
+
+
+async def is_admin(user_id: int) -> bool:
+    return await admins_repository.is_admin(user_id)
+
+
+async def has_personal_secret(user_id: int) -> bool:
+    return await personal_keys_repository.get(user_id) is not None
+
+
+async def get_admin_grants():
+    return await admins_repository.get_grants()
+
+
+async def grant_admin(actor_id: int, user_id: int) -> bool:
+    return await admins_repository.grant(actor_id, user_id)
+
+
+async def revoke_admin(actor_id: int, user_id: int) -> bool:
+    return await admins_repository.revoke(actor_id, user_id)
+
+
 async def find_user_ids_by_username(username: str) -> list[int]:
     return await users_repository.find_user_ids_by_username(username=username)
 
@@ -143,47 +185,18 @@ async def get_all_users() -> list[User]:
 
 
 async def run_encryption_backfill() -> dict[str, int]:
-    users_touched = 0
-    accounts_touched = 0
-
-    users = await get_all_users()
-    for user in users:
-        before_username = user.username
-        before_full_name = user.full_name
-        before_hash = getattr(user, "username_hash", None)
-        current_idx = None
-        if before_username:
-            current_idx = blind_index(before_username)
-
-        needs = (
-            (before_username and (not is_encrypted(before_username) or before_hash != current_idx))
-            or (before_full_name and not is_encrypted(before_full_name))
-        )
-        if not needs:
-            continue
-        await update_user(int(user.user_id), before_username, before_full_name)
-        users_touched += 1
-
-    accounts = await get_account_all(active_only=False)
-    for account in accounts:
-        if not account.number:
-            continue
-        current_idx = blind_index(account.number)
-        if is_encrypted(account.number) and getattr(account, "number_hash", None) == current_idx:
-            continue
-
-        admin_id = int(account.admin_id or 0)
-        if admin_id <= 0:
-            continue
-        await update_account_uuid(account.uuid, admin_id, number=account.number)
-        accounts_touched += 1
-
-    history_touched = await users_repository.backfill_username_history_encryption()
-    return {
-        "users": users_touched,
-        "accounts": accounts_touched,
-        "username_history": history_touched,
-    }
+    if not encryption_enabled():
+        raise RuntimeError("DB_ENCRYPTION_KEY is required for encryption backfill")
+    # Inspect stored ciphertext, not hydrated read models. A wrong key or corrupt
+    # row rolls back every backfill instead of leaving partially converted secrets.
+    async with create_unit_of_work() as uow:
+        users = await uow.users.backfill_user_encryption()
+        accounts = await uow.accounts.backfill_account_encryption()
+        history = await uow.users.backfill_username_history_encryption()
+        applications = await uow.accounts.backfill_app_encryption()
+        proxies = await uow.settings.backfill_proxy_encryption()
+        return {"users": users, "accounts": accounts, "username_history": history,
+                "applications": applications, "proxy_settings": proxies}
 
 
 async def get_app_tg_user_id(user_id: int, offset: int = 0) -> tuple[list[TelegramApp], int]:

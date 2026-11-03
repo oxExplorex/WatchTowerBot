@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-import importlib
+import asyncio
 import sys
 import types
+from unittest.mock import AsyncMock
 
 import pytest
+
+from core.session_manager import SessionManager
 
 
 class _RouterStub:
@@ -28,13 +31,14 @@ async def _noop_send_message(*args, **kwargs):
     _ = (args, kwargs)
 
 
-loader_stub = types.ModuleType("loader")
-loader_stub.apps_session = []
-loader_stub.bot = types.SimpleNamespace(send_message=_noop_send_message)
-loader_stub.router = _RouterStub()
-sys.modules["loader"] = loader_stub
-
-parser_mod = importlib.import_module("aiotask.telegram_parse_dialogs")
+@pytest.fixture
+def parser_mod(monkeypatch, offline_module):
+    loader_stub = types.ModuleType("loader")
+    loader_stub.session_manager = SessionManager()
+    loader_stub.bot = types.SimpleNamespace(send_message=_noop_send_message)
+    loader_stub.router = _RouterStub()
+    monkeypatch.setitem(sys.modules, "loader", loader_stub)
+    return offline_module("aiotask/telegram_parse_dialogs.py")
 
 
 class _FakeClient:
@@ -58,7 +62,7 @@ class _FakeClient:
 
 
 @pytest.mark.asyncio
-async def test_safe_call_retries_timeout_error():
+async def test_safe_call_retries_timeout_error(parser_mod):
     calls = 0
 
     async def _flaky_call():
@@ -95,7 +99,7 @@ def _account(**kwargs):
 
 
 @pytest.mark.asyncio
-async def test_baseline_sync_no_new_chat_spam(monkeypatch):
+async def test_baseline_sync_no_new_chat_spam(monkeypatch, parser_mod):
     fake_client = _FakeClient([11, 22, 33])
 
     created: list[int] = []
@@ -132,7 +136,7 @@ async def test_baseline_sync_no_new_chat_spam(monkeypatch):
         sent.append((args, kwargs))
 
     monkeypatch.setattr(parser_mod, "Client", _FakeClient)
-    monkeypatch.setattr(parser_mod, "apps_session", [fake_client])
+    await parser_mod.session_manager.add(fake_client)
     monkeypatch.setattr(parser_mod, "session_number_from_client", lambda _: "79000000001")
     monkeypatch.setattr(parser_mod, "get_account_by_number", _get_account_by_number)
     monkeypatch.setattr(parser_mod, "get_dump_chat_admin_all", _get_dump_chat_admin_all)
@@ -152,7 +156,7 @@ async def test_baseline_sync_no_new_chat_spam(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mass_delete_guard_first_scan_blocks_deletes(monkeypatch):
+async def test_mass_delete_guard_first_scan_blocks_deletes(monkeypatch, parser_mod):
     existing_ids = list(range(1, 41))
     seen_ids = list(range(1, 11))
     fake_client = _FakeClient(seen_ids)
@@ -195,7 +199,7 @@ async def test_mass_delete_guard_first_scan_blocks_deletes(monkeypatch):
         _ = (args, kwargs)
 
     monkeypatch.setattr(parser_mod, "Client", _FakeClient)
-    monkeypatch.setattr(parser_mod, "apps_session", [fake_client])
+    await parser_mod.session_manager.add(fake_client)
     monkeypatch.setattr(parser_mod, "session_number_from_client", lambda _: "79000000002")
     monkeypatch.setattr(parser_mod, "get_account_by_number", _get_account_by_number)
     monkeypatch.setattr(parser_mod, "get_dump_chat_admin_all", _get_dump_chat_admin_all)
@@ -216,7 +220,7 @@ async def test_mass_delete_guard_first_scan_blocks_deletes(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mass_delete_confirmed_on_second_scan(monkeypatch):
+async def test_mass_delete_confirmed_on_second_scan(monkeypatch, parser_mod):
     existing_ids = list(range(1, 41))
     seen_ids = list(range(1, 11))
     deleted_expected = sorted(set(existing_ids) - set(seen_ids))
@@ -263,7 +267,7 @@ async def test_mass_delete_confirmed_on_second_scan(monkeypatch):
         _ = (args, kwargs)
 
     monkeypatch.setattr(parser_mod, "Client", _FakeClient)
-    monkeypatch.setattr(parser_mod, "apps_session", [fake_client])
+    await parser_mod.session_manager.add(fake_client)
     monkeypatch.setattr(parser_mod, "session_number_from_client", lambda _: "79000000003")
     monkeypatch.setattr(parser_mod, "get_account_by_number", _get_account_by_number)
     monkeypatch.setattr(parser_mod, "get_dump_chat_admin_all", _get_dump_chat_admin_all)
@@ -279,3 +283,49 @@ async def test_mass_delete_confirmed_on_second_scan(monkeypatch):
     await parser_mod.__tg_parse_dialogs_handler()
 
     assert sorted(deleted) == deleted_expected
+
+
+@pytest.mark.asyncio
+async def test_removed_session_is_not_scanned(monkeypatch, parser_mod):
+    fake_client = _FakeClient([11])
+    monkeypatch.setattr(parser_mod, "Client", _FakeClient)
+    lookup = AsyncMock()
+    monkeypatch.setattr(parser_mod, "get_account_by_number", lookup)
+    await parser_mod.session_manager.add(fake_client)
+    await parser_mod.session_manager.remove(fake_client)
+    await parser_mod.__tg_parse_dialogs_handler()
+    lookup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stopping_during_partial_scan_does_not_record_false_deletions(monkeypatch, parser_mod):
+    started = asyncio.Event()
+
+    class PartialClient(_FakeClient):
+        async def get_dialogs(self, limit=0):
+            yield types.SimpleNamespace(chat=types.SimpleNamespace(
+                id=1, username="offline", full_name="Offline", title=None, type="private"))
+            started.set()
+            await asyncio.Future()
+
+    active = PartialClient([1, 2, 3])
+    monkeypatch.setattr(parser_mod, "Client", PartialClient)
+    monkeypatch.setattr(parser_mod, "session_number_from_client", lambda client: "offline")
+    monkeypatch.setattr(parser_mod, "get_account_by_number", AsyncMock(return_value=_account()))
+    monkeypatch.setattr(parser_mod, "get_dump_chat_admin_all", AsyncMock(return_value=[
+        types.SimpleNamespace(chat_id=value) for value in (1, 2, 3)]))
+    deleted = AsyncMock()
+    history = AsyncMock()
+    drop = AsyncMock()
+    monkeypatch.setattr(parser_mod, "del_dump_chat_user", deleted)
+    monkeypatch.setattr(parser_mod, "add_chat_history_event", history)
+    monkeypatch.setattr(parser_mod, "delete_account_by_number", drop)
+    await parser_mod.session_manager.add(active)
+    scanning = asyncio.create_task(parser_mod.__tg_parse_dialogs_handler())
+    async with asyncio.timeout(2):
+        await started.wait()
+        await parser_mod.session_manager.stop(active, AsyncMock())
+        await scanning
+    deleted.assert_not_awaited()
+    history.assert_not_awaited()
+    drop.assert_not_awaited()

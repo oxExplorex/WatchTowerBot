@@ -21,12 +21,16 @@ dist/
 pip-wheel-metadata/
 .python-version
 
+# Local assistant notes
+/.local-notes/
+
 # Local runtime data
 docs/*
 data/proxy.txt
 data/session/
 data/logs/
 data/temp/
+data/media/
 data/__pycache__/
 
 # SQLite / sessions
@@ -46,6 +50,7 @@ data/__pycache__/
 !.env.example
 
 # Temp / backups
+/.watchtower-update-*/
 *.tmp
 *.bak
 *.orig

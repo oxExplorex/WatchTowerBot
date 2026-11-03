@@ -10,8 +10,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import data.text as constant_text
 from core.logging import bot_logger
-from core.process_control import restart_current_process
-from core.session_runtime import stop_all_clients
+from data.admin_text import MENU_BUTTON as ADMINS_BUTTON
+from core.process_control import restart_with_clients
 from core.versioning import fetch_remote_version, get_local_version, get_remote_version_url, is_newer_version
 from db.main import (
     disable_user_gemini_proxy,
@@ -168,6 +168,8 @@ async def _settings_inline(admin_id: int):
 
     keyboard = InlineKeyboardBuilder()
 
+    keyboard.row(InlineKeyboardButton(text=ADMINS_BUTTON, callback_data="adm:list:0"))
+
     keyboard.row(
         InlineKeyboardButton(
             text=constant_text.SETTINGS_BTN_AUTO_UPDATE.format(state=auto_update_label(auto_update)),
@@ -261,10 +263,8 @@ async def _run_update_flow(
         await message.answer(constant_text.SETTINGS_UPDATE_RUNNING_TOAST)
         return
 
-    await message.edit_text(start_text.format(from_version=local_version, to_version=latest_version))
-
     try:
-        await stop_all_clients(for_restart=True)
+        await message.edit_text(start_text.format(from_version=local_version, to_version=latest_version))
         ok = await asyncio.to_thread(download_and_extract_github_repo)
         if not ok:
             await message.answer(failed_text)
@@ -272,7 +272,7 @@ async def _run_update_flow(
 
         await message.answer(done_text.format(to_version=latest_version))
         await asyncio.sleep(2)
-        restart_current_process()
+        await restart_with_clients()
     finally:
         await release_update_run()
 
@@ -478,8 +478,7 @@ async def reboot_from_settings_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
     await call.message.edit_text(constant_text.RESTARTING_TEXT)
-    await stop_all_clients(for_restart=True)
-    restart_current_process()
+    await restart_with_clients()
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "upd:close", StateFilter("*"))

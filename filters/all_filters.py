@@ -1,12 +1,10 @@
-﻿import time
 from typing import Union
 
 from aiogram.enums import ChatType
 from aiogram.filters import BaseFilter
 from aiogram.types import CallbackQuery, Message
 
-from data.config import admin_id_list
-from db.main import get_admins
+from db.main import is_admin
 
 
 class ChatTypeFilter_example(BaseFilter):
@@ -26,29 +24,16 @@ class CheckBusinessConnectionId(BaseFilter):
 
 class IsPrivate(BaseFilter):
     async def __call__(self, message: Message) -> bool:
-        message_type = message.message.chat.type if isinstance(message, CallbackQuery) else message.chat.type
-        return ChatType.PRIVATE == message_type
-
-
-_admin_cache = {
-    "value": set(),
-    "expires_at": 0.0,
-}
-
-
-async def _get_admin_ids_cached() -> set[int]:
-    now = time.time()
-    if now < _admin_cache["expires_at"]:
-        return _admin_cache["value"]
-
-    db_admins = {x.user_id for x in await get_admins()}
-    ids = set(admin_id_list) | db_admins
-    _admin_cache["value"] = ids
-    _admin_cache["expires_at"] = now + 30
-    return ids
+        content = message.message if isinstance(message, CallbackQuery) else message
+        if not isinstance(content, Message):
+            return False
+        # Depending on union parsing, date=0 may also be a regular Message.
+        if isinstance(message, CallbackQuery) and content.date.timestamp() == 0:
+            return False
+        return getattr(getattr(content, "chat", None), "type", None) == ChatType.PRIVATE
 
 
 class IsAdmin(BaseFilter):
     async def __call__(self, message: Message) -> bool:
-        user_id = message.from_user.id
-        return user_id in await _get_admin_ids_cached()
+        user = getattr(message, "from_user", None)
+        return user is not None and await is_admin(user.id)

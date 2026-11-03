@@ -2,6 +2,10 @@
 
 
 class AdminStates(StatesGroup):
+    admin_add_id = State()
+    admin_confirm_add = State()
+    admin_confirm_revoke = State()
+
     apps_add_app_id = State()
     apps_add_api_hash = State()
     apps_add_tag_name = State()

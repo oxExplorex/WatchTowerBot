@@ -56,7 +56,7 @@ def _stamp_baseline(config: Config) -> None:
 
 
 async def _has_table(connection_string: str, table_name: str) -> bool:
-    engine = create_async_engine(connection_string, echo=False, future=True)
+    engine = create_async_engine(connection_string, echo=False, future=True, hide_parameters=True)
     try:
         async with engine.connect() as conn:
             return await conn.run_sync(lambda sync_conn: inspect(sync_conn).has_table(table_name))
@@ -65,7 +65,7 @@ async def _has_table(connection_string: str, table_name: str) -> bool:
 
 
 async def _has_any_app_table(connection_string: str) -> bool:
-    engine = create_async_engine(connection_string, echo=False, future=True)
+    engine = create_async_engine(connection_string, echo=False, future=True, hide_parameters=True)
     try:
         async with engine.connect() as conn:
             table_names = await conn.run_sync(lambda sync_conn: set(inspect(sync_conn).get_table_names()))
@@ -74,7 +74,7 @@ async def _has_any_app_table(connection_string: str) -> bool:
         await engine.dispose()
 
 
-async def run_db_migrations(db_settings: DatabaseSettings | None = None) -> None:
+async def run_db_migrations(db_settings: DatabaseSettings | None = None, *, configured_admin_ids=()) -> None:
     global _MIGRATIONS_DONE
     async with _MIGRATIONS_LOCK:
         if _MIGRATIONS_DONE:
@@ -83,6 +83,7 @@ async def run_db_migrations(db_settings: DatabaseSettings | None = None) -> None
         settings = db_settings or load_database_settings()
         connection_string = settings.connection_string
         config = _build_alembic_config(connection_string)
+        config.attributes["configured_admin_ids"] = list(configured_admin_ids)
 
         has_version_table = await _has_table(connection_string, "alembic_version")
         if not has_version_table and await _has_any_app_table(connection_string):

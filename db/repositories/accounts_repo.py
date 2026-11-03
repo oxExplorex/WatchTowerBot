@@ -10,8 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from db.models import Account, AccountHealth, DumpChatUser, HistoryUser, TelegramApp
-from db.repositories.base import BaseRepository, SessionLease
-from utils.crypto_store import blind_index, decrypt_text, encrypt_text
+from db.repositories.base import BaseRepository, SessionLease, conflict_insert
+from utils.crypto_store import (blind_index, decrypt_text, encrypt_text, encrypt_service_secret,
+                                is_encrypted, service_secret_index)
 
 
 def _to_uuid(value: Any) -> UUID | None:
@@ -33,13 +34,62 @@ class AccountsRepository(BaseRepository):
         lease.session.add(entity)
         await self._commit(lease.session, lease.owns_session)
         if refresh and lease.owns_session:
+            # In a UnitOfWork _commit deliberately does nothing. Refreshing before
+            # flush would discard the pending update (or fail for a new account).
+            await lease.session.flush()
             await lease.session.refresh(entity)
 
     def _hydrate_account(self, account: Account | None) -> Account | None:
         if not account:
             return None
-        account.number = decrypt_text(account.number)
-        return account
+        return Account.model_validate(account.model_dump() | {"number": decrypt_text(account.number)})
+
+    @staticmethod
+    def _hydrate_app(app: TelegramApp | None) -> TelegramApp | None:
+        if app is None:
+            return None
+        return TelegramApp.model_validate(app.model_dump() | {"api_hash": decrypt_text(app.api_hash)})
+
+    @staticmethod
+    def _app_hash_index(user_id, app_id, api_hash):
+        return service_secret_index(api_hash, purpose=f"telegram-app:{user_id}:{app_id}")
+
+    async def backfill_app_encryption(self, session: AsyncSession | None = None) -> int:
+        async with self._session(session) as lease:
+            apps = await lease.session.scalars(select(TelegramApp))
+            touched = 0
+            for app in apps:
+                plain = decrypt_text(app.api_hash)
+                index = self._app_hash_index(app.user_id, app.app_id, plain)
+                changed = False
+                if app.api_hash and not is_encrypted(app.api_hash):
+                    app.api_hash = encrypt_service_secret(plain)
+                    changed = True
+                if app.api_hash_index != index:
+                    app.api_hash_index = index
+                    changed = True
+                touched += int(changed)
+            if touched:
+                await self._commit(lease.session, lease.owns_session)
+            return touched
+
+    async def backfill_account_encryption(self, session: AsyncSession | None = None) -> int:
+        async with self._session(session) as lease:
+            accounts = (await lease.session.execute(select(Account))).scalars().all()
+            touched = 0
+            for account in accounts:
+                number = decrypt_text(account.number)
+                idx = blind_index(number)
+                should_encrypt = bool(account.number) and not is_encrypted(account.number)
+                if not should_encrypt and account.number_hash == idx:
+                    continue
+                if should_encrypt:
+                    account.number = encrypt_text(number)
+                account.number_hash = idx
+                touched += 1
+            if touched:
+                await self._commit(lease.session, lease.owns_session)
+            return touched
 
     async def get_app_tg_user_id(
         self,
@@ -54,7 +104,7 @@ class AccountsRepository(BaseRepository):
             count_result = await lease.session.execute(
                 select(func.count()).select_from(TelegramApp).where(col(TelegramApp.user_id) == user_id)
             )
-            return result.scalars().all(), int(count_result.scalar() or 0)
+            return [self._hydrate_app(app) for app in result.scalars().all()], int(count_result.scalar() or 0)
 
     async def get_app_tg_uuid(
         self,
@@ -70,7 +120,7 @@ class AccountsRepository(BaseRepository):
             result = await lease.session.execute(
                 select(TelegramApp).where(col(TelegramApp.uuid) == uuid_value, col(TelegramApp.user_id) == user_id)
             )
-            return result.scalars().first()
+            return self._hydrate_app(result.scalars().first())
 
     async def get_app_tg_uuid_aio(self, uuid: Any, session: AsyncSession | None = None) -> TelegramApp | None:
         uuid_value = _to_uuid(uuid)
@@ -79,7 +129,7 @@ class AccountsRepository(BaseRepository):
 
         async with self._session(session) as lease:
             result = await lease.session.execute(select(TelegramApp).where(col(TelegramApp.uuid) == uuid_value))
-            return result.scalars().first()
+            return self._hydrate_app(result.scalars().first())
 
     async def get_accounts_count_by_app_tg_uuid(
         self,
@@ -121,14 +171,19 @@ class AccountsRepository(BaseRepository):
         session: AsyncSession | None = None,
     ) -> TelegramApp | None:
         async with self._session(session) as lease:
+            index = self._app_hash_index(int(user_id), int(app_id), api_hash)
             result = await lease.session.execute(
                 select(TelegramApp).where(
                     col(TelegramApp.user_id) == user_id,
                     col(TelegramApp.app_id) == app_id,
-                    col(TelegramApp.api_hash) == api_hash,
+                    or_(TelegramApp.api_hash_index == index, TelegramApp.api_hash_index.is_(None)),
                 )
             )
-            return result.scalars().first()
+            for app in result.scalars():
+                hydrated = self._hydrate_app(app)
+                if hydrated.api_hash == api_hash:
+                    return hydrated
+            return None
 
     async def create_app_tg(
         self,
@@ -144,7 +199,8 @@ class AccountsRepository(BaseRepository):
                 TelegramApp(
                     user_id=int(user_id),
                     app_id=int(app_id),
-                    api_hash=api_hash,
+                    api_hash=encrypt_service_secret(api_hash),
+                    api_hash_index=self._app_hash_index(int(user_id), int(app_id), api_hash),
                     tag_name=tag_name,
                 ),
             )
@@ -175,6 +231,11 @@ class AccountsRepository(BaseRepository):
                 query = query.where(col(Account.is_active) == 1)
             result = await lease.session.execute(query)
             return [self._hydrate_account(x) for x in result.scalars().all()]
+
+    async def get_accounts_for_user_id(self, user_id: int) -> list[Account]:
+        async with self._session() as lease:
+            rows = await lease.session.scalars(select(Account).where(Account.user_id == user_id))
+            return [self._hydrate_account(row) for row in rows.all()]
 
     async def get_account_tg_to_user_id(
         self,
@@ -345,17 +406,11 @@ class AccountsRepository(BaseRepository):
         session: AsyncSession | None = None,
     ) -> bool:
         async with self._session(session) as lease:
-            exists = await lease.session.execute(
-                select(DumpChatUser).where(
-                    col(DumpChatUser.admin_id) == admin_id,
-                    col(DumpChatUser.chat_id) == chat_id,
-                )
-            )
-            if exists.scalars().first():
-                return False
-
-            await self._save(lease, DumpChatUser(admin_id=int(admin_id), chat_id=int(chat_id)))
-            return True
+            statement = conflict_insert(lease.session, DumpChatUser).values(admin_id=int(admin_id), chat_id=int(chat_id))
+            statement = statement.on_conflict_do_nothing(index_elements=["admin_id", "chat_id"]).returning(DumpChatUser.uuid)
+            created = (await lease.session.execute(statement)).scalar_one_or_none() is not None
+            await self._commit(lease.session, lease.owns_session)
+            return created
 
     async def add_chat_history_event(
         self,

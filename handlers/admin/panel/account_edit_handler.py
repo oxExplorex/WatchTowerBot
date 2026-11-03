@@ -10,7 +10,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
 import data.text as constant_text
-from core.session_runtime import get_client_by_number, is_session_running, stop_and_remove_session
+from core.session_runtime import get_client_by_number, is_session_running, run_client_operation, stop_and_remove_session
+from core.session_manager import SessionUnavailable
 from db.models import Account
 from db.main import (
     add_account_health_event,
@@ -203,7 +204,7 @@ async def _render_account_editor(call: CallbackQuery, account: Account) -> None:
 
     status_runtime = (
         constant_text.ACCOUNT_RUNTIME_ONLINE_TEXT
-        if is_session_running(account.number)
+        if await is_session_running(account.number)
         else constant_text.ACCOUNT_RUNTIME_OFFLINE_TEXT
     )
     state_text = (
@@ -357,7 +358,7 @@ async def account_check_handler(call: CallbackQuery, state: FSMContext):
 
     tz_offset = await get_user_timezone_offset(call.from_user.id)
     now_ts = DateTime(tz_offset).timestamp()
-    client = get_client_by_number(account.number)
+    client = await get_client_by_number(account.number)
 
     if client is None:
         await add_account_health_event(account.uuid, account.admin_id, account.user_id, 0, now_ts, "not_running")
@@ -371,10 +372,12 @@ async def account_check_handler(call: CallbackQuery, state: FSMContext):
         return await _render_account_editor(call, account)
 
     try:
-        await client.get_me()
+        await run_client_operation(client, client.get_me)
         await update_account_uuid(account.uuid, account.admin_id, last_update=now_ts)
         await add_account_health_event(account.uuid, account.admin_id, account.user_id, 1, now_ts, "manual_check")
         await call.answer(constant_text.ACCOUNT_SESSION_RESPONDS_TOAST)
+    except SessionUnavailable:
+        await call.answer(constant_text.ACCOUNT_SESSION_NOT_RUNNING_TOAST)
     except Exception as exc:
         await add_account_health_event(account.uuid, account.admin_id, account.user_id, 0, now_ts, exc.__class__.__name__)
 

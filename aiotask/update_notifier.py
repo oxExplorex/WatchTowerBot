@@ -9,10 +9,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import data.text as constant_text
-from core.async_tools import create_logged_task
+from core.async_tools import create_logged_task, tracked_job
 from core.logging import bot_logger
-from core.process_control import restart_current_process
-from core.session_runtime import stop_all_clients
+from core.process_control import restart_with_clients
 from core.versioning import fetch_remote_version, get_local_version, get_remote_version_url, is_newer_version
 from data.config import admin_id_list
 from db.main import (
@@ -94,8 +93,8 @@ async def _safe_send(
         return False
 
 
-def _restart_process() -> None:
-    restart_current_process()
+async def _restart_process() -> None:
+    await restart_with_clients()
 
 
 async def try_acquire_update_run() -> bool:
@@ -129,7 +128,6 @@ async def _run_auto_update(target_ids: Iterable[int], current_version: str, late
         for admin_id in ids:
             await _safe_send(admin_id, start_text, include_snooze=False, include_close=False)
 
-        await stop_all_clients(for_restart=True)
         ok = await asyncio.to_thread(download_and_extract_github_repo)
 
         if not ok:
@@ -147,12 +145,13 @@ async def _run_auto_update(target_ids: Iterable[int], current_version: str, late
             await _safe_send(admin_id, done_text, include_snooze=False, include_close=False)
 
         await asyncio.sleep(2)
-        _restart_process()
+        await _restart_process()
     finally:
         await release_update_run()
 
 
 @update_scheduler.scheduled_job("interval", minutes=30)
+@tracked_job
 async def version_check_job() -> None:
     async with _update_lock:
         current_version = get_local_version()

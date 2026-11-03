@@ -1,57 +1,13 @@
-from aiogram import html
-from aiogram.filters import StateFilter
-from aiogram.types import Message
+from aiogram.types import Message, Update
 
-import data.text as constant_text
-from core.logging import bot_logger
-from db.main import add_chat_history_event, create_dump_chat_user, get_account_tg_to_user_id, get_dump_chat_user
 from loader import bot, router
-from utils.others import get_user_log_text
+from services.business_messages import business_contexts, business_event_key
+from services.message_service import save_message
 
 
-@router.business_message(StateFilter("*"))
-async def any_business_message_handler(message: Message):
-    try:
-        admin_id = (await bot.get_business_connection(message.business_connection_id)).user.id
-    except Exception:
-        bot_logger.exception("Failed to resolve business connection admin")
-        return
-
-    chat_id = message.chat.id
-    username = message.chat.username
-    chat_name = message.chat.full_name or message.chat.title
-
-    if await get_dump_chat_user(admin_id, chat_id):
-        return
-
-    bot_logger.info(
-        constant_text.PARSER_LOG_NEW_CHAT_TEXT.format(
-            user_id=admin_id,
-            chat_id=chat_id,
-            username=username,
-            chat_name=chat_name,
-        )
-    )
-    created = await create_dump_chat_user(admin_id, chat_id)
-    if not created:
-        return
-    settings = await get_account_tg_to_user_id(admin_id)
-    if settings:
-        await add_chat_history_event(
-            admin_id=int(settings.admin_id or admin_id),
-            chat_id=int(chat_id),
-            action_id=1,
-            account_user_id=int(settings.user_id or admin_id),
-        )
-
-    quote = html.quote(chat_name) if chat_name else chat_name
-
-    if not settings or not settings.is_active:
-        return
-
-    if settings.alert_new_chat:
-        log_chat_id = settings.admin_id if settings.alert_new_chat_id < 10 else settings.alert_new_chat_id
-        try:
-            await bot.send_message(log_chat_id, get_user_log_text(1, chat_id, username, quote))
-        except Exception:
-            bot_logger.exception(f"Failed to send new business chat notification to chat_id={log_chat_id}")
+@router.business_message()
+async def any_business_message_handler(message: Message, event_update: Update | None = None, business_account_contexts=None):
+    contexts = business_account_contexts if business_account_contexts is not None else await business_contexts(message.business_connection_id)
+    for context in contexts:
+        await save_message(bot, context, message, source="business", kind="new",
+                           event_key=business_event_key(message, event_update))

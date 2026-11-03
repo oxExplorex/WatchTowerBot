@@ -10,6 +10,7 @@ from pyrogram import Client
 from pyrogram.types import Message
 
 import data.text as constant_text
+from core.async_tools import tracked_job
 from core.logging import bot_logger
 from core.session_runtime import session_number_from_client
 from db.main import get_account_by_number
@@ -104,7 +105,10 @@ async def _send_document_with_retry(chat_id: int, file_path: str, suffix: str, c
         raise last_error
 
 
+@tracked_job
 async def file_spoiler_handler(client: Client, message: Message):
+    if getattr(getattr(message, "chat", None), "id", None) == bot.id:
+        return
     session_number = session_number_from_client(client)
     if not session_number:
         return

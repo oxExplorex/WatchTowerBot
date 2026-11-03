@@ -4,7 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 import data.text as constant_text
-from db.main import create_app_tg, get_app_tg_to_params_all
+from db.main import create_app_tg, get_app_tg_to_params_all, is_admin
 from filters.all_filters import IsAdmin, IsPrivate
 from handlers.admin.states import AdminStates
 from keyboards.inline.agree_inline import agree_inline
@@ -98,6 +98,8 @@ async def confirm_add_app_handler(call: CallbackQuery, state: FSMContext):
     if await get_app_tg_to_params_all(user_id=user_id, app_id=app_id, api_hash=api_hash):
         return await call.message.edit_text(text=constant_text.ERROR_ALREADY_APP_TEXT)
 
+    if not await is_admin(user_id):
+        return await call.answer("Доступ администратора отозван.")
     await create_app_tg(
         user_id=user_id,
         app_id=app_id,

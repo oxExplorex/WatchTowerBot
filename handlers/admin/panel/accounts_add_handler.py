@@ -1,8 +1,8 @@
 import asyncio
-import os
 import re
 import traceback
 from pathlib import Path
+from uuid import uuid4
 
 from aiogram import F
 from aiogram.filters import StateFilter
@@ -13,13 +13,15 @@ from pyrogram.errors import PhoneCodeExpired, SessionPasswordNeeded
 
 import data.text as constant_text
 from core.logging import bot_logger
-from core.session_runtime import stop_and_remove_session
-from db.main import create_account_tg, get_app_tg_uuid, update_user
+from core.auth_sessions import auth_clients, discard_session_files
+from core.session_files import replace_session_files, session_paths
+from core.session_runtime import get_client_by_number, start_client, stop_and_remove_session
+from db.main import create_unit_of_work, get_app_tg_uuid, is_admin
 from filters.all_filters import IsAdmin, IsPrivate
 from handlers.admin.states import AdminStates
 from keyboards.main.start_keyboard import static_admin_keyboard
 from keyboards.inline.back_inline import back_inline
-from loader import router
+from loader import router, session_manager
 from utils.others import close_state_pyrogram_client, not_warning_delete_message
 
 
@@ -35,47 +37,59 @@ def _get_session_lock(number: str) -> asyncio.Lock:
 
 
 def _session_paths(session_name: str) -> list[str]:
-    return [
-        session_name,
-        f"{session_name}.session",
-        f"{session_name}.session-shm",
-        f"{session_name}.session-wal",
-    ]
+    return [str(path) for path in session_paths(session_name)]
 
 
 def _temp_session_name(owner_id: int, number: str) -> str:
-    return f"data/session/_auth_{owner_id}_{number}"
+    return f"data/session/_auth_{owner_id}_{number}_{uuid4().hex}"
 
 
 async def _cleanup_session_files(session_name: str) -> None:
-    session_paths = _session_paths(session_name)
-
-    for path in session_paths:
-        for attempt in range(3):
-            try:
-                await asyncio.to_thread(os.remove, path)
-                break
-            except FileNotFoundError:
-                break
-            except PermissionError:
-                if attempt == 2:
-                    raise
-                await asyncio.sleep(0.2)
+    await discard_session_files(session_name)
 
 
-async def _promote_session_files(temp_name: str, final_name: str) -> None:
-    await _cleanup_session_files(final_name)
-    for src_path in _session_paths(temp_name):
-        dst_path = src_path.replace(temp_name, final_name, 1)
-        src = Path(src_path)
-        if not await asyncio.to_thread(src.exists):
-            continue
-        await asyncio.to_thread(os.replace, src_path, dst_path)
+async def _save_authorized_session(data: dict, result, owner_id: int, *, update_profile: bool = False) -> None:
+    number = data["number"]
+    temporary_name = data["temp_session_name"]
+    final_name = f"data/session/{number}"
+    async with _get_session_lock(number):
+        if not await is_admin(owner_id):
+            raise PermissionError("Доступ администратора отозван.")
+        if not Path(f"{temporary_name}.session").is_file():
+            raise FileNotFoundError("Authorized temporary session is missing")
+        previous_client = await get_client_by_number(number)
+        was_initialized = bool(getattr(previous_client, "is_initialized", False))
+        was_connected = bool(getattr(previous_client, "is_connected", False))
+        await stop_and_remove_session(number)
+        try:
+            with replace_session_files(temporary_name, final_name):
+                async with create_unit_of_work() as uow:
+                    if not await is_admin(owner_id):
+                        raise PermissionError("Доступ администратора отозван.")
+                    account = await uow.accounts.create_account_tg(owner_id, result.id, data["uuid_app"], number)
+                    if account is None:
+                        raise RuntimeError("Cannot save authorized account")
+                    if update_profile:
+                        await uow.users.update_user(result.id, result.username, result.full_name)
+        except BaseException:
+            if previous_client is not None:
+                try:
+                    await session_manager.add(previous_client)
+                    if was_initialized:
+                        await start_client(previous_client)
+                    elif was_connected:
+                        await start_client(previous_client, connect_only=True)
+                except Exception as exc:
+                    bot_logger.error("Failed to restore previous client: %s", type(exc).__name__)
+            raise
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("account_admin_menu_add:"), StateFilter("*"))
 async def start_add_account_handler(call: CallbackQuery, state: FSMContext):
+    previous = await state.get_data()
     await close_state_pyrogram_client(state)
+    if previous.get("temp_session_name"):
+        await _cleanup_session_files(previous["temp_session_name"])
     await state.clear()
 
     try:
@@ -136,20 +150,16 @@ async def receive_account_number_handler(message: Message, state: FSMContext):
         await state.clear()
         return await message.answer(constant_text.ERROR_NOT_FOUND_APP_ID)
 
-    final_session_name = f"data/session/{number}"
     temp_session_name = _temp_session_name(user_id, number)
     session_lock = _get_session_lock(number)
     async with session_lock:
-        await stop_and_remove_session(number)
-
         try:
-            await _cleanup_session_files(final_session_name)
             await _cleanup_session_files(temp_session_name)
         except PermissionError:
             await close_state_pyrogram_client(state)
             return await message.answer(constant_text.ACCOUNT_ADD_SESSION_BUSY_TEXT)
 
-    bot_logger.debug(f"{number} {app_info.app_id} {app_info.api_hash}")
+    bot_logger.debug("Starting account authorization for owner_id=%s", user_id)
 
     app_temp = Client(
         name=temp_session_name,
@@ -157,10 +167,11 @@ async def receive_account_number_handler(message: Message, state: FSMContext):
         api_id=app_info.app_id,
         api_hash=app_info.api_hash,
     )
+    auth_clients.register(app_temp, temp_session_name, state)
 
     try:
         await app_temp.connect()
-        result = await app_temp.send_code(phone_number=number)
+        result = await app_temp.send_phone_number_code(phone_number=number)
 
         prompt_message = await message.answer(constant_text.ACCOUNT_INPUT_CODE_TEXT)
         await state.update_data(
@@ -171,18 +182,21 @@ async def receive_account_number_handler(message: Message, state: FSMContext):
             phone_hash=result.phone_code_hash,
         )
         await state.set_state(AdminStates.account_add_code)
-    except Exception as exc:
-        bot_logger.error(traceback.format_exc())
-        if app_temp.is_connected:
-            await app_temp.disconnect()
+    except BaseException as exc:
+        if isinstance(exc, Exception):
+            bot_logger.error(traceback.format_exc())
+        await auth_clients.discard(app_temp)
         await _cleanup_session_files(temp_session_name)
         await state.clear()
+        if not isinstance(exc, Exception):
+            raise
         return await message.answer(f"{constant_text.ACCOUNT_ADD_ERROR_PREFIX}: {exc}")
 
 
 @router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.account_add_code))
 async def receive_account_code_handler(message: Message, state: FSMContext):
     data = await state.get_data()
+    auth_clients.track(data["app_temp"])
     user_id = message.from_user.id
     temp_session_name = data.get("temp_session_name")
     await not_warning_delete_message(message=data.get("prompt_message"))
@@ -209,27 +223,24 @@ async def receive_account_code_handler(message: Message, state: FSMContext):
     number = data["number"]
     phone_hash = data["phone_hash"]
     app_temp = data["app_temp"]
-    temp_session_name = data.get("temp_session_name") or _temp_session_name(user_id, number)
-    final_session_name = f"data/session/{number}"
-    session_lock = _get_session_lock(number)
+    temp_session_name = data["temp_session_name"]
 
+    keep_client = False
     try:
         result = await app_temp.sign_in(
             phone_number=number,
             phone_code_hash=phone_hash,
             phone_code=code,
         )
-        await app_temp.disconnect()
-        async with session_lock:
-            await _promote_session_files(temp_session_name, final_session_name)
-
-        await create_account_tg(user_id, result.id, data["uuid_app"], number)
+        await auth_clients.disconnect(app_temp)
+        await _save_authorized_session(data, result, user_id)
         await message.answer(constant_text.SUCCESS_ADD_ACCOUNT_TEXT)
         await state.clear()
     except SessionPasswordNeeded:
         prompt_message = await message.answer(constant_text.ACCOUNT_INPUT_PASSWORD_TEXT)
         await state.update_data(prompt_message=prompt_message)
         await state.set_state(AdminStates.account_add_password)
+        keep_client = True
         return
     except PhoneCodeExpired:
         await close_state_pyrogram_client(state)
@@ -242,17 +253,19 @@ async def receive_account_code_handler(message: Message, state: FSMContext):
         await message.answer(f"{constant_text.ACCOUNT_ADD_ERROR_PREFIX}: {exc}")
         await _cleanup_session_files(temp_session_name)
         await state.clear()
+    finally:
+        if not keep_client:
+            await auth_clients.discard(app_temp)
 
 
 @router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.account_add_password))
 async def receive_account_password_handler(message: Message, state: FSMContext):
     data = await state.get_data()
+    auth_clients.track(data["app_temp"])
     app_temp = data["app_temp"]
     user_id = message.from_user.id
     number = data["number"]
-    temp_session_name = data.get("temp_session_name") or _temp_session_name(user_id, number)
-    final_session_name = f"data/session/{number}"
-    session_lock = _get_session_lock(number)
+    temp_session_name = data["temp_session_name"]
     password = (message.text or "").strip()
 
     await not_warning_delete_message(message=data.get("prompt_message"))
@@ -263,12 +276,8 @@ async def receive_account_password_handler(message: Message, state: FSMContext):
 
     try:
         result = await app_temp.check_password(password)
-        await app_temp.disconnect()
-        async with session_lock:
-            await _promote_session_files(temp_session_name, final_session_name)
-
-        await create_account_tg(user_id, result.id, data["uuid_app"], number)
-        await update_user(result.id, result.username, result.full_name)
+        await auth_clients.disconnect(app_temp)
+        await _save_authorized_session(data, result, user_id, update_profile=True)
 
         await message.answer(constant_text.SUCCESS_ADD_ACCOUNT_TEXT)
         await state.clear()
@@ -277,3 +286,5 @@ async def receive_account_password_handler(message: Message, state: FSMContext):
         await message.answer(f"{constant_text.ACCOUNT_ADD_ERROR_PREFIX}: {exc}")
         await _cleanup_session_files(temp_session_name)
         await state.clear()
+    finally:
+        await auth_clients.discard(app_temp)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Integer, UniqueConstraint
+from sqlalchemy import BigInteger, Index, Integer, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -50,12 +50,14 @@ class TelegramApp(SQLModel, table=True):
     __tablename__ = "app_tg_db"
     __table_args__ = (
         UniqueConstraint("user_id", "app_id", "api_hash", name="uq_app_tg_db_user_app_hash"),
+        Index("uq_app_tg_db_user_app_hash_index", "user_id", "app_id", "api_hash_index", unique=True),
     )
 
     uuid: UUID = Field(default_factory=uuid4, primary_key=True)
     user_id: Optional[int] = Field(default=None, sa_type=BigInteger, index=True)
     app_id: Optional[int] = Field(default=None, sa_type=BigInteger)
     api_hash: Optional[str] = Field(default=None)
+    api_hash_index: Optional[str] = Field(default=None)
     tag_name: Optional[str] = Field(default="No Name")
 
 
@@ -123,7 +125,8 @@ class AccountHealth(SQLModel, table=True):
     __tablename__ = "account_health_db"
 
     uuid: UUID = Field(default_factory=uuid4, primary_key=True)
-    account_uuid: UUID = Field(index=True, foreign_key="apps_db.uuid")
+    # Health events outlive the account, including the event recording its removal.
+    account_uuid: UUID = Field(index=True)
     admin_id: int = Field(sa_type=BigInteger, index=True)
     user_id: int = Field(sa_type=BigInteger, index=True)
     status: int = Field(sa_type=Integer, index=True)
@@ -150,3 +153,9 @@ history_users_db = HistoryUser
 dump_chat_user_db = DumpChatUser
 account_health_db = AccountHealth
 version_state_db = VersionState
+
+# Register archive tables in the same SQLModel metadata used by Alembic.
+from db.admin_models import AdminGrant  # noqa: E402,F401
+from db.personal_models import OwnerArchiveKey  # noqa: E402,F401
+from db.media_models import MessageAttachment  # noqa: E402,F401
+from db.message_models import StoredMessage, MessageRevision, MessageReceipt, PendingMessageDeletion  # noqa: E402,F401

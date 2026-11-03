@@ -6,6 +6,17 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+
+def conflict_insert(session: AsyncSession, model):
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        return pg_insert(model)
+    if dialect == "sqlite":
+        return sqlite_insert(model)
+    raise RuntimeError("Conflict-safe insert requires PostgreSQL or SQLite")
 
 
 @dataclass(frozen=True)

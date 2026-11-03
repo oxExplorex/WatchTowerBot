@@ -7,10 +7,12 @@ from aiogram.types import CallbackQuery, Message
 
 import data.text as constant_text
 from core.logging import bot_logger
+from core.auth_sessions import auth_clients
 from data.config import admin_id_list
 from db.main import get_admins
 from keyboards.main.start_keyboard import static_admin_keyboard
 from loader import bot
+from utils.chat_notifications import get_user_log_text
 
 
 async def send_log_to_active_bot(bot: aiogram.Bot):
@@ -26,25 +28,6 @@ async def send_log_to_active_bot(bot: aiogram.Bot):
             )
         except Exception:
             bot_logger.exception(f"Failed to send startup notification to admin_id={admin_id}")
-
-
-def get_user_log_text(action_id, chat_id, username, chat_name):
-    link_id = f"tg://user?id={chat_id}"
-    if action_id == 1:
-        return constant_text.CHAT_LOG_NEW_TEXT.format(
-            chat_name=chat_name,
-            chat_id=chat_id,
-            link_id=link_id,
-            username=username,
-        )
-    if action_id == 2:
-        return constant_text.CHAT_LOG_DELETED_TEXT.format(
-            chat_name=chat_name,
-            chat_id=chat_id,
-            link_id=link_id,
-            username=username,
-        )
-    return "error"
 
 
 async def not_warning_delete_message(
@@ -79,8 +62,8 @@ async def close_state_pyrogram_client(state: FSMContext) -> None:
     try:
         data = await state.get_data()
         app_temp = data.get("app_temp")
-        if app_temp and getattr(app_temp, "is_connected", False):
-            await app_temp.disconnect()
+        if app_temp:
+            await auth_clients.discard(app_temp)
             bot_logger.info("Temporary auth client disconnected from FSM state")
     except Exception:
         bot_logger.error(traceback.format_exc())

@@ -4,8 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 import data.text as constant_text
-from core.process_control import restart_current_process
-from core.session_runtime import stop_all_clients
+from core.process_control import restart_with_clients
 from filters.all_filters import IsAdmin, IsPrivate
 from loader import router
 
@@ -14,5 +13,4 @@ from loader import router
 async def restart_handler(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(constant_text.RESTARTING_TEXT)
-    await stop_all_clients(for_restart=True)
-    restart_current_process()
+    await restart_with_clients()

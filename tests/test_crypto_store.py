@@ -8,6 +8,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from utils import crypto_store
+import pytest
 
 
 def test_no_key_keeps_plain_text(monkeypatch):
@@ -40,6 +41,14 @@ def test_encrypt_is_idempotent(monkeypatch):
     assert crypto_store.decrypt_text(second) == "secret"
 
 
+def test_literal_storage_prefix_in_user_input_is_encrypted(monkeypatch):
+    monkeypatch.setenv("DB_ENCRYPTION_KEY", "test-key-123")
+    name = "enc:v1:literal user name"
+    encrypted = crypto_store.encrypt_text(name)
+    assert encrypted != name
+    assert crypto_store.decrypt_text(encrypted) == name
+
+
 def test_blind_index_is_stable_and_case_insensitive(monkeypatch):
     monkeypatch.setenv("DB_ENCRYPTION_KEY", "test-key-123")
 
@@ -47,3 +56,17 @@ def test_blind_index_is_stable_and_case_insensitive(monkeypatch):
     two = crypto_store.blind_index("@username")
     assert one == two
     assert one is not None
+
+
+@pytest.mark.parametrize("key", [None, "wrong-key"])
+def test_encrypted_value_cannot_be_read_with_missing_or_wrong_key(monkeypatch, key):
+    monkeypatch.setenv("DB_ENCRYPTION_KEY", "correct-key")
+    encrypted = crypto_store.encrypt_text("private-value")
+    if key is None:
+        monkeypatch.delenv("DB_ENCRYPTION_KEY")
+    else:
+        monkeypatch.setenv("DB_ENCRYPTION_KEY", key)
+    with pytest.raises(RuntimeError, match="decrypt") as caught:
+        crypto_store.decrypt_text(encrypted)
+    assert encrypted not in str(caught.value)
+    assert "private-value" not in str(caught.value)

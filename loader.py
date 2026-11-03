@@ -7,9 +7,11 @@ from aiogram.enums import ParseMode
 from pyrogram import Client
 
 from core.logging import bot_logger
+from core.session_manager import SessionManager
 import data.text as constant_text
 from data.config import GEMINI_KEY, TOKEN_BOT
-from db.main import connect_database, get_account_all, get_app_tg_uuid_aio
+from db.main import get_account_all, get_app_tg_uuid_aio
+from db.session import is_connected
 
 
 _PROMPT_PATH = Path("data/promt_ai_userbot.txt")
@@ -80,7 +82,7 @@ async def _build_gemini_system_instruction() -> str:
         bot_logger.exception("Failed to build Gemini system instruction")
         return ""
 
-apps_session: list[Client] = []
+session_manager = SessionManager()
 gemini_system_instruction = ""
 
 
@@ -89,10 +91,15 @@ async def initialize_runtime_state() -> None:
     if _runtime_initialized:
         return
 
-    await connect_database()
+    if not is_connected():
+        raise RuntimeError(
+            "Database must be connected before initialize_runtime_state(). "
+            "Call connect_database() first."
+        )
+
     apps = await _get_apps_user()
-    apps_session.clear()
-    apps_session.extend(apps)
+    await session_manager.clear()
+    await session_manager.extend(apps)
     gemini_system_instruction = await _build_gemini_system_instruction()
     _runtime_initialized = True
 

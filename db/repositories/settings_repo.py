@@ -4,12 +4,13 @@ import time
 from typing import Any
 
 import data.text as constant_text
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from db.models import AccountHealth, User, VersionState
 from db.repositories.base import BaseRepository, SessionLease
+from utils.crypto_store import decrypt_text, encrypt_service_secret, is_encrypted
 
 
 class SettingsRepository(BaseRepository):
@@ -48,17 +49,36 @@ class SettingsRepository(BaseRepository):
         lease.session.add(user)
         await self._commit(lease.session, lease.owns_session)
         if refresh and lease.owns_session:
+            await lease.session.flush()
             await lease.session.refresh(user)
 
     @staticmethod
     def _proxy_config_from_user(user: User) -> dict[str, Any]:
         return {
-            "proxy": (user.gemini_proxy or "").strip() or None,
+            "proxy": (decrypt_text(user.gemini_proxy) or "").strip() or None,
             "enabled": int(getattr(user, "gemini_proxy_enabled", 0) or 0),
             "status": int(getattr(user, "gemini_proxy_status", 0) or 0),
             "checked_at": int(getattr(user, "gemini_proxy_checked_at", 0) or 0),
-            "last_error": getattr(user, "gemini_proxy_last_error", None) or None,
+            "last_error": decrypt_text(user.gemini_proxy_last_error) or None,
         }
+
+    async def backfill_proxy_encryption(self, session: AsyncSession | None = None) -> int:
+        async with self._session(session) as lease:
+            users = await lease.session.scalars(select(User).where(or_(
+                User.gemini_proxy.is_not(None), User.gemini_proxy_last_error.is_not(None))))
+            touched = 0
+            for user in users:
+                changed = False
+                for name in ("gemini_proxy", "gemini_proxy_last_error"):
+                    stored = getattr(user, name)
+                    plain = decrypt_text(stored)  # Validate encrypted values too.
+                    if stored and not is_encrypted(stored):
+                        setattr(user, name, encrypt_service_secret(plain))
+                        changed = True
+                touched += int(changed)
+            if touched:
+                await self._commit(lease.session, lease.owns_session)
+            return touched
 
     async def get_version_state_cache(
         self,
@@ -217,7 +237,7 @@ class SettingsRepository(BaseRepository):
         proxy_clean = (proxy_value or "").strip()
         async with self._session(session) as lease:
             user = await self._get_or_create_user(lease.session, user_id)
-            user.gemini_proxy = proxy_clean
+            user.gemini_proxy = encrypt_service_secret(proxy_clean)
             user.gemini_proxy_enabled = 1
             user.gemini_proxy_status = 0
             user.gemini_proxy_checked_at = int(time.time())
@@ -236,7 +256,7 @@ class SettingsRepository(BaseRepository):
             user.gemini_proxy_enabled = 0
             user.gemini_proxy_status = 0
             user.gemini_proxy_checked_at = int(time.time())
-            user.gemini_proxy_last_error = reason or None
+            user.gemini_proxy_last_error = encrypt_service_secret(reason or None)
             await self._persist_user(lease, user, refresh=True)
             return self._proxy_config_from_user(user)
 
@@ -251,7 +271,7 @@ class SettingsRepository(BaseRepository):
             user = await self._get_or_create_user(lease.session, user_id)
             user.gemini_proxy_status = 1 if is_ok else 0
             user.gemini_proxy_checked_at = int(time.time())
-            user.gemini_proxy_last_error = None if is_ok else (error or "proxy_check_failed")
+            user.gemini_proxy_last_error = None if is_ok else encrypt_service_secret(error or "proxy_check_failed")
             await self._persist_user(lease, user, refresh=True)
             return self._proxy_config_from_user(user)
 

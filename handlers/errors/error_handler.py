@@ -54,10 +54,10 @@ _HANDLED_ERRORS = (
 
 @router.error()
 async def errors_handler(event: ErrorEvent):
+    stack = [(frame.filename, frame.lineno, frame.name) for frame in traceback.extract_tb(event.exception.__traceback__)]
     for error_types, label in _HANDLED_ERRORS:
         if isinstance(event.exception, error_types):
-            bot_logger.exception(f"{label}: {event.exception}\nUpdate: {event.update}")
+            bot_logger.error("%s: exception=%s update_id=%s stack=%s", label, type(event.exception).__name__, event.update.update_id, stack)
             return True
 
-    bot_logger.exception(f"Unhandled error: {event.exception}\nUpdate: {event.update}")
-    bot_logger.error(traceback.format_exc())
+    bot_logger.error("Unhandled error: exception=%s update_id=%s stack=%s", type(event.exception).__name__, event.update.update_id, stack)

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import importlib
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -24,13 +24,18 @@ class _RouterStub:
         return self._decorator_factory
 
 
-loader_stub = types.ModuleType("loader")
-loader_stub.router = _RouterStub()
-loader_stub.apps_session = []
-loader_stub.bot = types.SimpleNamespace()
-sys.modules["loader"] = loader_stub
-
-handler_mod = importlib.import_module("handlers.admin.panel.chat_history_handler")
+@pytest.fixture
+def handler_mod(monkeypatch, offline_module):
+    root = Path(__file__).resolve().parents[2]
+    for name, directory in [("handlers", "handlers"), ("handlers.admin", "handlers/admin")]:
+        package = types.ModuleType(name)
+        package.__path__ = [str(root / directory)]
+        monkeypatch.setitem(sys.modules, name, package)
+    loader_stub = types.ModuleType("loader")
+    loader_stub.router = _RouterStub()
+    loader_stub.bot = types.SimpleNamespace()
+    monkeypatch.setitem(sys.modules, "loader", loader_stub)
+    return offline_module("handlers/admin/panel/chat_history_handler.py")
 
 
 class _FakeMessage:
@@ -44,7 +49,7 @@ class _FakeMessage:
 
 
 @pytest.mark.asyncio
-async def test_send_chunked_splits_long_text():
+async def test_send_chunked_splits_long_text(handler_mod):
     message = _FakeMessage()
     lines = [f"line-{i}" for i in range(100)]
     text = "\n".join(lines)
@@ -54,7 +59,7 @@ async def test_send_chunked_splits_long_text():
 
 
 @pytest.mark.asyncio
-async def test_current_presence_lines_masks_account_ids(monkeypatch):
+async def test_current_presence_lines_masks_account_ids(monkeypatch, handler_mod):
     async def _get_account_all(active_only=False):
         _ = active_only
         return [
@@ -74,7 +79,8 @@ async def test_current_presence_lines_masks_account_ids(monkeypatch):
     monkeypatch.setattr(handler_mod, "get_dump_chat_user", _get_dump_chat_user)
     monkeypatch.setattr(handler_mod, "get_user", _get_user)
 
-    lines = await handler_mod._current_presence_lines(admin_id=5001, chat_ids=[70001])
+    lines, has_presence = await handler_mod._current_presence_lines(admin_id=5001, chat_ids=[70001])
+    assert has_presence
     rendered = "\n".join(lines)
     assert "есть у:" in rendered
     assert "[11**11]" in rendered
@@ -82,7 +88,7 @@ async def test_current_presence_lines_masks_account_ids(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_render_history_shows_presence_even_without_events(monkeypatch):
+async def test_render_history_shows_presence_even_without_events(monkeypatch, handler_mod):
     message = _FakeMessage(text="/chat_history 777")
 
     async def _resolve_chat_ids(query: str):
@@ -91,7 +97,7 @@ async def test_render_history_shows_presence_even_without_events(monkeypatch):
 
     async def _presence_lines(admin_id: int, chat_ids: list[int]):
         _ = (admin_id, chat_ids)
-        return ["<b>Сейчас в чатах</b>", "user_id <code>777</code> | есть у: name [11***22]", ""]
+        return ["<b>Сейчас в чатах</b>", "user_id <code>777</code> | есть у: name [11***22]", ""], True
 
     async def _get_chat_history_events(admin_id: int, chat_id: int, limit: int = 250):
         _ = (admin_id, chat_id, limit)
@@ -109,4 +115,4 @@ async def test_render_history_shows_presence_even_without_events(monkeypatch):
 
     joined = "\n".join(message.sent)
     assert "Сейчас в чатах" in joined
-    assert "История по запросу не найдена" in joined
+    assert handler_mod.constant_text.CHAT_HISTORY_EVENTS_EMPTY_WITH_PRESENCE_TEXT in joined

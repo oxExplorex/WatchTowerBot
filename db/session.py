@@ -22,6 +22,7 @@ async def connect_engine(connection_string: str) -> None:
     _engine = create_async_engine(
         connection_string,
         echo=False,
+        hide_parameters=True,
         pool_pre_ping=True,
         future=True,
     )

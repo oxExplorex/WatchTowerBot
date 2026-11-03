@@ -8,15 +8,17 @@ def _is_ttl_enabled(obj) -> bool:
 
 
 def file_with_spoiler_or_ttl(_, __, message: Message):
+    # Kurigram exposes the spoiler flag on Message, not on Photo/Video.
+    has_message_spoiler = bool(getattr(message, "has_media_spoiler", False))
     photo = getattr(message, "photo", None)
     if photo:
         has_spoiler = bool(getattr(photo, "has_spoiler", False))
-        return has_spoiler or _is_ttl_enabled(photo)
+        return has_message_spoiler or has_spoiler or _is_ttl_enabled(photo)
 
     video = getattr(message, "video", None)
     if video:
         has_spoiler = bool(getattr(video, "has_spoiler", False))
-        return has_spoiler or _is_ttl_enabled(video)
+        return has_message_spoiler or has_spoiler or _is_ttl_enabled(video)
 
     video_note = getattr(message, "video_note", None)
     if video_note:

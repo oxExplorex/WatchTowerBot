@@ -14,6 +14,8 @@ class UpdateUserMiddleware(BaseMiddleware):
             data: dict[str, Any]
     ) -> Any:
 
+        if message.from_user is None:
+            return await handler(message, data)
         _user_id = message.from_user.id
         _username = message.from_user.username
         _full_name = message.from_user.full_name

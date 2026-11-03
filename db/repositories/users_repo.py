@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from db.models import User, UsernameHistory
+from db.admin_models import AdminGrant
 from db.repositories.base import BaseRepository
 from utils.crypto_store import blind_index, decrypt_text, encrypt_text, is_encrypted
 
@@ -23,9 +24,6 @@ class UsersRepository(BaseRepository):
         super().__init__(session_scope, autocommit=autocommit)
         self._admin_id_list = set(int(x) for x in admin_id_list)
 
-    def _admin_role(self, user_id: int) -> str | None:
-        return "admin" if int(user_id) in self._admin_id_list else None
-
     async def _fetch_user(self, session: AsyncSession, user_id: int) -> User | None:
         result = await session.execute(select(User).where(col(User.user_id) == int(user_id)))
         return result.scalars().first()
@@ -33,9 +31,14 @@ class UsersRepository(BaseRepository):
     def _hydrate_user(self, user: User | None) -> User | None:
         if not user:
             return None
-        user.username = decrypt_text(user.username)
-        user.full_name = decrypt_text(user.full_name)
-        return user
+        # A model_copy would share SQLAlchemy state. Build an independent model so
+        # reading within a UnitOfWork cannot flush decrypted values back to the DB.
+        return User.model_validate(user.model_dump() | {
+            "username": decrypt_text(user.username),
+            "full_name": decrypt_text(user.full_name),
+            "gemini_proxy": decrypt_text(user.gemini_proxy),
+            "gemini_proxy_last_error": decrypt_text(user.gemini_proxy_last_error),
+        })
 
     async def get_user(self, user_id: int, session: AsyncSession | None = None) -> User | None:
         async with self._session(session) as lease:
@@ -51,10 +54,9 @@ class UsersRepository(BaseRepository):
     ) -> None:
         async with self._session(session) as lease:
             user = await self._fetch_user(lease.session, user_id)
-            roles = self._admin_role(user_id)
 
             if not user:
-                user = User(user_id=int(user_id), roles=roles, timezone_offset=3)
+                user = User(user_id=int(user_id), timezone_offset=3)
                 lease.session.add(user)
 
             old_username = decrypt_text(user.username)
@@ -65,8 +67,7 @@ class UsersRepository(BaseRepository):
             )
             needs_full_name_reencrypt = bool(full_name) and not is_encrypted(user.full_name)
             if (
-                user.roles != roles
-                or old_username != username
+                old_username != username
                 or old_full_name != full_name
                 or needs_username_reencrypt
                 or needs_full_name_reencrypt
@@ -74,7 +75,6 @@ class UsersRepository(BaseRepository):
                 user.username = encrypt_text(username)
                 user.full_name = encrypt_text(full_name)
                 user.username_hash = username_idx
-                user.roles = roles
 
             normalized_username = (username or "").strip().lstrip("@").lower()
             normalized_old_username = (old_username or "").strip().lstrip("@").lower()
@@ -126,13 +126,38 @@ class UsersRepository(BaseRepository):
 
     async def get_admins(self, session: AsyncSession | None = None) -> list[User]:
         async with self._session(session) as lease:
-            result = await lease.session.execute(select(User).where(col(User.roles) == "admin"))
-            return [self._hydrate_user(item) for item in result.scalars().all()]
+            ids = self._admin_id_list | set(await lease.session.scalars(select(AdminGrant.user_id)))
+            users = await lease.session.scalars(select(User).where(User.user_id.in_(ids)))
+            profiles = {user.user_id: self._hydrate_user(user) for user in users}
+            # Grants also work before the recipient has opened the bot.
+            return [profiles.get(user_id) or User(user_id=user_id, roles="admin") for user_id in sorted(ids)]
 
     async def get_all_users(self, session: AsyncSession | None = None) -> list[User]:
         async with self._session(session) as lease:
             result = await lease.session.execute(select(User))
             return [self._hydrate_user(item) for item in result.scalars().all()]
+
+    async def backfill_user_encryption(self, session: AsyncSession | None = None) -> int:
+        async with self._session(session) as lease:
+            users = (await lease.session.execute(select(User))).scalars().all()
+            touched = 0
+            for user in users:
+                username = decrypt_text(user.username)
+                decrypt_text(user.full_name)  # Validate the key even for already encrypted names.
+                idx = blind_index(username)
+                needs_username = bool(user.username) and not is_encrypted(user.username)
+                needs_name = bool(user.full_name) and not is_encrypted(user.full_name)
+                if not needs_username and not needs_name and user.username_hash == idx:
+                    continue
+                if needs_username:
+                    user.username = encrypt_text(username)
+                if needs_name:
+                    user.full_name = encrypt_text(user.full_name)
+                user.username_hash = idx
+                touched += 1
+            if touched:
+                await self._commit(lease.session, lease.owns_session)
+            return touched
 
     async def backfill_username_history_encryption(self, session: AsyncSession | None = None) -> int:
         async with self._session(session) as lease:
@@ -146,7 +171,8 @@ class UsersRepository(BaseRepository):
                 should_index = bool(value) and item.username_hash != idx
                 if not should_encrypt and not should_index:
                     continue
-                item.username = encrypt_text(value)
+                if should_encrypt:
+                    item.username = encrypt_text(value)
                 item.username_hash = idx
                 touched += 1
 

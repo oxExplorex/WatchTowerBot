@@ -7,6 +7,7 @@ from pathlib import Path
 
 import colorlog
 
+from core.log_safety import RedactingFormatter
 from data.config import path_logs
 from utils.datetime_tools import DateTime
 
@@ -27,6 +28,9 @@ def _build_logger() -> logging.Logger:
     level = _resolve_level()
 
     if logger.handlers:
+        for handler in logger.handlers:
+            if not isinstance(handler.formatter, RedactingFormatter):
+                handler.setFormatter(RedactingFormatter(handler.formatter or logging.Formatter()))
         _apply_level(logger, level)
         return logger
 
@@ -50,12 +54,12 @@ def _build_logger() -> logging.Logger:
         },
     )
 
-    console_out.setFormatter(formatter)
+    console_out.setFormatter(RedactingFormatter(formatter))
     file_log.setFormatter(
-        logging.Formatter(
+        RedactingFormatter(logging.Formatter(
             "[%(asctime)s | %(levelname)s]: %(filename)s | %(funcName)s:%(lineno)d - %(message)s",
             datefmt="%m.%d.%Y %H:%M:%S",
-        )
+        ))
     )
 
     logger.addHandler(file_log)
@@ -115,7 +119,7 @@ def install_global_exception_hooks(loop=None) -> None:
             for key, value in context.items()
             if key not in {"message", "exception"}
         }
-        bot_logger.critical(f"{message} | context={details}")
+        bot_logger.critical("%s | context_keys=%s", message, sorted(details))
 
     sys.excepthook = _sys_excepthook
     threading.excepthook = _thread_excepthook
