@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
+from sqlalchemy.engine import URL
 
 import data.config as config
 
@@ -41,10 +42,10 @@ class DatabaseSettings:
     def connection_string(self) -> str:
         if self.normalized_engine == "sqlite+aiosqlite":
             return f"{self.normalized_engine}:///{self.path}"
-        return (
-            f"{self.normalized_engine}://{self.user}:{self.password}"
-            f"@{self.host}:{self.port}/{self.name}"
-        )
+        return URL.create(
+            self.normalized_engine, username=self.user, password=self.password,
+            host=self.host, port=self.port, database=self.name,
+        ).render_as_string(hide_password=False)
 
 
 def load_database_settings() -> DatabaseSettings:

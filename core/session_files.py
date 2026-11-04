@@ -3,12 +3,35 @@ from __future__ import annotations
 from contextlib import contextmanager
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 
 
 def session_paths(name: str) -> list[Path]:
     return [Path(f"{name}{suffix}") for suffix in ("", ".session", ".session-shm", ".session-wal", ".session-journal")]
+
+
+def account_session_paths(number: str, root: Path = Path("data/session")) -> list[Path]:
+    """Exact files of one account; a number prefix must never match another session."""
+    if not re.fullmatch(r"\+?[0-9]+", str(number)):
+        raise ValueError("Invalid account session number")
+    root = root.resolve()
+    paths = session_paths(str(root / str(number)))
+    if any(path.is_symlink() or path.resolve().parent != root for path in paths):
+        raise ValueError("Unsafe account session path")
+    return paths
+
+
+def remove_account_session_files(number: str, *, strict: bool = False) -> None:
+    for path in account_session_paths(number):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            if strict:
+                raise
+            # Preserve existing best-effort cleanup; never broaden the file set.
+            pass
 
 
 @contextmanager

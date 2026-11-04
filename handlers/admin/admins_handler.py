@@ -1,12 +1,12 @@
 from uuid import uuid4
 
-from aiogram import F, html
+from aiogram import F, Router, html
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from data import admin_text as text
+from data.texts import admins as text
 from db.main import (get_admin_grants, get_admin_ids, get_configured_admin_ids,
                      get_user, grant_admin, is_admin, revoke_admin)
 from db.repositories.admins_repo import telegram_user_id
@@ -15,8 +15,10 @@ from handlers.admin.states import AdminStates
 from keyboards.inline.admins_inline import (admin_cancel_keyboard, admin_confirmation_keyboard,
                                             admin_detail_keyboard, admin_list_keyboard)
 from keyboards.main.start_keyboard import static_admin_keyboard
-from loader import router
+
 from utils.others import close_state_pyrogram_client
+
+router = Router(name=__name__)
 
 PAGE_SIZE = 8
 
@@ -94,16 +96,16 @@ async def view_admin_handler(call: CallbackQuery, state: FSMContext):
         return await call.answer(text.EXPIRED)
     await _clear_flow(state)
     if not await is_admin(user_id):
-        return await call.answer("У пользователя уже нет доступа.")
+        return await call.answer(text.NO_ACCESS)
     configured = user_id in get_configured_admin_ids()
     user = await get_user(user_id)
-    name = (user.full_name or user.username or "Без имени") if user else "Ещё не обращался к боту"
+    name = (user.full_name or user.username or text.NO_NAME) if user else text.NO_CONTACT
     grants = {grant.user_id: grant for grant in await get_admin_grants()}
     grant = grants.get(user_id)
-    origin = "Указан в ADMIN_ID_LIST" if configured else (
-        f"Назначил: <code>{grant.granted_by}</code>" if grant and grant.granted_by else "Доступ перенесён из старой версии")
+    origin = text.CONFIGURED_ORIGIN if configured else (
+        text.ASSIGNED_ORIGIN.format(user_id=grant.granted_by) if grant and grant.granted_by else text.LEGACY_ORIGIN)
     await _edit(call.message,
-        f"<b>Администратор</b>\n{html.quote(name)}\nID: <code>{user_id}</code>\n{origin}",
+        text.DETAIL.format(name=html.quote(name), user_id=user_id, origin=origin),
         reply_markup=admin_detail_keyboard(user_id, page,
             can_revoke=not configured and user_id != call.from_user.id))
     await call.answer()
@@ -117,7 +119,7 @@ async def add_admin_handler(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-@router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.admin_add_id), F.text.in_(["/cancel", "Отмена"]))
+@router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.admin_add_id), F.text.in_(["/cancel", text.CANCEL_BUTTON]))
 async def cancel_admin_input_handler(message: Message, state: FSMContext):
     await state.clear()
     await _show_list(message)
@@ -133,7 +135,7 @@ async def receive_admin_id_handler(message: Message, state: FSMContext):
     except ValueError:
         return await message.answer(text.INVALID_ID, reply_markup=admin_cancel_keyboard())
     if await is_admin(user_id):
-        return await message.answer("У этого пользователя уже есть доступ.", reply_markup=admin_cancel_keyboard())
+        return await message.answer(text.ALREADY_ALLOWED, reply_markup=admin_cancel_keyboard())
     nonce = uuid4().hex
     await state.update_data(admin_target=user_id, admin_nonce=nonce)
     await state.set_state(AdminStates.admin_confirm_add)
@@ -152,7 +154,7 @@ async def confirm_admin_grant_handler(call: CallbackQuery, state: FSMContext):
     except PermissionError:
         return await call.answer(text.ACCESS_REVOKED)
     await _show_list(call.message, edit=True)
-    await call.answer("Доступ выдан. Пользователь может отправить боту /start." if created else "Уже есть доступ.")
+    await call.answer(text.GRANTED if created else text.ALREADY_GRANTED)
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("adm:revoke:"), StateFilter("*"))
@@ -166,7 +168,7 @@ async def request_admin_revoke_handler(call: CallbackQuery, state: FSMContext):
     if user_id == call.from_user.id:
         return await call.answer(text.SELF_REVOKE, show_alert=True)
     if not await is_admin(user_id):
-        return await call.answer("У пользователя уже нет доступа.")
+        return await call.answer(text.NO_ACCESS)
     await _clear_flow(state)
     nonce = uuid4().hex
     await state.update_data(admin_target=user_id, admin_nonce=nonce, admin_page=page)
@@ -189,14 +191,14 @@ async def confirm_admin_revoke_handler(call: CallbackQuery, state: FSMContext):
     except ValueError:
         return await call.answer(text.EXPIRED)
     await _show_list(call.message, page=data.get("admin_page", 0), edit=True)
-    await call.answer("Доступ отозван." if removed else "У пользователя уже нет доступа.")
+    await call.answer(text.REVOKED if removed else text.NO_ACCESS)
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "adm:close", StateFilter("*"))
 async def close_admins_handler(call: CallbackQuery, state: FSMContext):
     await _clear_flow(state)
-    await _edit(call.message, "Панель администраторов закрыта.")
-    await call.message.answer("Главное меню", reply_markup=static_admin_keyboard())
+    await _edit(call.message, text.PANEL_CLOSED)
+    await call.message.answer(text.MAIN_MENU, reply_markup=static_admin_keyboard())
     await call.answer()
 
 

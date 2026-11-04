@@ -10,6 +10,12 @@ from unittest.mock import Mock
 import pytest
 
 from scripts import install_dependencies as installer
+from scripts import startup_status
+
+
+@pytest.fixture(autouse=True)
+def no_live_bootstrap_notifications(monkeypatch):
+    monkeypatch.setattr(startup_status, "start_bootstrap_notifications", Mock(return_value=Mock()))
 
 
 @pytest.fixture
@@ -44,7 +50,10 @@ def test_old_updater_restart_installs_all_requirements_once(bootstrap):
     requirements, versions, telegram, pip = bootstrap
     assert installer.ensure_project_dependencies() is True
     telegram.assert_called_once_with()
-    pip.assert_called_once_with("install", "--upgrade", "--upgrade-strategy", "eager", "--index-url", "https://pypi.org/simple", "-r", str(requirements))
+    pip.assert_called_once()
+    arguments = pip.call_args.args
+    assert arguments[:6] == ("install", "--upgrade", "--upgrade-strategy", "eager", "--index-url", "https://pypi.org/simple")
+    assert "--constraint" in arguments and arguments[-2] == "-r"
     marker = installer.PROJECT_ROOT / "data/temp/dependency-state.json"
     assert json.loads(marker.read_text(encoding="utf-8"))["packages"]["google-genai"] == "2.34.0"
     assert versions["google-genai"] == "2.34.0"
@@ -110,13 +119,15 @@ def test_no_native_wheel_uses_core_requirements_and_caches_fallback(monkeypatch,
     captured = []
 
     def install(*args):
-        captured.append(Path(args[-1]).read_text(encoding="utf-8"))
+        captured.append((Path(args[-1]).read_text(encoding="utf-8"),
+                         Path(args[args.index("--constraint") + 1]).read_text(encoding="utf-8")))
 
     pip.side_effect = install
     assert installer.ensure_project_dependencies() is True
-    assert f"kurigram=={installer.KURIGRAM_VERSION}" in captured[0]
-    assert "[fast]" not in captured[0]
-    assert "google-genai==2.34.0" in captured[0]
+    requirements, constraints = captured[0]
+    assert "kurigram" not in requirements
+    assert f"kurigram=={installer.KURIGRAM_VERSION}" in constraints and "[fast]" not in constraints
+    assert "google-genai==2.34.0" in requirements
     assert installer.ensure_project_dependencies() is False
     pip.assert_called_once()
 
@@ -130,11 +141,30 @@ def test_missing_accelerator_is_optional(monkeypatch):
     assert all("--only-binary=:all:" in call.args for call in pip.call_args_list)
 
 
+def test_batches_have_five_requirements_full_constraints_and_truthful_progress(monkeypatch, bootstrap):
+    requirements, _, _, pip = bootstrap
+    lines = [installer.KURIGRAM_REQUIREMENT] + [f"package{i}[extra]==1.0" for i in range(12)]
+    requirements.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    batches, constraints, progress = [], [], []
+
+    def install(*args):
+        batches.append(Path(args[-1]).read_text(encoding="utf-8").splitlines())
+        constraints.append(Path(args[args.index("--constraint") + 1]).read_text(encoding="utf-8"))
+
+    pip.side_effect = install
+    installer.ensure_project_dependencies(progress=lambda *args: progress.append(args))
+    assert list(map(len, batches)) == [5, 5, 2]
+    assert [item for batch in batches for item in batch] == lines[1:]
+    assert all("kurigram==" in value and "[extra]" not in value for value in constraints)
+    assert [entry[0] for entry in progress if len(entry) == 2] == [6, 11, 13]
+    assert progress[-1] == (13, 13)
+
+
 def test_main_bootstrap_runs_before_third_party_imports(monkeypatch):
     class BootstrapReached(Exception):
         pass
 
-    def bootstrap():
+    def bootstrap(**kwargs):
         raise BootstrapReached
 
     monkeypatch.setattr(installer, "ensure_project_dependencies", bootstrap)

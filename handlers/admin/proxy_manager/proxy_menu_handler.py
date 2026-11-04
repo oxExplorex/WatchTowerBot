@@ -1,4 +1,4 @@
-from aiogram import F
+from aiogram import F, Router, html
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -12,9 +12,11 @@ from db.main import (
 from filters.all_filters import IsAdmin, IsPrivate
 from handlers.admin.proxy_manager.proxy_checker import check_proxy_now
 from handlers.admin.states import AdminStates
-from loader import router
+
 from utils.datetime_tools import DateTime
 from utils.proxy_utils import compact_proxy_display, normalize_http_proxy_input
+
+router = Router(name=__name__)
 
 
 def _proxy_status_label(proxy_cfg: dict) -> str:
@@ -47,10 +49,10 @@ def _proxy_menu_text(proxy_cfg: dict, tz_offset: int) -> str:
     error_line = last_error[:120] if last_error else constant_text.PROXY_MENU_NO_DATA_TEXT
 
     return constant_text.PROXY_MENU_PROMPT_TEXT.format(
-        proxy=proxy_text,
+        proxy=html.quote(proxy_text),
         status=status_text,
         checked_at=checked_line,
-        error=error_line,
+        error=html.quote(error_line),
     ).replace("(unix)", "")
 
 
@@ -97,4 +99,4 @@ async def save_proxy_handler(message: Message, state: FSMContext):
     if ok:
         await probe.edit_text(constant_text.PROXY_SET_AND_CHECK_OK_TEXT)
     else:
-        await probe.edit_text(constant_text.PROXY_CHECK_FAIL_TEXT.format(reason=reason[:160]))
+        await probe.edit_text(constant_text.PROXY_CHECK_FAIL_TEXT.format(reason=html.quote(reason[:160])))

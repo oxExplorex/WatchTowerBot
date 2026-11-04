@@ -21,7 +21,7 @@ def migration_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(migration, "KURIGRAM_WHEEL_SHA256", hashlib.sha256(wheel_content).hexdigest())
     monkeypatch.setattr(
         migration, "_installed_version",
-        lambda name: "1.2.5" if name in {"tgcrypto", "uvloop"} else installed.get(name),
+        lambda name: "2.8.1" if name == "python-socks" else "1.2.5" if name in {"tgcrypto", "uvloop", "pyaes"} else installed.get(name),
     )
     monkeypatch.delitem(migration.sys.modules, "pyrogram", raising=False)
 
@@ -143,7 +143,7 @@ def test_interrupted_replacement_can_be_retried(monkeypatch, migration_environme
 def test_missing_fast_dependency_is_installed_without_replacing_core(monkeypatch, migration_environment, platform):
     installed, calls = migration_environment
     installed.clear()
-    installed["Kurigram"] = migration.KURIGRAM_VERSION
+    installed.update(Kurigram=migration.KURIGRAM_VERSION, pyaes="1.6.1", **{"python-socks": "2.8.1"})
     monkeypatch.setattr(migration.sys, "platform", platform)
     monkeypatch.setattr(migration, "_installed_version", installed.get)
     assert migration.ensure_telegram_dependency() is False
@@ -157,8 +157,20 @@ def test_missing_fast_dependency_is_installed_without_replacing_core(monkeypatch
 def test_uvloop_is_only_required_on_supported_platforms(monkeypatch, migration_environment, platform):
     installed, calls = migration_environment
     installed.clear()
-    installed.update(Kurigram=migration.KURIGRAM_VERSION, tgcrypto="1.2.5")
+    installed.update(Kurigram=migration.KURIGRAM_VERSION, tgcrypto="1.2.5", pyaes="1.6.1", **{"python-socks": "2.8.1"})
     monkeypatch.setattr(migration.sys, "platform", platform)
     monkeypatch.setattr(migration, "_installed_version", installed.get)
     assert migration.ensure_telegram_dependency() is False
     assert bool(calls) is (platform in {"linux", "darwin"})
+
+
+@pytest.mark.parametrize("version", [None, "1.0.0", "2.4.0rc1"])
+def test_existing_core_repairs_missing_or_outdated_required_dependency(monkeypatch, migration_environment, version):
+    installed, calls = migration_environment
+    installed.clear()
+    installed.update(Kurigram=migration.KURIGRAM_VERSION, pyaes="1.6.1", tgcrypto="1.2.5", uvloop="0.22.0")
+    if version:
+        installed["python-socks"] = version
+    monkeypatch.setattr(migration, "_installed_version", installed.get)
+    assert migration.ensure_telegram_dependency() is False
+    assert calls == [("install", "--index-url", "https://pypi.org/simple", "python-socks[asyncio]>=2.4.0")]

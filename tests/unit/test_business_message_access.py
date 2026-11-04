@@ -21,3 +21,16 @@ async def test_business_archive_resolves_only_authorized_creators(monkeypatch, o
     contexts = await module.business_contexts("offline")
     assert [context.owner_id for context in contexts] == (
         [123] if mode == "tracked" else [456] if mode == "business-only-admin" else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_type,notify", [("supergroup", True), ("channel", False)])
+async def test_bot_channel_notification_switch_does_not_hide_supergroups(offline_module, chat_type, notify):
+    module = offline_module("services/message_service.py")
+    bot = types.SimpleNamespace(send_message=AsyncMock())
+    chat = types.SimpleNamespace(id=-100123, type=chat_type, title="<Group & title>", username=None)
+    context = module.AccountContext(123, 456, alert_bot=False)
+    await module._notify_new_chat(bot, context, chat)
+    assert bot.send_message.await_count == int(notify)
+    if notify:
+        assert "&lt;Group &amp; title&gt;" in bot.send_message.await_args.args[1]

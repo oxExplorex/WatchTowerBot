@@ -1,4 +1,4 @@
-﻿from aiogram import F
+from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
@@ -6,7 +6,8 @@ from aiogram.types import CallbackQuery
 import data.text as constant_text
 from db.main import del_app_tg_uuid
 from filters.all_filters import IsAdmin, IsPrivate
-from loader import router
+
+router = Router(name=__name__)
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("apps_admin_menu_delete:"), StateFilter("*"))

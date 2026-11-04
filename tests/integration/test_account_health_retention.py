@@ -9,8 +9,9 @@ async def test_account_deletion_preserves_health_history_with_foreign_keys(db_ma
     from db.session import get_engine
 
     async with get_engine().connect() as connection:
-        await connection.exec_driver_sql("PRAGMA foreign_keys=ON")
-        assert (await connection.exec_driver_sql("PRAGMA foreign_keys")).scalar() == 1
+        if connection.dialect.name == "sqlite":
+            await connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            assert (await connection.exec_driver_sql("PRAGMA foreign_keys")).scalar() == 1
 
     await db_main.create_app_tg(1001, 12345, "synthetic", "app")
     apps, _ = await db_main.get_app_tg_user_id(1001)

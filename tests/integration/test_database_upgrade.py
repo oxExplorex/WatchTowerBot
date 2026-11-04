@@ -11,7 +11,9 @@ import pytest
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("has_revision", [True, False])
-async def test_existing_database_upgrades_and_preserves_accounts(database_module, monkeypatch, has_revision):
+async def test_existing_database_upgrades_and_preserves_accounts(database_module, monkeypatch, has_revision, request):
+    if request.config.getoption("--database-backend") != "sqlite":
+        pytest.skip("SQLite legacy layout; PostgreSQL upgrades covered by test_postgresql_release")
     from db import migrations
     from db.engine import load_database_settings
 

@@ -1,4 +1,4 @@
-from aiogram import F
+from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -6,8 +6,10 @@ from aiogram.types import CallbackQuery, Message
 import data.text as constant_text
 from filters.all_filters import IsAdmin, IsPrivate
 from keyboards.main.start_keyboard import static_admin_keyboard
-from loader import router
+
 from utils.others import close_state_pyrogram_client, not_warning_delete_message
+
+router = Router(name=__name__)
 
 
 @router.message(IsPrivate(), IsAdmin(), F.text.startswith("/start"), StateFilter("*"))

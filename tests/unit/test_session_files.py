@@ -55,3 +55,21 @@ def test_success_replaces_session_and_removes_stale_sidecars(tmp_path):
     assert Path(old + ".session").read_bytes() == b"new"
     assert not Path(old + ".session-wal").exists()
     assert not list(tmp_path.glob("_session_backup_*"))
+
+
+def test_account_cleanup_preserves_other_numbers_and_unrelated_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "data" / "session"
+    root.mkdir(parents=True)
+    own = root / "7901.session"
+    sidecar = root / "7901.session-wal"
+    other = root / "79012.session"
+    backup = root / "7901.backup"
+    for path in (own, sidecar, other, backup):
+        path.write_bytes(b"synthetic-session")
+    session_files.remove_account_session_files("7901")
+    assert not own.exists() and not sidecar.exists()
+    assert other.exists() and backup.exists()
+    with pytest.raises(ValueError):
+        session_files.remove_account_session_files("../79012")
+    assert other.exists()

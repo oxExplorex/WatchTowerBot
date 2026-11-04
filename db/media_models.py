@@ -25,3 +25,4 @@ class MessageAttachment(SQLModel, table=True):
     lease_token: UUID | None = None
     lease_until: int = Field(default=0, sa_type=BigInteger)
     last_error: str | None = None
+    state_version: int = 0

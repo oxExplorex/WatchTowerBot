@@ -8,17 +8,14 @@ from aiogram.types import CallbackQuery, Message
 import data.text as constant_text
 from core.logging import bot_logger
 from core.auth_sessions import auth_clients
-from data.config import admin_id_list
-from db.main import get_admins
+from db.main import get_admin_ids
 from keyboards.main.start_keyboard import static_admin_keyboard
 from loader import bot
 from utils.chat_notifications import get_user_log_text
 
 
 async def send_log_to_active_bot(bot: aiogram.Bot):
-    admin_ids = [
-        user_id for user_id in set(admin_id_list + [x.user_id for x in await get_admins()]) if user_id > 10
-    ]
+    admin_ids = sorted(user_id for user_id in await get_admin_ids() if user_id > 10)
     for admin_id in admin_ids:
         try:
             await bot.send_message(

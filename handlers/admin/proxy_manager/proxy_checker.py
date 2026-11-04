@@ -7,6 +7,7 @@ from core.logging import bot_logger
 from data.config import GEMINI_KEY
 from db.main import set_user_gemini_proxy_health
 from utils.gemini_client import managed_gemini_client
+from services.gemini import GEMINI_MODEL_NAME
 
 
 async def check_proxy_now(admin_id: int, proxy_url: str, log_source: str) -> tuple[bool, str]:
@@ -22,7 +23,7 @@ async def check_proxy_now(admin_id: int, proxy_url: str, log_source: str) -> tup
         async with managed_gemini_client(api_key=GEMINI_KEY, http_options=http_options) as client:
             await asyncio.wait_for(
                 client.aio.models.generate_content(
-                    model="gemini-3.1-flash-lite-preview",
+                    model=GEMINI_MODEL_NAME,
                     contents="ping",
                 ),
                 timeout=25,

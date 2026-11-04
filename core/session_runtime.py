@@ -76,8 +76,11 @@ async def close_partial_client(client):
 
 async def start_client(client, *, connect_only=False):
     from loader import session_manager
+    from core.session_credentials import sync_session_api
 
-    starter = client.connect if connect_only else client.start
+    async def starter():
+        await sync_session_api(client)
+        return await (client.connect() if connect_only else client.start())
     await session_manager.start(client, starter, lambda: close_partial_client(client))
 
 

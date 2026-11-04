@@ -8,8 +8,24 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 
+from callbacks.personal_secret import PersonalSecretCallback, SecretAction
+from keyboards.inline.personal_secret import setup_keyboard
 from middlewares.personal_secret import (PersonalSecretMiddleware, SECRET_CONFIRM, SECRET_INPUT,
-                                         SECRET_VERIFY, SETUP_CALLBACK, INPUT_PROMPT)
+                                         SECRET_VERIFY, SETUP_CALLBACK)
+from states.personal_secret import PersonalSecret
+
+
+def test_personal_secret_contracts_keep_pre_upgrade_states_and_buttons():
+    assert PersonalSecret.input.state == SECRET_INPUT == "PersonalSecret:input"
+    assert PersonalSecret.confirm.state == SECRET_CONFIRM == "PersonalSecret:confirm"
+    assert PersonalSecret.verify.state == SECRET_VERIFY == "PersonalSecret:verify"
+    for action, payload in (
+        (SecretAction.SETUP, "personal_secret:setup"),
+        (SecretAction.VERIFY, "personal_secret:verify"),
+    ):
+        assert PersonalSecretCallback.unpack(payload).action == action
+        assert PersonalSecretCallback(action=action).pack() == payload
+    assert setup_keyboard().inline_keyboard[0][0].callback_data == "personal_secret:setup"
 
 
 def message(text="/start"):
@@ -64,11 +80,15 @@ async def test_onboarding_confirms_without_plaintext_in_fsm_and_deletes_every_en
 
 
 @pytest.mark.asyncio
-async def test_reply_with_secret_after_restart_is_deleted_before_ordinary_handlers(setup):
+@pytest.mark.parametrize("legacy_prompt", [
+    "Введите личный секрет. Сообщение будет удалено после прочтения. /cancel — отмена.",
+    "Введите секрет ещё раз для подтверждения. Это сообщение тоже будет удалено.",
+])
+async def test_reply_with_secret_after_restart_is_deleted_before_ordinary_handlers(setup, legacy_prompt):
     repository, state, gate = setup
     repository.get.return_value = SimpleNamespace(public_key="offline")
     msg = message("Личныйсекрет592")
-    msg.reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=1), text=INPUT_PROMPT)
+    msg.reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=1), text=legacy_prompt)
     handler = AsyncMock()
     await gate(handler, update(msg), context(state))
     msg.delete.assert_awaited_once()
@@ -83,13 +103,13 @@ async def test_undeleted_secret_is_rejected_without_key_generation_or_handler(se
     msg = message("Новыйсекрет527")
     msg.delete.side_effect = RuntimeError("offline deletion denied")
     handler = AsyncMock()
-    gate._crypto = AsyncMock()
+    gate.dialog._crypto = AsyncMock()
     await gate(handler, update(msg), context(state))
-    gate._crypto.assert_not_awaited()
+    gate.dialog._crypto.assert_not_awaited()
     repository.install.assert_not_awaited()
-    gate._attempts.clear()
-    gate.authorize.return_value = False
-    gate._crypto.return_value = object()
+    gate.dialog._attempts.clear()
+    gate.dialog.authorize.return_value = False
+    gate.dialog._crypto.return_value = object()
     await state.set_state(SECRET_CONFIRM)
     await state.update_data(secret_bundle={"public_key": "offline"})
     await gate(AsyncMock(), update(message("Новыйсекрет527")), context(state))
@@ -150,7 +170,7 @@ async def test_cancel_expiry_rate_limit_and_revocation_do_not_install_key(setup)
     await state.update_data(secret_expires=int(time.time()) + 60)
     for _ in range(5):
         await gate(AsyncMock(), update(message("123456")), context(state))
-    gate._crypto = AsyncMock()
+    gate.dialog._crypto = AsyncMock()
     await gate(AsyncMock(), update(message("Новыйсекрет527")), context(state))
-    gate._crypto.assert_not_awaited()
+    gate.dialog._crypto.assert_not_awaited()
     repository.install.assert_not_awaited()

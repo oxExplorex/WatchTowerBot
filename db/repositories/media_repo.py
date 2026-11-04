@@ -2,9 +2,11 @@ import json
 import time
 from uuid import uuid4
 
-from sqlalchemy import and_, case, or_, select, update
+from sqlalchemy import and_, case, exists, or_, select, update
 
 from db.media_models import MessageAttachment
+from db.account_operation_models import AccountOperation
+from db.message_models import MessageRevision, StoredMessage
 from db.repositories.base import conflict_insert
 from db.repositories.personal_repo import lock_owner
 from core.personal_crypto import context, seal_text
@@ -33,6 +35,7 @@ async def enqueue_attachments(session, revision_uuid, payload, *, owner_id, acco
             locators.append(locator)
             # IDs can expire; keep only a bounded set of recent alternatives.
             row.sources = encrypt_text(json.dumps(locators[-8:]))
+            row.state_version += 1
             if row.status == "failed":
                 row.status, row.attempts, row.next_attempt_at = "pending", 0, 0
 
@@ -45,14 +48,23 @@ class MediaRepository:
         now = int(time.time())
         eligible = or_(and_(MessageAttachment.status == "pending", MessageAttachment.next_attempt_at <= now),
                        and_(MessageAttachment.status == "downloading", MessageAttachment.lease_until <= now))
+        changing_owner = exists(select(AccountOperation.uuid).join(
+            StoredMessage, StoredMessage.account_user_id == AccountOperation.account_user_id).join(
+            MessageRevision, MessageRevision.message_uuid == StoredMessage.uuid).where(
+                MessageRevision.uuid == MessageAttachment.revision_uuid,
+                AccountOperation.status.in_({"preparing", "deleting"})))
+        eligible = and_(eligible, ~changing_owner)
         async with self._session_factory()() as session, session.begin():
-            identity = await session.scalar(select(MessageAttachment.uuid).where(eligible).order_by(
-                MessageAttachment.next_attempt_at, MessageAttachment.uuid).limit(1))
-            if identity is None:
+            candidate = (await session.execute(select(MessageAttachment.uuid, MessageAttachment.owner_id).where(eligible).order_by(
+                MessageAttachment.next_attempt_at, MessageAttachment.uuid).limit(1))).first()
+            if candidate is None:
                 return None
+            identity, owner_id = candidate
+            await lock_owner(session, owner_id)
             result = await session.execute(update(MessageAttachment).where(
                 MessageAttachment.uuid == identity, eligible).values(
-                status="downloading", lease_token=uuid4(), lease_until=now + lease_seconds).returning(MessageAttachment))
+                status="downloading", lease_token=uuid4(), lease_until=now + lease_seconds,
+                state_version=MessageAttachment.state_version + 1).returning(MessageAttachment))
             return result.scalar_one_or_none()
 
     async def find_stored(self, item):
@@ -70,7 +82,7 @@ class MediaRepository:
 
     async def finish(self, item, *, blob_key=None, stored_size=None, error=None, delay=0, permanent=False,
                      encryption_version=1):
-        values = dict(lease_token=None, lease_until=0)
+        values = dict(lease_token=None, lease_until=0, state_version=MessageAttachment.state_version + 1)
         if blob_key is not None:
             values.update(status="stored", blob_key=blob_key, stored_size=stored_size, last_error=None,
                           encryption_version=encryption_version)
@@ -85,8 +97,12 @@ class MediaRepository:
         async with self._session_factory()() as session, session.begin():
             key = await lock_owner(session, item.owner_id)
             current = await session.scalar(select(MessageAttachment).where(
-                MessageAttachment.uuid == item.uuid, MessageAttachment.lease_token == item.lease_token).with_for_update())
+                MessageAttachment.uuid == item.uuid, MessageAttachment.lease_token == item.lease_token,
+                MessageAttachment.owner_id == item.owner_id).with_for_update())
             if current is None:
+                if blob_key is not None:
+                    from db.repositories.account_operations_repo import queue_blob_cleanup
+                    await queue_blob_cleanup(session, item.owner_id, blob_key)
                 return
             if key is not None and blob_key is None:
                 # Cancellation between file publication and DB commit may leave

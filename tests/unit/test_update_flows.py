@@ -1,4 +1,6 @@
 from pathlib import Path
+import asyncio
+import threading
 import sys
 import types
 from unittest.mock import AsyncMock, Mock
@@ -58,6 +60,40 @@ async def test_failure_sending_start_message_releases_update_lock(update_modules
     with pytest.raises(RuntimeError):
         await settings._run_update_flow(message, "1", "2", "start", "done", "failed")
     assert await notifier.try_acquire_update_run() is True
+    await notifier.release_update_run()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual", [True, False])
+async def test_cancellation_keeps_update_lock_until_file_worker_finishes(update_modules, monkeypatch, manual):
+    notifier, settings, _ = update_modules
+    started, release = threading.Event(), threading.Event()
+
+    def download():
+        started.set()
+        assert release.wait(5)
+        return False
+
+    module = settings if manual else notifier
+    monkeypatch.setattr(module, "begin_operation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "download_and_extract_github_repo", download)
+    message = types.SimpleNamespace(edit_text=AsyncMock(), answer=AsyncMock())
+    operation = (settings._run_update_flow(message, "1", "2", "start", "done", "failed")
+                 if manual else notifier._run_auto_update([1001], "1", "2"))
+    task = asyncio.create_task(operation)
+    try:
+        assert await asyncio.to_thread(started.wait, 3)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()  # Repeated cancellation must not release file ownership early.
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert not await notifier.try_acquire_update_run()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert await notifier.try_acquire_update_run()
     await notifier.release_update_run()
 
 

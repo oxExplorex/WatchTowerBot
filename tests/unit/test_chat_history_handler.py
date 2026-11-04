@@ -72,8 +72,8 @@ async def test_current_presence_lines_masks_account_ids(monkeypatch, handler_mod
 
     async def _get_user(user_id):
         if user_id in (111111, 222222):
-            return types.SimpleNamespace(full_name="Account Holder", username=None)
-        return types.SimpleNamespace(full_name="Target User", username=None)
+            return types.SimpleNamespace(full_name="<Account & Holder>", username=None)
+        return types.SimpleNamespace(full_name="<Target & User>", username=None)
 
     monkeypatch.setattr(handler_mod, "get_account_all", _get_account_all)
     monkeypatch.setattr(handler_mod, "get_dump_chat_user", _get_dump_chat_user)
@@ -85,6 +85,9 @@ async def test_current_presence_lines_masks_account_ids(monkeypatch, handler_mod
     assert "есть у:" in rendered
     assert "[11**11]" in rendered
     assert "[" in rendered and "]" in rendered
+    assert "&lt;Account &amp; Holder&gt;" in rendered
+    assert "&lt;Target &amp; User&gt;" in rendered
+    assert "<Target & User>" not in rendered
 
 
 @pytest.mark.asyncio

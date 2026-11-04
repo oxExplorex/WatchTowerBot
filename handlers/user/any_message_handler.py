@@ -2,7 +2,9 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from loader import router
+from aiogram import Router
+
+router = Router(name=__name__)
 
 
 @router.message(StateFilter("*"))

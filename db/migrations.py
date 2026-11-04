@@ -9,6 +9,7 @@ from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from core.logging import bot_logger
+from core.thread_tools import run_blocking
 from db.engine import DatabaseSettings, load_database_settings
 
 _APP_TABLES = {
@@ -41,7 +42,8 @@ def _build_alembic_config(connection_string: str) -> Config:
 
     config = Config(str(ini_path))
     config.set_main_option("script_location", str(script_path))
-    config.set_main_option("sqlalchemy.url", connection_string)
+    # ConfigParser interpolates percent signs; URL-encoded credentials contain them.
+    config.set_main_option("sqlalchemy.url", connection_string.replace("%", "%%"))
     # Keep application logger configuration intact when migrations run in-process.
     config.attributes["skip_file_config"] = True
     return config
@@ -87,8 +89,8 @@ async def run_db_migrations(db_settings: DatabaseSettings | None = None, *, conf
 
         has_version_table = await _has_table(connection_string, "alembic_version")
         if not has_version_table and await _has_any_app_table(connection_string):
-            await asyncio.to_thread(_stamp_baseline, config)
+            await run_blocking(_stamp_baseline, config)
             bot_logger.info(f"Alembic: stamped existing schema to baseline {_BASELINE_REVISION}")
 
-        await asyncio.to_thread(_upgrade_head, config)
+        await run_blocking(_upgrade_head, config)
         _MIGRATIONS_DONE = True

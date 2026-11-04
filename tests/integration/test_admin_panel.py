@@ -60,8 +60,6 @@ async def panel(db_main, offline_module, monkeypatch):
     profile = offline_module("middlewares/update_user.py")
     writes = AsyncMock(side_effect=db_main.update_user)
     monkeypatch.setattr(profile, "update_user", writes)
-    loader.router.message.middleware(profile.UpdateUserMiddleware())
-    loader.router.business_message.middleware(profile.UpdateUserMiddleware())
     handled = []
 
     @loader.router.message()
@@ -77,8 +75,10 @@ async def panel(db_main, offline_module, monkeypatch):
         handled.append((message.from_user.id, business_account_contexts))
 
     dispatcher = Dispatcher()
+    dispatcher.message.middleware(profile.UpdateUserMiddleware())
+    dispatcher.business_message.middleware(profile.UpdateUserMiddleware())
     dispatcher.update.outer_middleware(gate.AdminAccessMiddleware())
-    dispatcher.include_router(loader.router)
+    dispatcher.include_routers(module.router, loader.router)
     session = OfflineSession()
     bot = Bot("123456:offline_test_token", session=session)
     serial = 0

@@ -69,3 +69,10 @@ def test_failed_writes_cleanup_and_limits_are_enforced(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         MediaStore(tmp_path).writer(123)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_invalid_personal_key_cleans_up_before_context_manager_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_ENCRYPTION_KEY", "offline-secret")
+    with pytest.raises(ValueError):
+        MediaStore(tmp_path).writer(123, public_key="invalid-base64-key")
+    assert list(tmp_path.iterdir()) == []

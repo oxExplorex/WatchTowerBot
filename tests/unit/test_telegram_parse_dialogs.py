@@ -10,23 +10,6 @@ import pytest
 from core.session_manager import SessionManager
 
 
-class _RouterStub:
-    def _decorator_factory(self, *args, **kwargs):
-        _ = (args, kwargs)
-
-        def _decorator(fn):
-            return fn
-
-        return _decorator
-
-    def include_router(self, *args, **kwargs):
-        _ = (args, kwargs)
-        return None
-
-    def __getattr__(self, _name):
-        return self._decorator_factory
-
-
 async def _noop_send_message(*args, **kwargs):
     _ = (args, kwargs)
 
@@ -36,7 +19,6 @@ def parser_mod(monkeypatch, offline_module):
     loader_stub = types.ModuleType("loader")
     loader_stub.session_manager = SessionManager()
     loader_stub.bot = types.SimpleNamespace(send_message=_noop_send_message)
-    loader_stub.router = _RouterStub()
     monkeypatch.setitem(sys.modules, "loader", loader_stub)
     return offline_module("aiotask/telegram_parse_dialogs.py")
 
@@ -103,7 +85,7 @@ async def test_baseline_sync_no_new_chat_spam(monkeypatch, parser_mod):
     fake_client = _FakeClient([11, 22, 33])
 
     created: list[int] = []
-    history_added: list[int] = []
+    presence = AsyncMock()
     sent = []
     
     async def _get_account_by_number(_):
@@ -116,9 +98,6 @@ async def test_baseline_sync_no_new_chat_spam(monkeypatch, parser_mod):
         _ = admin_id
         created.append(chat_id)
         return True
-
-    async def _add_chat_history_event(**kwargs):
-        history_added.append(kwargs.get("chat_id"))
 
     async def _update_user(*args, **kwargs):
         _ = (args, kwargs)
@@ -141,7 +120,7 @@ async def test_baseline_sync_no_new_chat_spam(monkeypatch, parser_mod):
     monkeypatch.setattr(parser_mod, "get_account_by_number", _get_account_by_number)
     monkeypatch.setattr(parser_mod, "get_dump_chat_admin_all", _get_dump_chat_admin_all)
     monkeypatch.setattr(parser_mod, "create_dump_chat_user", _create_dump_chat_user)
-    monkeypatch.setattr(parser_mod, "add_chat_history_event", _add_chat_history_event)
+    monkeypatch.setattr(parser_mod, "record_chat_presence", presence)
     monkeypatch.setattr(parser_mod, "update_user", _update_user)
     monkeypatch.setattr(parser_mod, "update_account_uuid", _update_account_uuid)
     monkeypatch.setattr(parser_mod, "add_account_health_event", _add_account_health_event)
@@ -151,7 +130,7 @@ async def test_baseline_sync_no_new_chat_spam(monkeypatch, parser_mod):
     await parser_mod.__tg_parse_dialogs_handler()
 
     assert sorted(created) == [11, 22, 33]
-    assert history_added == []
+    presence.assert_not_awaited()
     assert sent == []
 
 
@@ -177,17 +156,14 @@ async def test_mass_delete_guard_first_scan_blocks_deletes(monkeypatch, parser_m
     async def _update_user(*args, **kwargs):
         _ = (args, kwargs)
 
-    async def _del_dump_chat_user(admin_id, chat_id):
-        _ = admin_id
-        deleted.append(chat_id)
+    async def _record_chat_presence(admin_id, chat_id, owner_id, *, present, date):
+        if not present:
+            deleted.append(chat_id)
         return True
 
     async def _create_dump_chat_user(*args, **kwargs):
         _ = (args, kwargs)
         return True
-
-    async def _add_chat_history_event(*args, **kwargs):
-        _ = (args, kwargs)
 
     async def _get_user(chat_id):
         return types.SimpleNamespace(username=f"u{chat_id}", full_name=f"n{chat_id}")
@@ -204,9 +180,8 @@ async def test_mass_delete_guard_first_scan_blocks_deletes(monkeypatch, parser_m
     monkeypatch.setattr(parser_mod, "get_account_by_number", _get_account_by_number)
     monkeypatch.setattr(parser_mod, "get_dump_chat_admin_all", _get_dump_chat_admin_all)
     monkeypatch.setattr(parser_mod, "update_user", _update_user)
-    monkeypatch.setattr(parser_mod, "del_dump_chat_user", _del_dump_chat_user)
+    monkeypatch.setattr(parser_mod, "record_chat_presence", _record_chat_presence)
     monkeypatch.setattr(parser_mod, "create_dump_chat_user", _create_dump_chat_user)
-    monkeypatch.setattr(parser_mod, "add_chat_history_event", _add_chat_history_event)
     monkeypatch.setattr(parser_mod, "get_user", _get_user)
     monkeypatch.setattr(parser_mod, "update_account_uuid", _update_account_uuid)
     monkeypatch.setattr(parser_mod, "add_account_health_event", _add_account_health_event)
@@ -231,7 +206,8 @@ async def test_mass_delete_confirmed_on_second_scan(monkeypatch, parser_mod):
     
     async def _get_account_by_number(_):
         return _account(
-            last_dialogs_count=0,
+            last_dialogs_count=len(seen_ids),
+            last_full_dialogs_scan=parser_mod.DateTime().timestamp(),
             pending_delete_signature=signature,
             pending_delete_count=len(deleted_expected),
         )
@@ -242,17 +218,14 @@ async def test_mass_delete_confirmed_on_second_scan(monkeypatch, parser_mod):
     async def _update_user(*args, **kwargs):
         _ = (args, kwargs)
 
-    async def _del_dump_chat_user(admin_id, chat_id):
-        _ = admin_id
-        deleted.append(chat_id)
+    async def _record_chat_presence(admin_id, chat_id, owner_id, *, present, date):
+        if not present:
+            deleted.append(chat_id)
         return True
 
     async def _create_dump_chat_user(*args, **kwargs):
         _ = (args, kwargs)
         return True
-
-    async def _add_chat_history_event(*args, **kwargs):
-        _ = (args, kwargs)
 
     async def _get_user(chat_id):
         return types.SimpleNamespace(username=f"u{chat_id}", full_name=f"n{chat_id}")
@@ -272,9 +245,8 @@ async def test_mass_delete_confirmed_on_second_scan(monkeypatch, parser_mod):
     monkeypatch.setattr(parser_mod, "get_account_by_number", _get_account_by_number)
     monkeypatch.setattr(parser_mod, "get_dump_chat_admin_all", _get_dump_chat_admin_all)
     monkeypatch.setattr(parser_mod, "update_user", _update_user)
-    monkeypatch.setattr(parser_mod, "del_dump_chat_user", _del_dump_chat_user)
+    monkeypatch.setattr(parser_mod, "record_chat_presence", _record_chat_presence)
     monkeypatch.setattr(parser_mod, "create_dump_chat_user", _create_dump_chat_user)
-    monkeypatch.setattr(parser_mod, "add_chat_history_event", _add_chat_history_event)
     monkeypatch.setattr(parser_mod, "get_user", _get_user)
     monkeypatch.setattr(parser_mod, "update_account_uuid", _update_account_uuid)
     monkeypatch.setattr(parser_mod, "add_account_health_event", _add_account_health_event)
@@ -298,6 +270,18 @@ async def test_removed_session_is_not_scanned(monkeypatch, parser_mod):
 
 
 @pytest.mark.asyncio
+async def test_recent_empty_dialog_list_is_not_treated_as_uninitialized(monkeypatch, parser_mod):
+    client = _FakeClient([])
+    monkeypatch.setattr(parser_mod, "session_number_from_client", lambda _: "offline")
+    monkeypatch.setattr(parser_mod, "get_account_by_number", AsyncMock(return_value=_account(
+        last_dialogs_count=0, last_full_dialogs_scan=parser_mod.DateTime().timestamp())))
+    full_scan = AsyncMock()
+    monkeypatch.setattr(parser_mod, "get_dump_chat_admin_all", full_scan)
+    await parser_mod._scan_session(client)
+    full_scan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_stopping_during_partial_scan_does_not_record_false_deletions(monkeypatch, parser_mod):
     started = asyncio.Event()
 
@@ -315,10 +299,8 @@ async def test_stopping_during_partial_scan_does_not_record_false_deletions(monk
     monkeypatch.setattr(parser_mod, "get_dump_chat_admin_all", AsyncMock(return_value=[
         types.SimpleNamespace(chat_id=value) for value in (1, 2, 3)]))
     deleted = AsyncMock()
-    history = AsyncMock()
     drop = AsyncMock()
-    monkeypatch.setattr(parser_mod, "del_dump_chat_user", deleted)
-    monkeypatch.setattr(parser_mod, "add_chat_history_event", history)
+    monkeypatch.setattr(parser_mod, "record_chat_presence", deleted)
     monkeypatch.setattr(parser_mod, "delete_account_by_number", drop)
     await parser_mod.session_manager.add(active)
     scanning = asyncio.create_task(parser_mod.__tg_parse_dialogs_handler())
@@ -327,5 +309,4 @@ async def test_stopping_during_partial_scan_does_not_record_false_deletions(monk
         await parser_mod.session_manager.stop(active, AsyncMock())
         await scanning
     deleted.assert_not_awaited()
-    history.assert_not_awaited()
     drop.assert_not_awaited()

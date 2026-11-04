@@ -1,16 +1,18 @@
-﻿import math
+import math
 
-from aiogram import F
+from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 import data.text as constant_text
-from db.main import get_app_tg_user_id
+from db.main import get_account_counts_by_apps, get_app_tg_user_id
 from filters.all_filters import IsAdmin, IsPrivate
 from keyboards.inline.apps_manager.apps_menu_inline import apps_tg_admin_inline
-from loader import router
+
 from utils.datetime_tools import DateTime
+
+router = Router(name=__name__)
 
 PAGE_SIZE = 5
 
@@ -25,7 +27,8 @@ async def _get_apps_page(user_id: int, page: int):
 
     apps, count = await get_app_tg_user_id(user_id, offset)
     total_pages = max(1, math.ceil(count / PAGE_SIZE))
-    keyboard = await apps_tg_admin_inline(apps, normalized_page, total_pages)
+    linked_counts = await get_account_counts_by_apps([app.uuid for app in apps])
+    keyboard = await apps_tg_admin_inline(apps, normalized_page, total_pages, linked_counts=linked_counts)
     return count, total_pages, keyboard
 
 

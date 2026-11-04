@@ -12,6 +12,10 @@ def test_real_loader_and_consumers_share_one_registry():
         import types
         from unittest.mock import AsyncMock, Mock
 
+        import handlers.admin.personal_secret
+        assert "loader" not in sys.modules
+        assert "db.main" not in sys.modules
+
         config = types.ModuleType("data.config")
         config.TOKEN_BOT = "123456:offline_test_token"
         config.GEMINI_KEY = ""
@@ -44,6 +48,42 @@ def test_real_loader_and_consumers_share_one_registry():
         assert parser.session_manager is loader.session_manager
 
         async def check():
+            from aiogram import Bot, Dispatcher
+            from aiogram.client.session.base import BaseSession
+            from aiogram.exceptions import TelegramBadRequest
+            from aiogram.types import Update
+
+            class OfflineSession(BaseSession):
+                def __init__(self):
+                    super().__init__()
+                    self.calls = []
+                    self.fail = False
+                async def close(self):
+                    pass
+                async def stream_content(self, *args, **kwargs):
+                    raise AssertionError("No network in router test")
+                    yield b""
+                async def make_request(self, bot, method, timeout=None):
+                    self.calls.append(method)
+                    if self.fail:
+                        raise TelegramBadRequest(method=method, message="synthetic-private-error")
+                    return True
+
+            session = OfflineSession()
+            test_bot = Bot("123456:offline_test_token", session=session)
+            real_dispatcher = Dispatcher()
+            real_dispatcher.include_router(main.router)
+            payload = {"update_id": 1, "message": {"message_id": 1, "date": 1,
+                "chat": {"id": 1001, "type": "private"}, "text": "/start",
+                "from_user": {"id": 1001, "first_name": "Offline", "is_bot": False}}}
+            await real_dispatcher.feed_update(test_bot, Update.model_validate(payload))
+            assert len(session.calls) == 1  # Specialized start precedes catch-all.
+            session.fail = True
+            await real_dispatcher.feed_update(test_bot, Update.model_validate(payload | {"update_id": 2}))
+            assert len(session.calls) == 2  # Root error router handles a sibling's error.
+            await real_dispatcher.storage.close()
+            await test_bot.session.close()
+
             client = Client("offline", api_id=12345, api_hash="offline", in_memory=True)
             client.add_handler = Mock()
             client.stop = AsyncMock()
@@ -97,9 +137,23 @@ def test_real_loader_and_consumers_share_one_registry():
             main.migrate_legacy_sessions = Mock(return_value=0)
             main.send_log_to_active_bot = AsyncMock()
             main.starting_tg_parse_dialogs_handler = AsyncMock()
+            ready = asyncio.get_running_loop().create_future()
+            monitoring = asyncio.create_task(main._start_dialog_monitor(ready))
+            await asyncio.sleep(0)
+            main.starting_tg_parse_dialogs_handler.assert_not_awaited()
+            ready.set_result(None)
+            await monitoring
+            main.starting_tg_parse_dialogs_handler.assert_awaited_once()
+            main.starting_tg_parse_dialogs_handler.reset_mock()
             main.start_update_notifier = AsyncMock()
             main.run_media_archiver = AsyncMock()
+            report = Mock()
+            report.state = "running"
+            main.current_reporter = lambda: report
+            main.bot.me = AsyncMock()
             main.run_personal_archive_migration = AsyncMock()
+            main.account_operations.recover_interrupted = AsyncMock()
+            main.run_account_operations = AsyncMock()
             main.notify_missing_secrets = AsyncMock()
             original_sleep = asyncio.sleep
             async def poll_once(*args, **kwargs):
@@ -112,6 +166,8 @@ def test_real_loader_and_consumers_share_one_registry():
             finally:
                 asyncio.sleep = original_sleep
             main.start_all_clients.assert_awaited_once()
+            main.bot.me.assert_awaited_once()
+            report.finish.assert_called_once()
             registered_clients = main._register_pyrogram_handlers.call_args.args[0]
             assert main.start_all_clients.call_args.args[0] is registered_clients
             assert registered_clients == [client]

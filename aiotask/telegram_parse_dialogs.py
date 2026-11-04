@@ -1,6 +1,5 @@
 ﻿import asyncio
 import hashlib
-import traceback
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -13,12 +12,12 @@ import data.text as constant_text
 from core.logging import bot_logger
 from core.async_tools import tracked_job
 from core.session_manager import SessionUnavailable
+from core.telegram_errors import is_fatal_session_error
 from core.session_runtime import remove_client_from_runtime, session_number_from_client
 from db.main import (
     add_account_health_event,
-    add_chat_history_event,
+    record_chat_presence,
     create_dump_chat_user,
-    del_dump_chat_user,
     delete_account_by_number,
     get_account_by_number,
     get_dump_chat_admin_all,
@@ -37,18 +36,6 @@ MASS_DELETE_MIN_EXISTING = 20
 MASS_DELETE_MIN_COUNT = 10
 MASS_DELETE_MIN_RATIO = 0.25
 
-FATAL_SESSION_ERROR_NAMES = {
-    "AuthKeyDuplicated",
-    "AuthKeyInvalid",
-    "AuthKeyPermEmpty",
-    "AuthKeyUnregistered",
-    "SessionExpired",
-    "SessionPasswordNeeded",
-    "SessionRevoked",
-    "Unauthorized",
-    "UserDeactivated",
-    "UserDeactivatedBan",
-}
 
 
 async def safe_call(
@@ -92,25 +79,9 @@ def chunk_text(messages: list[str], max_length: int = 3500) -> list[str]:
 
 
 def _is_fatal_session_error(exc: Exception) -> bool:
-    if exc.__class__.__name__ in FATAL_SESSION_ERROR_NAMES:
-        return True
-
-    error_text = str(exc).lower()
-    fatal_markers = (
-        "auth key unregistered",
-        "auth key invalid",
-        "session revoked",
-        "session expired",
-        "unauthorized",
-        "user deactivated",
-        "client has not been started yet",
-    )
-    return any(marker in error_text for marker in fatal_markers)
+    return is_fatal_session_error(exc, include_not_started=True)
 
 
-def _is_bot_or_channel(chat_obj) -> bool:
-    chat_type = str(getattr(chat_obj, "type", "")).lower()
-    return "bot" in chat_type or "channel" in chat_type
 
 
 def _ids_signature(ids: set[int]) -> str:
@@ -185,12 +156,14 @@ async def _scan_session(app_session):
         now_ts = DateTime().timestamp()
         total_dialogs = int(await safe_call(app_session.get_dialogs_count) or 0)
 
-        previous_count = int(getattr(account_settings, "last_dialogs_count", -1) or -1)
+        stored_count = getattr(account_settings, "last_dialogs_count", None)
+        previous_count = int(stored_count) if stored_count is not None else -1
         last_full_scan = int(getattr(account_settings, "last_full_dialogs_scan", 0) or 0)
 
         should_full_scan = (
             previous_count < 0
             or total_dialogs != previous_count
+            or int(getattr(account_settings, "pending_delete_count", 0) or 0) > 0
             or (now_ts - last_full_scan) >= FULL_SCAN_FORCE_INTERVAL_SEC
         )
 
@@ -338,28 +311,22 @@ async def _scan_session(app_session):
             quote = html.quote(chat_name) if chat_name else chat_name
 
             if chat_id in new_chats:
-                created = await create_dump_chat_user(user_id, chat_id)
+                created = await record_chat_presence(
+                    user_id, chat_id, int(account_settings.admin_id or user_id),
+                    present=True, date=now_ts,
+                )
                 if not created:
                     continue
                 bot_logger.info(constant_text.PARSER_LOG_NEW_CHAT_TEXT.format(user_id=user_id, chat_id=chat_id, username=username, chat_name=chat_name))
-                await add_chat_history_event(
-                    admin_id=int(account_settings.admin_id or user_id),
-                    chat_id=int(chat_id),
-                    action_id=1,
-                    account_user_id=int(account_settings.user_id or 0),
-                    date=now_ts,
-                )
                 log_new.append(get_user_log_text(1, chat_id, username, quote))
             else:
-                bot_logger.info(constant_text.PARSER_LOG_DELETED_CHAT_TEXT.format(user_id=user_id, chat_id=chat_id, username=username, chat_name=chat_name))
-                await del_dump_chat_user(user_id, chat_id)
-                await add_chat_history_event(
-                    admin_id=int(account_settings.admin_id or user_id),
-                    chat_id=int(chat_id),
-                    action_id=2,
-                    account_user_id=int(account_settings.user_id or 0),
-                    date=now_ts,
+                removed = await record_chat_presence(
+                    user_id, chat_id, int(account_settings.admin_id or user_id),
+                    present=False, date=now_ts,
                 )
+                if not removed:
+                    continue
+                bot_logger.info(constant_text.PARSER_LOG_DELETED_CHAT_TEXT.format(user_id=user_id, chat_id=chat_id, username=username, chat_name=chat_name))
                 log_del.append(get_user_log_text(2, chat_id, username, quote))
 
         await update_account_uuid(
@@ -383,20 +350,12 @@ async def _scan_session(app_session):
         )
 
         if account_settings.alert_new_chat:
-            target_id = (
-                account_settings.admin_id
-                if account_settings.alert_new_chat_id < 10
-                else account_settings.alert_new_chat_id
-            )
+            target_id = account_settings.admin_id
             for text_chunk in chunk_text(log_new):
                 await _safe_send_parser_message(target_id, text_chunk, context="new_chat")
 
         if account_settings.alert_del_chat:
-            target_id = (
-                account_settings.admin_id
-                if account_settings.alert_del_chat_id < 10
-                else account_settings.alert_del_chat_id
-            )
+            target_id = account_settings.admin_id
             for text_chunk in chunk_text(log_del):
                 await _safe_send_parser_message(target_id, text_chunk, context="deleted_chat")
 

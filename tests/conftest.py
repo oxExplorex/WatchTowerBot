@@ -57,6 +57,8 @@ def offline_module(monkeypatch):
         path = Path(__file__).resolve().parents[1] / relative_path
         spec = importlib.util.spec_from_file_location(f"_offline_{path.stem}", path)
         module = importlib.util.module_from_spec(spec)
+        # Dataclasses and runtime annotation resolution consult sys.modules.
+        monkeypatch.setitem(sys.modules, spec.name, module)
         spec.loader.exec_module(module)
         return module
 

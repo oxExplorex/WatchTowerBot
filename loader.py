@@ -1,7 +1,7 @@
 ﻿import asyncio
 from pathlib import Path
 
-from aiogram import Bot, Router
+from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from pyrogram import Client
@@ -10,7 +10,7 @@ from core.logging import bot_logger
 from core.session_manager import SessionManager
 import data.text as constant_text
 from data.config import GEMINI_KEY, TOKEN_BOT
-from db.main import get_account_all, get_app_tg_uuid_aio
+from db.main import get_account_all, get_active_accounts_with_apps
 from db.session import is_connected
 
 
@@ -41,18 +41,13 @@ def _build_system_instruction(admin_ids_text: str) -> str:
 
 
 loop = _get_or_create_event_loop()
-asyncio_lock = asyncio.Lock()
 _runtime_initialized = False
 
 
 async def _get_apps_user() -> list[Client]:
     try:
         apps: list[Client] = []
-        for account in await get_account_all(active_only=True):
-            app_tg = await get_app_tg_uuid_aio(account.app_tg)
-            if not app_tg:
-                continue
-
+        for account, app_tg in await get_active_accounts_with_apps():
             apps.append(
                 Client(
                     name=f"data/session/{account.number}",
@@ -103,7 +98,6 @@ async def initialize_runtime_state() -> None:
     gemini_system_instruction = await _build_gemini_system_instruction()
     _runtime_initialized = True
 
-router = Router()
 bot = Bot(
     token=TOKEN_BOT,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),

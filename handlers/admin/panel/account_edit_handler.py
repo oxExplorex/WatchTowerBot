@@ -1,10 +1,7 @@
 import asyncio
-import glob
-import os
 from contextlib import suppress
-from datetime import timedelta
 
-from aiogram import F, html
+from aiogram import F, Router, html
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
@@ -12,6 +9,8 @@ from aiogram.types import CallbackQuery
 import data.text as constant_text
 from core.session_runtime import get_client_by_number, is_session_running, run_client_operation, stop_and_remove_session
 from core.session_manager import SessionUnavailable
+from core.telegram_errors import is_fatal_session_error as _is_fatal_session_error
+from core.session_files import account_session_paths, remove_account_session_files
 from db.models import Account
 from db.main import (
     add_account_health_event,
@@ -22,27 +21,19 @@ from db.main import (
     get_app_tg_user_id,
     get_app_tg_uuid,
     get_user_timezone_offset,
+    get_user_names_by_ids,
     update_account_uuid,
 )
-from filters.all_filters import IsAdmin, IsPrivate
+from filters.all_filters import IsAccountManager, IsPrivate
 from keyboards.inline.account_manage.account_edit_inline import account_edit_admin_inline
 from keyboards.inline.account_manage.account_menu_inline import account_tg_admin_inline
-from loader import router
+
 from utils.datetime_tools import DateTime
+from utils.settings_formatting import build_hourly_rows_desc
+
+router = Router(name=__name__)
 
 PAGE_SIZE = 5
-FATAL_SESSION_ERROR_NAMES = {
-    "AuthKeyDuplicated",
-    "AuthKeyInvalid",
-    "AuthKeyPermEmpty",
-    "AuthKeyUnregistered",
-    "SessionExpired",
-    "SessionPasswordNeeded",
-    "SessionRevoked",
-    "Unauthorized",
-    "UserDeactivated",
-    "UserDeactivatedBan",
-}
 
 
 def _format_last_update(ts_value, dt: DateTime) -> str:
@@ -54,38 +45,8 @@ def _format_last_update(ts_value, dt: DateTime) -> str:
         return str(ts_value)
 
 
-def _status_icon(fails: int, total: int) -> str:
-    if total == 0:
-        return constant_text.STATS_ICON_NO_DATA
-    ratio = fails / total
-    if ratio == 0:
-        return constant_text.STATS_ICON_OK
-    if ratio < 0.35:
-        return constant_text.STATS_ICON_WARN
-    return constant_text.STATS_ICON_FAIL
-
-
 def _build_hourly_rows_desc(events, hours: int, dt: DateTime) -> list[str]:
-    now_hour = dt.now().replace(minute=0, second=0, microsecond=0)
-    rows: list[str] = []
-
-    for i in range(hours):
-        end_dt = now_hour - timedelta(hours=i)
-        start_dt = end_dt - timedelta(hours=1)
-
-        start_ts = int(start_dt.timestamp())
-        end_ts = int(end_dt.timestamp())
-
-        bucket_events = [x for x in events if start_ts <= int(x.date) < end_ts]
-        total = len(bucket_events)
-        fails = sum(1 for x in bucket_events if int(x.status) == 0)
-        pct = 0 if total == 0 else round(((total - fails) / total) * 100)
-
-        end_label = end_dt.strftime("%d.%m %H:00")
-        start_label = start_dt.strftime("%d.%m %H:00")
-        rows.append(f"{end_label} - {_status_icon(fails, total)} - {pct}% - {start_label}")
-
-    return rows
+    return build_hourly_rows_desc(events, hours, dt, label_format="%d.%m %H:00")
 
 
 def _spoil(value) -> str:
@@ -102,7 +63,7 @@ def _account_uuid_from_callback(call: CallbackQuery) -> str | None:
 def _session_files_exist(number: str | None) -> bool:
     if not number:
         return False
-    return bool(glob.glob(f"data/session/{number}*"))
+    return any(path.is_file() for path in account_session_paths(number))
 
 
 async def _session_files_exist_async(number: str | None) -> bool:
@@ -112,26 +73,9 @@ async def _session_files_exist_async(number: str | None) -> bool:
 async def _remove_session_files(number: str | None) -> None:
     if not number:
         return
-    session_paths = await asyncio.to_thread(glob.glob, f"data/session/{number}*")
-    for session_path in session_paths:
-        with suppress(OSError):
-            await asyncio.to_thread(os.remove, session_path)
+    await asyncio.to_thread(remove_account_session_files, number)
 
 
-def _is_fatal_session_error(exc: Exception) -> bool:
-    if exc.__class__.__name__ in FATAL_SESSION_ERROR_NAMES:
-        return True
-
-    error_text = str(exc).lower()
-    fatal_markers = (
-        "auth key unregistered",
-        "auth key invalid",
-        "session revoked",
-        "session expired",
-        "unauthorized",
-        "user deactivated",
-    )
-    return any(marker in error_text for marker in fatal_markers)
 
 
 async def _show_accounts_or_close(call: CallbackQuery) -> None:
@@ -146,7 +90,8 @@ async def _show_accounts_or_close(call: CallbackQuery) -> None:
 
     _, apps_count = await get_app_tg_user_id(call.from_user.id)
     total_pages = max(1, (count + PAGE_SIZE - 1) // PAGE_SIZE)
-    keyboard = await account_tg_admin_inline(accounts, 1, total_pages)
+    names = await get_user_names_by_ids([account.user_id for account in accounts])
+    keyboard = await account_tg_admin_inline(accounts, 1, total_pages, names=names)
 
     await call.message.edit_text(
         text=constant_text.ACCOUNT_COUNT_INFO_TEXT.format(
@@ -236,7 +181,7 @@ async def _get_account_from_callback(call: CallbackQuery) -> Account | None:
     return await get_account_uuid(account_uuid, call.from_user.id)
 
 
-@router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("acc:e:"), StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAccountManager(), F.data.startswith("acc:e:"), StateFilter("*"))
 async def accounts_edit_menu_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
@@ -248,7 +193,7 @@ async def accounts_edit_menu_handler(call: CallbackQuery, state: FSMContext):
     await _render_account_editor(call, account)
 
 
-@router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("acc:ts:"), StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAccountManager(), F.data.startswith("acc:ts:"), StateFilter("*"))
 async def account_toggle_session_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
@@ -270,7 +215,7 @@ async def account_toggle_session_handler(call: CallbackQuery, state: FSMContext)
     await _render_account_editor(call, account)
 
 
-@router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("acc:tn:"), StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAccountManager(), F.data.startswith("acc:tn:"), StateFilter("*"))
 async def account_toggle_new_chat_alert_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
@@ -289,7 +234,7 @@ async def account_toggle_new_chat_alert_handler(call: CallbackQuery, state: FSMC
     await _render_account_editor(call, account)
 
 
-@router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("acc:td:"), StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAccountManager(), F.data.startswith("acc:td:"), StateFilter("*"))
 async def account_toggle_deleted_chat_alert_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
@@ -308,7 +253,7 @@ async def account_toggle_deleted_chat_alert_handler(call: CallbackQuery, state: 
     await _render_account_editor(call, account)
 
 
-@router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("acc:tb:"), StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAccountManager(), F.data.startswith("acc:tb:"), StateFilter("*"))
 async def account_toggle_bot_alert_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
@@ -327,7 +272,7 @@ async def account_toggle_bot_alert_handler(call: CallbackQuery, state: FSMContex
     await _render_account_editor(call, account)
 
 
-@router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("acc:tm:"), StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAccountManager(), F.data.startswith("acc:tm:"), StateFilter("*"))
 async def account_toggle_media_spoiler_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
@@ -347,7 +292,7 @@ async def account_toggle_media_spoiler_handler(call: CallbackQuery, state: FSMCo
     await _render_account_editor(call, account)
 
 
-@router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("acc:chk:"), StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAccountManager(), F.data.startswith("acc:chk:"), StateFilter("*"))
 async def account_check_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 

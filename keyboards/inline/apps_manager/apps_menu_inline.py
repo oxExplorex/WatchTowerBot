@@ -4,11 +4,10 @@ from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import data.text as constant_text
-from db.main import get_accounts_count_by_app_tg_uuid
 from db.models import app_tg_db
 
 
-async def apps_tg_admin_inline(apps_tg: List[app_tg_db], page: int, total_pages: int):
+async def apps_tg_admin_inline(apps_tg: List[app_tg_db], page: int, total_pages: int, *, linked_counts: dict):
     keyboard = InlineKeyboardBuilder()
 
     keyboard.row(
@@ -16,7 +15,7 @@ async def apps_tg_admin_inline(apps_tg: List[app_tg_db], page: int, total_pages:
     )
 
     for item in apps_tg:
-        linked_count = await get_accounts_count_by_app_tg_uuid(item.uuid)
+        linked_count = linked_counts.get(item.uuid, 0)
         keyboard.row(
             InlineKeyboardButton(
                 text=constant_text.APPS_MENU_USE.format(

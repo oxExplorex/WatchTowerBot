@@ -4,6 +4,7 @@ import hashlib
 from importlib import metadata
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -15,6 +16,8 @@ KURIGRAM_VERSION = "2.2.26"
 KURIGRAM_REQUIREMENT = f"kurigram[fast]=={KURIGRAM_VERSION}"
 KURIGRAM_WHEEL_SHA256 = "f53cee6119a579b74620f45b5f83d543cd3bd510a8a6a1b4b3852e21603241e9"
 LEGACY_DISTRIBUTIONS = ("pyrofork", "Pyrogram")
+CORE_DEPENDENCIES = (("pyaes", "pyaes>=1.2.0", (1, 2, 0)),
+                     ("python-socks", "python-socks[asyncio]>=2.4.0", (2, 4, 0)))
 
 
 def _installed_version(name: str) -> str | None:
@@ -37,6 +40,16 @@ def _fast_packages() -> list[str]:
     if sys.platform in {"linux", "darwin"}:
         packages.append("uvloop>=0.21.0")
     return packages
+
+
+def _missing_core_dependencies() -> list[str]:
+    missing = []
+    for name, requirement, minimum in CORE_DEPENDENCIES:
+        version = _installed_version(name) or ""
+        match = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?(?:\.post\d+)?", version)
+        if match is None or tuple(int(value or 0) for value in match.groups()) < minimum:
+            missing.append(requirement)
+    return missing
 
 
 def _missing_fast_packages() -> list[str]:
@@ -66,6 +79,9 @@ def ensure_telegram_dependency() -> bool:
 
     legacy = [name for name in LEGACY_DISTRIBUTIONS if _installed_version(name) is not None]
     if not legacy and _installed_version("Kurigram") == KURIGRAM_VERSION:
+        missing = _missing_core_dependencies()
+        if missing:
+            _pip("install", "--index-url", "https://pypi.org/simple", *missing)
         _install_fast_dependencies()
         return False
 
@@ -83,7 +99,7 @@ def ensure_telegram_dependency() -> bool:
         if hashlib.sha256(wheel.read_bytes()).hexdigest() != KURIGRAM_WHEEL_SHA256:
             raise RuntimeError("Kurigram wheel SHA-256 does not match the reviewed release")
 
-        dependencies = ["pyaes>=1.2.0", "python-socks[asyncio]>=2.4.0"]
+        dependencies = [requirement for _, requirement, _ in CORE_DEPENDENCIES]
         _pip("install", "--index-url", "https://pypi.org/simple", *dependencies)
         _install_fast_dependencies()
         if legacy:
@@ -111,7 +127,7 @@ def _dependency_state() -> dict:
     }
 
 
-def ensure_project_dependencies(*, force: bool = False) -> bool:
+def ensure_project_dependencies(*, force: bool = False, progress=None) -> bool:
     """Bootstrap before importing the app, including after an old updater restart.
 
     Keep this bridge: older updaters only download source and exec main.py. They
@@ -125,25 +141,40 @@ def ensure_project_dependencies(*, force: bool = False) -> bool:
     except (OSError, ValueError):
         previous_state = None
     if not force and current_state == previous_state:
+        if progress is not None:
+            progress(0, 0, "Окружение актуально, установка не требуется")
         return False
 
     print("Preparing project dependencies before application startup", flush=True)
-    ensure_telegram_dependency()
     requirements = PROJECT_ROOT / "requirements.txt"
-    if _missing_fast_packages():
-        # Keep [fast] in the published requirements. On a platform without wheels,
-        # install the same reviewed core without building optional native code.
-        with tempfile.TemporaryDirectory(prefix="watchtower_requirements_") as directory:
-            portable_requirements = Path(directory) / "requirements.txt"
-            portable_requirements.write_text(
-                requirements.read_text(encoding="utf-8").replace(
-                    KURIGRAM_REQUIREMENT, f"kurigram=={KURIGRAM_VERSION}"
-                ),
-                encoding="utf-8",
-            )
-            _pip("install", "--upgrade", "--upgrade-strategy", "eager", "--index-url", "https://pypi.org/simple", "-r", str(portable_requirements))
-    else:
-        _pip("install", "--upgrade", "--upgrade-strategy", "eager", "--index-url", "https://pypi.org/simple", "-r", str(requirements))
+    lines = [line.strip() for line in requirements.read_text(encoding="utf-8-sig").splitlines()
+             if line.strip() and not line.lstrip().startswith("#")]
+    if progress is not None:
+        progress(0, len(lines), "Проверка Telegram-библиотеки")
+    ensure_telegram_dependency()
+    # The reviewed wheel and optional accelerators have already been prepared.
+    # Do not ask the general resolver to install the overlapping package again.
+    remaining = [line for line in lines if line != KURIGRAM_REQUIREMENT]
+    completed, total = len(lines) - len(remaining), len(lines)
+    if progress is not None:
+        progress(completed, total, "Telegram-библиотека подготовлена")
+    with tempfile.TemporaryDirectory(prefix="watchtower_requirements_") as directory:
+        constraints = Path(directory) / "constraints.txt"
+        # All batches share the full pinned versions, including dependencies
+        # declared in a later batch. pip constraints must not contain extras.
+        constraints.write_text("\n".join(re.sub(r"\[[^\]]+\]", "", line) for line in lines) + "\n", encoding="utf-8")
+        for offset in range(0, len(remaining), 5):
+            batch = remaining[offset:offset + 5]
+            batch_file = Path(directory) / "requirements.txt"
+            batch_file.write_text("\n".join(batch) + "\n", encoding="utf-8")
+            if progress is not None:
+                names = ", ".join(line.split("==", 1)[0] for line in batch)
+                progress(completed, total, f"Подготовка: {names}")
+            _pip("install", "--upgrade", "--upgrade-strategy", "eager", "--index-url", "https://pypi.org/simple",
+                 "--constraint", str(constraints), "-r", str(batch_file))
+            completed += len(batch)
+            if progress is not None:
+                progress(completed, total)
 
     # Re-read versions after pip, and publish the marker atomically only on success.
     state_file.parent.mkdir(parents=True, exist_ok=True)

@@ -13,6 +13,8 @@ from db.models import DumpChatUser, HistoryUser
 from db.repositories.base import conflict_insert
 from db.repositories.media_repo import enqueue_attachments
 from db.repositories.personal_repo import lock_owner
+from db.repositories.account_locks import lock_account, unique_account
+from db.account_operation_models import AccountOperation
 from core.personal_crypto import context, live_fingerprint, open_text, seal_text
 from utils.crypto_store import decrypt_text, encrypt_text, message_fingerprint
 
@@ -22,6 +24,7 @@ class IngestResult:
     message_uuid: UUID
     new_chat: bool
     new_revision: bool = False
+    owner_id: int | None = None
 
 
 def comparable_payload(payload):
@@ -51,13 +54,23 @@ class MessagesRepository:
                      message_id: int, source: str, event_key: str, kind: str,
                      payload: dict | None = None, sent_at: int | None = None,
                      version_at: int | None = None, sender_id: int | None = None,
-                     channel_namespace: bool = False) -> IngestResult:
+                     channel_namespace: bool = False, require_account: bool = False) -> IngestResult | None:
         if kind not in {"new", "edit", "delete"} or message_id <= 0:
             raise ValueError("Unsupported message event")
         if kind != "delete" and payload is None:
             raise ValueError("Message content is required")
         now = time.time_ns() // 1000
         async with self._session_factory()() as session, session.begin():
+            await lock_account(session, account_user_id)
+            if require_account:
+                account = await unique_account(session, account_user_id)
+                if account is None or not account.is_active:
+                    return None
+                owner_id = int(account.admin_id)
+            elif await session.scalar(select(exists().where(
+                    AccountOperation.account_user_id == account_user_id, AccountOperation.kind == "delete",
+                    AccountOperation.status.in_({"deleting", "removing_session", "complete"})))):
+                return None
             owner_key = await lock_owner(session, owner_id)
             await self._lock(session, owner_id, account_user_id, message_id)
             # Native upsert arbitrates races across sources/processes, not just tasks.
@@ -78,7 +91,7 @@ class MessagesRepository:
                 if payload is not None and receipt.revision_uuid is not None:
                     await enqueue_attachments(session, receipt.revision_uuid, payload,
                                               owner_id=owner_id, account_user_id=account_user_id, source=source)
-                return IngestResult(row.uuid, new_chat)
+                return IngestResult(row.uuid, new_chat, owner_id=owner_id)
             revision = None
             new_revision = False
             if kind == "delete":
@@ -141,10 +154,22 @@ class MessagesRepository:
                         row.is_deleted = True
                         row.deleted_observed_at = row.deleted_observed_at or pending.observed_at
                         pending.resolved_message_uuid = row.uuid
-            return IngestResult(row.uuid, new_chat, new_revision)
+            return IngestResult(row.uuid, new_chat, new_revision, owner_id)
 
-    async def record_unlocated_deletion(self, *, owner_id: int, account_user_id: int, message_id: int) -> None:
+    async def record_unlocated_deletion(self, *, owner_id: int, account_user_id: int, message_id: int,
+                                       require_account: bool = False) -> None:
         async with self._session_factory()() as session, session.begin():
+            await lock_account(session, account_user_id)
+            if require_account:
+                account = await unique_account(session, account_user_id)
+                if account is None or not account.is_active:
+                    return
+                owner_id = int(account.admin_id)
+            elif await session.scalar(select(exists().where(
+                    AccountOperation.account_user_id == account_user_id, AccountOperation.kind == "delete",
+                    AccountOperation.status.in_({"deleting", "removing_session", "complete"})))):
+                return
+            await lock_owner(session, owner_id)
             await self._lock(session, owner_id, account_user_id, message_id)
             insert = conflict_insert(session, PendingMessageDeletion).values(
                 owner_id=owner_id, account_user_id=account_user_id, message_id=message_id,

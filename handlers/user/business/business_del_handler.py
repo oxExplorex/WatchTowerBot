@@ -1,8 +1,12 @@
 from aiogram.types import BusinessMessagesDeleted, Update
 
-from loader import bot, router
+from aiogram import Router
+from loader import bot
+
 from services.business_messages import business_contexts, business_event_key
 from services.message_service import delete_message
+
+router = Router(name=__name__)
 
 
 @router.deleted_business_messages()

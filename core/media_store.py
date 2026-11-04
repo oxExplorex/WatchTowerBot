@@ -35,6 +35,13 @@ class MediaStore:
         self.max_file_bytes = max_file_bytes
         self.max_total_bytes = max_total_bytes
 
+    @classmethod
+    def from_environment(cls):
+        return cls(
+            max_file_bytes=int(os.getenv("MEDIA_MAX_FILE_MB", "100")) * 1024**2,
+            max_total_bytes=int(os.getenv("MEDIA_MAX_TOTAL_MB", "5120")) * 1024**2,
+        )
+
     def path(self, owner_id, blob_key):
         if not isinstance(owner_id, int) or owner_id <= 0 or not re.fullmatch(r"[0-9a-f]{64}", blob_key):
             raise ValueError("Invalid media identity")
@@ -115,6 +122,25 @@ class MediaStore:
             if actual != blob_key:
                 raise ValueError("Media identity changed during migration")
 
+    def transfer_blob(self, owner_id, target_id, blob_key, private_key, public_key):
+        """Keep the original; publish only authenticated ciphertext for the target."""
+        data = self.read(owner_id, blob_key, private_key=private_key)
+        with self.path(owner_id, blob_key).open("rb") as stream:
+            compress = stream.read(5)[4] == 1
+        with self.writer(target_id, compress=compress, public_key=public_key) as writer:
+            for offset in range(0, len(data), 1024 * 1024):
+                writer.write(data[offset:offset + 1024 * 1024])
+            target_key, size = writer.finish()
+        # Deduplication may find a legacy blob already present at the destination.
+        self.migrate_blob(target_id, target_key, public_key)
+        return target_key, size
+
+    def remove_blob(self, owner_id, blob_key):
+        path = self.path(owner_id, blob_key)
+        if path.is_symlink() or path.parent.is_symlink() or path.parents[1].is_symlink():
+            raise ValueError("Unsafe media cleanup path")
+        path.unlink(missing_ok=True)
+
 
 class EncryptedMediaWriter:
     def __init__(self, store, owner_id, *, compress, public_key=None, replace_legacy=False):
@@ -136,15 +162,19 @@ class EncryptedMediaWriter:
         descriptor, name = tempfile.mkstemp(prefix="download_", suffix=".part", dir=store.root)
         self.temp_path = Path(name)
         self.file = os.fdopen(descriptor, "wb")
-        self.size, self.written = 0, 0
-        self.digest = hmac.new(identity_key, b"content\0", hashlib.sha256)
-        self.compressor = zlib.compressobj(level=1) if compress else None
-        header = (PERSONAL_MAGIC if public_key else MAGIC) + bytes([int(compress)]) + os.urandom(12)
-        if public_key:
-            header += wrap_key(public_key, key, context(owner_id, "media"))
-        self.encryptor = Cipher(algorithms.AES(key), modes.GCM(header[5:HEADER_SIZE])).encryptor()
-        self.encryptor.authenticate_additional_data(header)
-        self._write(header)
+        try:
+            self.size, self.written = 0, 0
+            self.digest = hmac.new(identity_key, b"content\0", hashlib.sha256)
+            self.compressor = zlib.compressobj(level=1) if compress else None
+            header = (PERSONAL_MAGIC if public_key else MAGIC) + bytes([int(compress)]) + os.urandom(12)
+            if public_key:
+                header += wrap_key(public_key, key, context(owner_id, "media"))
+            self.encryptor = Cipher(algorithms.AES(key), modes.GCM(header[5:HEADER_SIZE])).encryptor()
+            self.encryptor.authenticate_additional_data(header)
+            self._write(header)
+        except BaseException:
+            self.close()
+            raise
 
     def _write(self, data):
         if self.written + len(data) > self.budget:
@@ -186,8 +216,10 @@ class EncryptedMediaWriter:
         return blob_key, self.size
 
     def close(self):
-        self.file.close()
-        self.temp_path.unlink(missing_ok=True)
+        try:
+            self.file.close()
+        finally:
+            self.temp_path.unlink(missing_ok=True)
 
     def __enter__(self):
         return self

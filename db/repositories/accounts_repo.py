@@ -5,12 +5,14 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import or_, func, select
+from sqlalchemy import delete, or_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from db.models import Account, AccountHealth, DumpChatUser, HistoryUser, TelegramApp
 from db.repositories.base import BaseRepository, SessionLease, conflict_insert
+from db.repositories.account_locks import AccountAlreadyConnected, lock_account, unique_account
+from db.account_operation_models import AccountOperation
 from utils.crypto_store import (blind_index, decrypt_text, encrypt_text, encrypt_service_secret,
                                 is_encrypted, service_secret_index)
 
@@ -99,7 +101,7 @@ class AccountsRepository(BaseRepository):
     ) -> tuple[list[TelegramApp], int]:
         async with self._session(session) as lease:
             result = await lease.session.execute(
-                select(TelegramApp).where(col(TelegramApp.user_id) == user_id).offset(offset).limit(5)
+                select(TelegramApp).where(col(TelegramApp.user_id) == user_id).order_by(TelegramApp.uuid).offset(offset).limit(5)
             )
             count_result = await lease.session.execute(
                 select(func.count()).select_from(TelegramApp).where(col(TelegramApp.user_id) == user_id)
@@ -145,6 +147,15 @@ class AccountsRepository(BaseRepository):
                 select(func.count()).select_from(Account).where(col(Account.app_tg) == uuid_value)
             )
             return int(result.scalar() or 0)
+
+    async def get_account_counts_by_apps(self, app_ids: list[UUID]) -> dict[UUID, int]:
+        if not app_ids:
+            return {}
+        async with self._session() as lease:
+            rows = await lease.session.execute(
+                select(Account.app_tg, func.count()).where(Account.app_tg.in_(app_ids)).group_by(Account.app_tg)
+            )
+            return dict(rows.all())
 
     async def del_app_tg_uuid(self, uuid: Any, user_id: int, session: AsyncSession | None = None) -> bool:
         uuid_value = _to_uuid(uuid)
@@ -322,10 +333,12 @@ class AccountsRepository(BaseRepository):
             return None
 
         async with self._session(session) as lease:
-            result = await lease.session.execute(
-                select(Account).where(col(Account.admin_id) == admin_id, col(Account.user_id) == user_id)
-            )
-            account = result.scalars().first()
+            await lock_account(lease.session, user_id)
+            if await lease.session.scalar(select(AccountOperation.uuid).where(AccountOperation.active_account_id == user_id)):
+                raise AccountAlreadyConnected("An account ownership action is in progress")
+            account = await unique_account(lease.session, user_id)
+            if account and account.admin_id != admin_id:
+                raise AccountAlreadyConnected("Account is already connected to another owner")
 
             if account:
                 account.app_tg = app_tg_uuid
@@ -351,6 +364,16 @@ class AccountsRepository(BaseRepository):
             )
             await self._save(lease, account, refresh=True)
             return self._hydrate_account(account)
+
+    async def get_active_accounts_with_apps(self) -> list[tuple[Account, TelegramApp]]:
+        """Prepare runtime credentials in one query instead of one app lookup per account."""
+        async with self._session() as lease:
+            rows = await lease.session.execute(
+                select(Account, TelegramApp).join(TelegramApp, Account.app_tg == TelegramApp.uuid).where(
+                    Account.is_active == 1,
+                )
+            )
+            return [(self._hydrate_account(account), self._hydrate_app(app)) for account, app in rows]
 
     async def get_dump_chat_admin_all(
         self,
@@ -411,6 +434,30 @@ class AccountsRepository(BaseRepository):
             created = (await lease.session.execute(statement)).scalar_one_or_none() is not None
             await self._commit(lease.session, lease.owns_session)
             return created
+
+    async def record_chat_presence(
+        self, account_user_id: int, chat_id: int, owner_id: int, *,
+        present: bool, date: int | None = None, session: AsyncSession | None = None,
+    ) -> bool:
+        """Commit presence and its history together; only the winning writer emits an event."""
+        async with self._session(session) as lease:
+            if present:
+                changed = await self.create_dump_chat_user(account_user_id, chat_id, session=lease.session)
+            else:
+                removed = await lease.session.execute(
+                    delete(DumpChatUser).where(
+                        DumpChatUser.admin_id == account_user_id,
+                        DumpChatUser.chat_id == chat_id,
+                    ).returning(DumpChatUser.uuid)
+                )
+                changed = bool(removed.scalars().all())
+            if changed:
+                await self.add_chat_history_event(
+                    owner_id, chat_id, 1 if present else 2,
+                    account_user_id=account_user_id, date=date, session=lease.session,
+                )
+            await self._commit(lease.session, lease.owns_session)
+            return changed
 
     async def add_chat_history_event(
         self,

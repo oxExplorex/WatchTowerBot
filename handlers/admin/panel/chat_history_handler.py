@@ -1,6 +1,6 @@
 import re
 
-from aiogram import F
+from aiogram import F, Router, html
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
@@ -17,8 +17,10 @@ from db.main import (
 )
 from filters.all_filters import IsAdmin, IsPrivate
 from handlers.admin.states import AdminStates
-from loader import router
+
 from utils.datetime_tools import DateTime
+
+router = Router(name=__name__)
 
 
 def _mask_account_id(value: int | None) -> str:
@@ -108,15 +110,15 @@ async def _current_presence_lines(admin_id: int, chat_ids: list[int]) -> tuple[l
             lines.append(
                 constant_text.CHAT_HISTORY_PRESENCE_FOUND_FORMAT_TEXT.format(
                     chat_id=chat_id,
-                    chat_label=chat_label,
-                    holders=", ".join(holders),
+                    chat_label=html.quote(chat_label),
+                    holders=html.quote(", ".join(holders)),
                 )
             )
         else:
             lines.append(
                 constant_text.CHAT_HISTORY_PRESENCE_MISSING_FORMAT_TEXT.format(
                     chat_id=chat_id,
-                    chat_label=chat_label,
+                    chat_label=html.quote(chat_label),
                 )
             )
 
@@ -142,7 +144,7 @@ async def _render_history(message: Message, query: str, admin_id: int) -> None:
 
     lines: list[str] = [
         constant_text.CHAT_HISTORY_BLOCK_TITLE_TEXT,
-        constant_text.CHAT_HISTORY_QUERY_FORMAT_TEXT.format(query=query),
+        constant_text.CHAT_HISTORY_QUERY_FORMAT_TEXT.format(query=html.quote(query)),
         constant_text.CHAT_HISTORY_MATCHES_FORMAT_TEXT.format(count=len(chat_ids)),
         "",
     ]
@@ -174,7 +176,7 @@ async def _render_history(message: Message, query: str, admin_id: int) -> None:
                 stamp=stamp,
                 action_label=_action_label(int(item.action_id)),
                 chat_id=event_chat_id,
-                account_label=account_label,
+                account_label=html.quote(account_label),
             )
         )
     await _send_chunked(message, "\n".join(lines))

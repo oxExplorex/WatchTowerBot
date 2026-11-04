@@ -108,6 +108,10 @@ async def get_user(user_id: int) -> User | None:
     return await users_repository.get_user(user_id=user_id)
 
 
+async def get_user_names_by_ids(user_ids: list[int]) -> dict[int, str | None]:
+    return await users_repository.get_user_names_by_ids(user_ids)
+
+
 async def get_user_timezone_offset(user_id: int, default: int = 3) -> int:
     return await settings_repository.get_user_timezone_offset(user_id=user_id, default=default)
 
@@ -215,6 +219,10 @@ async def get_accounts_count_by_app_tg_uuid(app_tg_uuid) -> int:
     return await accounts_repository.get_accounts_count_by_app_tg_uuid(app_tg_uuid=app_tg_uuid)
 
 
+async def get_account_counts_by_apps(app_ids: list[UUID]) -> dict[UUID, int]:
+    return await accounts_repository.get_account_counts_by_apps(app_ids)
+
+
 async def del_app_tg_uuid(uuid: Any, user_id: int) -> bool:
     return await accounts_repository.del_app_tg_uuid(uuid=uuid, user_id=user_id)
 
@@ -233,6 +241,10 @@ async def get_account_user_id(admin_id: int, offset: int = 0) -> tuple[list[Acco
 
 async def get_account_all(active_only: bool = False) -> list[Account]:
     return await accounts_repository.get_account_all(active_only=active_only)
+
+
+async def get_active_accounts_with_apps() -> list[tuple[Account, TelegramApp]]:
+    return await accounts_repository.get_active_accounts_with_apps()
 
 
 async def get_account_tg_to_user_id(user_id: int, admin_id: int | None = None) -> Account | None:
@@ -269,6 +281,13 @@ async def del_dump_chat_user(admin_id: int, chat_id: int) -> bool:
 
 async def create_dump_chat_user(admin_id: int, chat_id: int) -> bool:
     return await accounts_repository.create_dump_chat_user(admin_id=admin_id, chat_id=chat_id)
+
+
+async def record_chat_presence(account_user_id: int, chat_id: int, owner_id: int, *,
+                               present: bool, date: int | None = None) -> bool:
+    return await accounts_repository.record_chat_presence(
+        account_user_id, chat_id, owner_id, present=present, date=date,
+    )
 
 
 async def add_chat_history_event(

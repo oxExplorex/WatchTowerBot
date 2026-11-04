@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import time
 
 from core.logging import bot_logger
@@ -88,8 +87,7 @@ async def run_media_archiver(bot):
     from db.repositories.media_repo import MediaRepository
     from db.session import get_session_factory
 
-    store = MediaStore(max_file_bytes=int(os.getenv("MEDIA_MAX_FILE_MB", "100")) * 1024**2,
-                       max_total_bytes=int(os.getenv("MEDIA_MAX_TOTAL_MB", "5120")) * 1024**2)
+    store = MediaStore.from_environment()
     repository = MediaRepository(get_session_factory)
     next_cleanup = 0
     while True:

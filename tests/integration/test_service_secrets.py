@@ -145,8 +145,7 @@ async def test_runtime_receives_decrypted_credentials_without_live_telegram_or_g
     await db_main.create_account_tg(1001, 456, apps[0].uuid, "79000000001")
     await db_main.set_user_gemini_proxy(1001, PROXY)
     runtime = offline_module("loader.py")
-    monkeypatch.setattr(runtime, "get_account_all", db_main.get_account_all)
-    monkeypatch.setattr(runtime, "get_app_tg_uuid_aio", db_main.get_app_tg_uuid_aio)
+    monkeypatch.setattr(runtime, "get_active_accounts_with_apps", db_main.get_active_accounts_with_apps)
     constructor = Mock(return_value=SimpleNamespace(name="offline"))
     monkeypatch.setattr(runtime, "Client", constructor)
     try:

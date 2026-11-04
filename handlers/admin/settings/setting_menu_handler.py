@@ -1,16 +1,16 @@
 import asyncio
 import time
 
-from aiogram import F
+from aiogram import F, Router, html
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import CallbackQuery, Message
 
 import data.text as constant_text
+from data.config import GEMINI_KEY
 from core.logging import bot_logger
-from data.admin_text import MENU_BUTTON as ADMINS_BUTTON
+from core.thread_tools import run_blocking
 from core.process_control import restart_with_clients
 from core.versioning import fetch_remote_version, get_local_version, get_remote_version_url, is_newer_version
 from db.main import (
@@ -32,7 +32,7 @@ from db.main import (
 from filters.all_filters import IsAdmin, IsPrivate
 from aiotask.update_notifier import release_update_run, try_acquire_update_run
 from handlers.admin.proxy_manager.proxy_checker import check_proxy_now
-from handlers.admin.settings.settings_helpers import (
+from utils.settings_formatting import (
     auto_update_label,
     build_daily_rows_desc,
     build_hourly_rows_desc,
@@ -46,11 +46,16 @@ from handlers.admin.settings.settings_helpers import (
     tz_full_label,
     tz_offset_label,
 )
-from loader import router
+
 from scripts.update_bot import download_and_extract_github_repo
+from scripts.startup_status import begin_operation
 from utils.datetime_tools import DateTime
 from utils.others import not_warning_delete_message
 from utils.proxy_utils import compact_proxy_display, normalize_http_proxy_input
+
+from keyboards.inline.settings import settings_keyboard, timezone_keyboard, update_notice_close_keyboard
+
+router = Router(name=__name__)
 
 DEFAULT_TIMEZONE_OFFSET = 3
 
@@ -141,7 +146,7 @@ async def _settings_text(admin_id: int) -> str:
     proxy_cfg = await get_user_gemini_proxy_config(admin_id)
 
     parser_status = parser_runtime_label(last_event, now_ts)
-    gemini_status = gemini_runtime_label(proxy_cfg)
+    gemini_status = gemini_runtime_label(proxy_cfg, key_available=bool(GEMINI_KEY))
     proxy_status = proxy_status_label(proxy_cfg)
     current_proxy = compact_proxy_display(proxy_cfg.get("proxy"))
 
@@ -152,7 +157,7 @@ async def _settings_text(admin_id: int) -> str:
         parser_status=parser_status,
         gemini_status=gemini_status,
         proxy_status=proxy_status,
-        current_proxy=current_proxy,
+        current_proxy=html.quote(current_proxy),
         date=DateTime(tz_offset).time_strftime("%d.%m.%Y %H:%M:%S.%f"),
     )
 
@@ -166,79 +171,7 @@ async def _settings_inline(admin_id: int):
     _, _, latest_version = await _get_cached_version_state()
     has_update = bool(latest_version and is_newer_version(local_version, latest_version))
 
-    keyboard = InlineKeyboardBuilder()
-
-    keyboard.row(InlineKeyboardButton(text=ADMINS_BUTTON, callback_data="adm:list:0"))
-
-    keyboard.row(
-        InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_AUTO_UPDATE.format(state=auto_update_label(auto_update)),
-            callback_data=f"set:au:{0 if auto_update else 1}",
-        )
-    )
-
-    keyboard.row(
-        InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_CHECK_UPDATE,
-            callback_data="set:update:check",
-        )
-    )
-
-    if has_update:
-        keyboard.row(
-            InlineKeyboardButton(
-                text=constant_text.SETTINGS_BTN_RUN_UPDATE,
-                callback_data="set:update:run",
-            )
-        )
-
-    keyboard.row(
-        InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_PROXY.format(state=proxy_status_label(proxy_cfg)),
-            callback_data="set:proxy:open",
-        )
-    )
-    keyboard.row(
-        InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_PROXY_DISABLE,
-            callback_data="set:proxy:disable",
-        ),
-        InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_PROXY_CHECK,
-            callback_data="set:proxy:check",
-        ),
-    )
-
-    keyboard.row(
-        InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_TIMEZONE.format(tz_label=tz_offset_label(tz_offset)),
-            callback_data="set:tz:open",
-        )
-    )
-    keyboard.row(
-        InlineKeyboardButton(text=constant_text.SETTINGS_BTN_RESTART, callback_data="set:reboot"),
-    )
-    keyboard.row(
-        InlineKeyboardButton(text=constant_text.SETTINGS_BTN_CLOSE, callback_data="set:close"),
-    )
-    return keyboard.as_markup()
-
-
-def _timezone_inline(current_offset: int):
-    keyboard = InlineKeyboardBuilder()
-    offsets = list(range(-12, 15))
-
-    for i in range(0, len(offsets), 3):
-        buttons = []
-        for value in offsets[i : i + 3]:
-            base_text = constant_text.TIMEZONE_BTN_PREFIX.format(offset=(f"+{value}" if value >= 0 else str(value)))
-            text = constant_text.TIMEZONE_BTN_SELECTED.format(label=base_text) if value == current_offset else base_text
-            buttons.append(InlineKeyboardButton(text=text, callback_data=f"set:tz:{value}"))
-        keyboard.row(*buttons)
-
-    keyboard.row(InlineKeyboardButton(text=constant_text.TIMEZONE_BTN_RESET, callback_data="set:tz:reset"))
-    keyboard.row(InlineKeyboardButton(text=constant_text.ACTION_BACK_TEXT, callback_data="set:back"))
-    return keyboard.as_markup()
+    return settings_keyboard(tz_offset, auto_update, proxy_cfg, has_update)
 
 
 async def _safe_edit_settings(call: CallbackQuery) -> None:
@@ -263,16 +196,30 @@ async def _run_update_flow(
         await message.answer(constant_text.SETTINGS_UPDATE_RUNNING_TOAST)
         return
 
+    reporter = begin_operation("Обновление", message=message)
     try:
-        await message.edit_text(start_text.format(from_version=local_version, to_version=latest_version))
-        ok = await asyncio.to_thread(download_and_extract_github_repo)
+        if reporter is not None:
+            reporter.update("Загрузка обновления", f"Версия {local_version} → {latest_version}")
+        else:
+            await message.edit_text(start_text.format(from_version=local_version, to_version=latest_version))
+        ok = await run_blocking(download_and_extract_github_repo)
         if not ok:
-            await message.answer(failed_text)
+            if reporter is not None:
+                reporter.finish(success=False, detail="Не удалось загрузить обновление. Бот продолжает работу; проверьте локальные логи.")
+            else:
+                await message.answer(failed_text)
             return
 
-        await message.answer(done_text.format(to_version=latest_version))
+        if reporter is not None:
+            reporter.update("Обновление загружено", "Подготовка к перезапуску и проверке зависимостей")
+        else:
+            await message.answer(done_text.format(to_version=latest_version))
         await asyncio.sleep(2)
         await restart_with_clients()
+    except BaseException as error:
+        if reporter is not None:
+            reporter.fail(error)
+        raise
     finally:
         await release_update_run()
 
@@ -387,7 +334,7 @@ async def check_proxy_from_settings_handler(call: CallbackQuery, state: FSMConte
     if ok:
         await call.message.answer(constant_text.PROXY_CHECK_OK_TEXT)
     else:
-        await call.message.answer(constant_text.PROXY_CHECK_FAIL_TEXT.format(reason=reason[:160]))
+        await call.message.answer(constant_text.PROXY_CHECK_FAIL_TEXT.format(reason=html.quote(reason[:160])))
 
     await _safe_edit_settings(call)
 
@@ -425,7 +372,7 @@ async def open_timezone_menu_handler(call: CallbackQuery, state: FSMContext):
             tz_label=tz_full_label(current_offset),
             tz_rows=timezone_rows_text(),
         ),
-        reply_markup=_timezone_inline(current_offset),
+        reply_markup=timezone_keyboard(current_offset),
     )
 
 
@@ -444,7 +391,7 @@ async def set_timezone_handler(call: CallbackQuery, state: FSMContext):
                 tz_label=tz_full_label(saved),
                 tz_rows=timezone_rows_text(),
             ),
-            reply_markup=_timezone_inline(saved),
+            reply_markup=timezone_keyboard(saved),
         )
 
     try:
@@ -463,7 +410,7 @@ async def set_timezone_handler(call: CallbackQuery, state: FSMContext):
             tz_label=tz_full_label(saved),
             tz_rows=timezone_rows_text(),
         ),
-        reply_markup=_timezone_inline(saved),
+        reply_markup=timezone_keyboard(saved),
     )
 
 
@@ -519,15 +466,7 @@ async def update_notice_snooze_handler(call: CallbackQuery, state: FSMContext):
     until_ts = int(time.time()) + 60 * 60 * 24 * 7
     await set_user_update_snooze_until(call.from_user.id, until_ts)
 
-    keyboard = InlineKeyboardBuilder()
-    keyboard.row(
-        InlineKeyboardButton(
-            text=constant_text.UPDATE_NOTIFY_BTN_CLOSE,
-            callback_data="upd:close",
-        )
-    )
-
-    await call.message.edit_reply_markup(reply_markup=keyboard.as_markup())
+    await call.message.edit_reply_markup(reply_markup=update_notice_close_keyboard())
     await call.answer(constant_text.UPDATE_NOTIFY_SNOOZE_TOAST)
 
 

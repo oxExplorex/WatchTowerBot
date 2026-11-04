@@ -156,6 +156,7 @@ version_state_db = VersionState
 
 # Register archive tables in the same SQLModel metadata used by Alembic.
 from db.admin_models import AdminGrant  # noqa: E402,F401
+from db.account_operation_models import AccountOperation, TransferRevision, TransferAttachment, ArchiveBlobCleanup  # noqa: E402,F401
 from db.personal_models import OwnerArchiveKey  # noqa: E402,F401
 from db.media_models import MessageAttachment  # noqa: E402,F401
 from db.message_models import StoredMessage, MessageRevision, MessageReceipt, PendingMessageDeletion  # noqa: E402,F401

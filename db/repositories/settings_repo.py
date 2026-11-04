@@ -10,6 +10,7 @@ from sqlmodel import col
 
 from db.models import AccountHealth, User, VersionState
 from db.repositories.base import BaseRepository, SessionLease
+from db.repositories.user_records import get_user_for_update
 from utils.crypto_store import decrypt_text, encrypt_service_secret, is_encrypted
 
 
@@ -33,17 +34,7 @@ class SettingsRepository(BaseRepository):
         return result.scalars().first()
 
     async def _get_or_create_user(self, session: AsyncSession, user_id: int) -> User:
-        user = await self._get_user(session, user_id)
-        if user:
-            return user
-
-        user = User(
-            user_id=int(user_id),
-            roles=self._admin_role(user_id),
-            timezone_offset=3,
-        )
-        session.add(user)
-        return user
+        return await get_user_for_update(session, user_id, role=self._admin_role(user_id))
 
     async def _persist_user(self, lease: SessionLease, user: User, refresh: bool = False) -> None:
         lease.session.add(user)

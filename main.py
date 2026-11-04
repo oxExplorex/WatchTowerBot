@@ -3,11 +3,20 @@ import logging
 import os
 
 from scripts.migrate_telegram_sessions import migrate_legacy_sessions
+from scripts.startup_status import current_reporter, start_bootstrap_notifications
 
 if __name__ == "__main__":
     from scripts.install_dependencies import ensure_project_dependencies
 
-    ensure_project_dependencies()
+    startup_report = start_bootstrap_notifications()
+    try:
+        startup_report.update("Зависимости", "Проверка и подготовка библиотек")
+        ensure_project_dependencies(progress=startup_report.dependencies)
+        startup_report.update("Загрузка приложения", "Подключение обработчиков и служб")
+    except BaseException as error:
+        startup_report.fail(error)
+        startup_report.close()
+        raise
 
 # Force UTF-8 for Windows console/log output.
 os.environ.setdefault("PYTHONUTF8", "1")
@@ -27,6 +36,7 @@ from pyrogram.handlers import DeletedMessagesHandler, EditedMessageHandler, Mess
 from aiotask.telegram_parse_dialogs import scheduler as dialogs_scheduler, starting_tg_parse_dialogs_handler
 from aiotask.update_notifier import start_update_notifier, update_scheduler
 from core.async_tools import cancel_logged_tasks, create_logged_task, track_update_task
+from core.thread_tools import run_blocking
 from core.message_updates import remember_update_identity
 from core.auth_sessions import auth_clients
 from core.logging import bot_logger, install_global_exception_hooks
@@ -49,6 +59,7 @@ from middlewares.personal_secret import PersonalSecretMiddleware, notify_missing
 from utils.others import send_log_to_active_bot
 from services.media_archive import run_media_archiver
 from services.personal_archive import run_personal_archive_migration
+from services.account_operations import repository as account_operations, run_account_operations
 
 
 def _handle_clients_start_result(task: asyncio.Task) -> None:
@@ -66,24 +77,30 @@ def _handle_clients_start_result(task: asyncio.Task) -> None:
     bot_logger.error("Telegram startup task failed: %s", type(exc).__name__)
 
 
-def _register_pyrogram_handlers(clients: list[Client]) -> None:
-    for app in clients:
-        if not isinstance(app, Client):
-            continue
+async def _report_clients_start(clients_start_task, clients):
+    try:
+        await asyncio.shield(clients_start_task)
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        pass
+    reporter = current_reporter()
+    if reporter is not None:
+        ready = sum(bool(getattr(client, "is_initialized", False) and getattr(client, "is_connected", False)) for client in clients)
+        reporter.session_result(ready, len(clients))
 
-        app.add_handler(RawUpdateHandler(remember_update_identity), group=-100)
-        # Each independent consumer gets its own group: a match otherwise prevents
-        # the following handlers in that group from seeing this update.
-        app.add_handler(MessageHandler(managed_session_handler(chat_presence_sync_handler), filters.all), group=0)
-        app.add_handler(EditedMessageHandler(managed_session_handler(edited_message_handler)), group=0)
-        app.add_handler(DeletedMessagesHandler(managed_session_handler(deleted_messages_handler)), group=0)
-        app.add_handler(MessageHandler(managed_session_handler(gemini_app_handler), filters.text & filters.regex(r"^\.")), group=10)
-        app.add_handler(
-            MessageHandler(
-                managed_session_handler(file_spoiler_handler),
-                (filters.photo | filters.video | filters.video_note) & file_spoiler_filter,
-            ), group=-10
-        )
+
+async def _start_dialog_monitor(clients_start_task):
+    # Polling must not wait for userbot authentication. The first scan, however,
+    # must run after clients actually finish startup rather than after a fixed sleep.
+    await asyncio.shield(clients_start_task)
+    await starting_tg_parse_dialogs_handler()
+
+
+def _register_pyrogram_handlers(clients: list[Client]) -> None:
+    from core.client_handlers import register_client_handlers
+
+    register_client_handlers(clients)
 
 
 async def _notify_admins_startup_failure(text: str) -> None:
@@ -127,14 +144,25 @@ async def start_polling_bot():
     install_global_exception_hooks(loop)
     clients_start_task = None
     auth_clients.resume()
+    reporter = current_reporter()
     try:
+        if reporter is not None:
+            reporter.update("База данных", "Подключение, миграции и подготовка хранилища")
         try:
             await connect_database()
         except RuntimeError as exc:
             if "DB_ENCRYPTION_KEY is required" in str(exc):
-                await _notify_admins_startup_failure(constant_text.STARTUP_MISSING_ENCRYPTION_KEY_TEXT)
+                if reporter is not None:
+                    reporter.finish(success=False, detail="Не задан DB_ENCRYPTION_KEY. Укажите ключ шифрования и запустите бот вручную.")
+                else:
+                    await _notify_admins_startup_failure(constant_text.STARTUP_MISSING_ENCRYPTION_KEY_TEXT)
             raise
-        await asyncio.to_thread(migrate_legacy_sessions)
+        if reporter is not None:
+            from db.main import get_admin_ids
+            reporter.configure(bot.token, await get_admin_ids())
+            reporter.update("Telegram-сессии", "Подготовка сохранённых авторизаций")
+        await run_blocking(migrate_legacy_sessions)
+        await account_operations.recover_interrupted()
         await initialize_runtime_state()
 
         router.message.middleware(AlbumMiddleware())
@@ -155,19 +183,31 @@ async def start_polling_bot():
 
         clients_start_task = loop.create_task(start_all_clients(runtime_sessions))
         clients_start_task.add_done_callback(_handle_clients_start_result)
+        if reporter is not None:
+            reporter.sessions = f"Личные Telegram-сессии подключаются: {len(runtime_sessions)}."
+            create_logged_task(_report_clients_start(clients_start_task, runtime_sessions), name="startup_session_status")
+            reporter.update("Фоновые службы", "Запуск мониторинга, архива и проверки обновлений")
         create_logged_task(run_media_archiver(bot), name="media_archiver")
         create_logged_task(run_personal_archive_migration(bot), name="personal_archive_migration")
+        create_logged_task(run_account_operations(bot), name="account_operations")
         create_logged_task(notify_missing_secrets(bot), name="secret_setup_notifications")
 
-        # Technical delay for stable startup of pyrogram sessions.
-        await asyncio.sleep(5)
-        create_logged_task(starting_tg_parse_dialogs_handler(), name="tg_parse_dialogs_handler")
+        create_logged_task(_start_dialog_monitor(clients_start_task), name="tg_parse_dialogs_handler")
         create_logged_task(start_update_notifier(), name="update_notifier_starter")
 
-        await send_log_to_active_bot(bot)
+        if reporter is not None:
+            reporter.update("Подключение бота", "Проверка Telegram и запуск обработчиков")
+            await bot.me()
+            reporter.finish(detail="Команды и Business-обработчики готовы. Откройте /start.")
+        else:
+            await send_log_to_active_bot(bot)
         bot_logger.info("Bot was started")
 
         await dispatcher.start_polling(bot, close_bot_session=False)
+    except BaseException as error:
+        if reporter is not None and reporter.state != "failed":
+            reporter.fail(error)
+        raise
     finally:
         await _shutdown_runtime(clients_start_task)
 
@@ -186,5 +226,8 @@ if __name__ == "__main__":
             loop.run_until_complete(loop.shutdown_asyncgens())
             loop.run_until_complete(loop.shutdown_default_executor())
         finally:
+            reporter = current_reporter()
+            if reporter is not None:
+                reporter.close()
             loop.close()
             logging.shutdown()

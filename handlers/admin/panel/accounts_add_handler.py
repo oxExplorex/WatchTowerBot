@@ -4,7 +4,7 @@ import traceback
 from pathlib import Path
 from uuid import uuid4
 
-from aiogram import F
+from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -15,14 +15,22 @@ import data.text as constant_text
 from core.logging import bot_logger
 from core.auth_sessions import auth_clients, discard_session_files
 from core.session_files import replace_session_files, session_paths
+from core.account_runtime import account_guard
 from core.session_runtime import get_client_by_number, start_client, stop_and_remove_session
-from db.main import create_unit_of_work, get_app_tg_uuid, is_admin
+from db.main import create_unit_of_work, get_account_by_number, get_account_tg_to_user_id, get_app_tg_uuid, is_admin
+from db.repositories.account_locks import AccountAlreadyConnected
+from data.texts import account_ownership as ownership_text
+from db.repositories.account_operations_repo import AccountOperationsRepository
+from db.session import get_session_factory
 from filters.all_filters import IsAdmin, IsPrivate
 from handlers.admin.states import AdminStates
 from keyboards.main.start_keyboard import static_admin_keyboard
 from keyboards.inline.back_inline import back_inline
-from loader import router, session_manager
+from loader import session_manager
+
 from utils.others import close_state_pyrogram_client, not_warning_delete_message
+
+router = Router(name=__name__)
 
 
 _session_locks: dict[str, asyncio.Lock] = {}
@@ -52,9 +60,14 @@ async def _save_authorized_session(data: dict, result, owner_id: int, *, update_
     number = data["number"]
     temporary_name = data["temp_session_name"]
     final_name = f"data/session/{number}"
-    async with _get_session_lock(number):
+    async with account_guard(("session", number)):
         if not await is_admin(owner_id):
             raise PermissionError("Доступ администратора отозван.")
+        existing = await get_account_tg_to_user_id(result.id)
+        if existing is not None and existing.admin_id != owner_id:
+            raise AccountAlreadyConnected(ownership_text.ALREADY_CONNECTED)
+        if await AccountOperationsRepository(get_session_factory).is_busy(result.id):
+            raise AccountAlreadyConnected(ownership_text.ALREADY_CONNECTED)
         if not Path(f"{temporary_name}.session").is_file():
             raise FileNotFoundError("Authorized temporary session is missing")
         previous_client = await get_client_by_number(number)
@@ -143,6 +156,10 @@ async def receive_account_number_handler(message: Message, state: FSMContext):
 
     if not number:
         return await message.answer(constant_text.ERROR_FORMAT_TEXT)
+
+    if await get_account_by_number(number) is not None:
+        await state.clear()
+        return await message.answer(ownership_text.ALREADY_CONNECTED)
 
     app_info = await get_app_tg_uuid(data["uuid_app"], user_id)
     if not app_info:

@@ -1,10 +1,11 @@
 import asyncio
-import sqlite3
+from uuid import UUID
 
 from alembic import command
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import MetaData, Table, select
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from db.admin_models import AdminGrant
 from db.models import User
@@ -87,13 +88,21 @@ async def test_upgrade_preserves_legacy_grants_without_promoting_configured_ids(
     settings = load_database_settings()
     config = migrations._build_alembic_config(settings.connection_string)
     await asyncio.to_thread(command.upgrade, config, "20261103_03")
-    import os
-    with sqlite3.connect(os.environ["BOT_DB_PATH"]) as connection:
+    def seed_legacy_users(connection):
+        users = Table("user_db", MetaData(), autoload_with=connection)
         for user_id, role in [(1001, "admin"), (2002, "admin"), (3003, None)]:
-            connection.execute(
-                "INSERT INTO user_db (uuid,user_id,roles,timezone_offset,auto_update_enabled,"
-                "gemini_proxy_enabled,gemini_proxy_status) VALUES (?,?,?,?,?,?,?)",
-                (f"{user_id:032x}", user_id, role, 3, 0, 0, 0))
+            connection.execute(users.insert().values(
+                uuid=UUID(int=user_id) if connection.dialect.name == "postgresql" else f"{user_id:032x}",
+                user_id=user_id, roles=role, timezone_offset=3, auto_update_enabled=0,
+                gemini_proxy_enabled=0, gemini_proxy_status=0,
+            ))
+
+    legacy_engine = create_async_engine(settings.connection_string)
+    try:
+        async with legacy_engine.begin() as connection:
+            await connection.run_sync(seed_legacy_users)
+    finally:
+        await legacy_engine.dispose()
     monkeypatch.setattr(database_module, "admin_id_list", [1001])
     monkeypatch.setattr(database_module, "admins_repository", AdminsRepository(database_module.get_session_factory, [1001]))
     await database_module.connect_database()

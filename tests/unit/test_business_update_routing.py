@@ -37,7 +37,7 @@ async def test_business_updates_are_routed_with_current_sdk(monkeypatch, offline
     updates = [Update.model_validate({"update_id": 100 + index, kind: event | (
         {"message_id": 12 + index} if kind != "deleted_business_messages" else {})}) for index in range(batch_size)]
     dispatcher = Dispatcher()
-    dispatcher.include_router(loader.router)
+    dispatcher.include_router(module.router)
     bot = Bot("123456:offline_test_token")
     try:
         await asyncio.gather(*(dispatcher.feed_update(bot, update) for update in updates))

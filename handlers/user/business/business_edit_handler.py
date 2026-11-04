@@ -1,8 +1,12 @@
 from aiogram.types import Message, Update
 
-from loader import bot, router
+from aiogram import Router
+from loader import bot
+
 from services.business_messages import business_contexts, business_event_key
 from services.message_service import save_message
+
+router = Router(name=__name__)
 
 
 @router.edited_business_message()

@@ -1,13 +1,13 @@
 """Resumable re-encryption. Existing envelopes survive any failed transaction."""
 import asyncio
 import json
-import os
 import re
 from uuid import uuid4
 
 from sqlalchemy import select, update
 
 from core.personal_crypto import context, seal_text
+from core.thread_tools import run_blocking
 from db.media_models import MessageAttachment
 from db.message_models import MessageReceipt, MessageRevision, StoredMessage
 from db.personal_models import OwnerArchiveKey
@@ -19,18 +19,11 @@ from utils.crypto_store import decrypt_text
 def media_store():
     from core.media_store import MediaStore
 
-    return MediaStore(max_file_bytes=int(os.getenv("MEDIA_MAX_FILE_MB", "100")) * 1024**2,
-                      max_total_bytes=int(os.getenv("MEDIA_MAX_TOTAL_MB", "5120")) * 1024**2)
+    return MediaStore.from_environment()
 
 
 async def _migrate_file(store, owner_id, blob_key, public_key):
-    task = asyncio.create_task(asyncio.to_thread(store.migrate_blob, owner_id, blob_key, public_key))
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        # Do not leave a filesystem mutation running after its owner lock is freed.
-        await asyncio.gather(task, return_exceptions=True)
-        raise
+    await run_blocking(store.migrate_blob, owner_id, blob_key, public_key)
 
 
 async def migrate_batch(session_factory, owner_id, store, *, batch_size=100):
@@ -64,7 +57,8 @@ async def migrate_batch(session_factory, owner_id, store, *, batch_size=100):
             # Several revisions may point to the same immutable physical blob.
             await session.execute(update(MessageAttachment).where(
                 MessageAttachment.owner_id == owner_id, MessageAttachment.blob_key == attachment.blob_key,
-                MessageAttachment.encryption_version == 1).values(encryption_version=2))
+                MessageAttachment.encryption_version == 1).values(
+                    encryption_version=2, state_version=MessageAttachment.state_version + 1))
             key.migrated_files += 1
         else:
             orphan = await asyncio.to_thread(store.legacy_blob, owner_id)
@@ -77,6 +71,7 @@ async def migrate_batch(session_factory, owner_id, store, *, batch_size=100):
         for item in locators:
             item.sources = seal_text(key.public_key, decrypt_text(item.sources), context(owner_id, f"sources:{item.uuid}"))
             item.sources_encryption_version = 2
+            item.state_version += 1
         await session.flush()
         remaining_revision = await session.scalar(select(MessageRevision.uuid).join(StoredMessage).where(
             StoredMessage.owner_id == owner_id, MessageRevision.encryption_version == 1).limit(1))

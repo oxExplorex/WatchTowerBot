@@ -11,6 +11,7 @@ from sqlmodel import col
 from db.models import User, UsernameHistory
 from db.admin_models import AdminGrant
 from db.repositories.base import BaseRepository
+from db.repositories.user_records import get_user_for_update
 from utils.crypto_store import blind_index, decrypt_text, encrypt_text, is_encrypted
 
 
@@ -45,6 +46,13 @@ class UsersRepository(BaseRepository):
             user = await self._fetch_user(lease.session, user_id)
             return self._hydrate_user(user)
 
+    async def get_user_names_by_ids(self, user_ids: list[int]) -> dict[int, str | None]:
+        if not user_ids:
+            return {}
+        async with self._session() as lease:
+            rows = await lease.session.execute(select(User.user_id, User.full_name).where(User.user_id.in_(user_ids)))
+            return {user_id: decrypt_text(name) for user_id, name in rows}
+
     async def update_user(
         self,
         user_id: int,
@@ -53,12 +61,7 @@ class UsersRepository(BaseRepository):
         session: AsyncSession | None = None,
     ) -> None:
         async with self._session(session) as lease:
-            user = await self._fetch_user(lease.session, user_id)
-
-            if not user:
-                user = User(user_id=int(user_id), timezone_offset=3)
-                lease.session.add(user)
-
+            user = await get_user_for_update(lease.session, user_id)
             old_username = decrypt_text(user.username)
             old_full_name = decrypt_text(user.full_name)
             username_idx = blind_index(username)

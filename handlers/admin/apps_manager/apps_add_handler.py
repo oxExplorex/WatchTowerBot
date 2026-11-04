@@ -1,19 +1,22 @@
-﻿from aiogram import F
+from aiogram import F, Router, html
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 import data.text as constant_text
-from db.main import create_app_tg, get_app_tg_to_params_all, is_admin
-from filters.all_filters import IsAdmin, IsPrivate
+from db.main import create_app_tg, get_app_tg_to_params_all
+from filters.all_filters import CanCreateProfile, IsPrivate
+from services.account_access import can_create_profile
 from handlers.admin.states import AdminStates
 from keyboards.inline.agree_inline import agree_inline
 from keyboards.inline.back_inline import back_inline
-from loader import router
+
 from utils.others import not_warning_delete_message
 
+router = Router(name=__name__)
 
-@router.callback_query(IsPrivate(), IsAdmin(), F.data == "apps_admin_menu_add", StateFilter("*"))
+
+@router.callback_query(IsPrivate(), CanCreateProfile(), F.data == "apps_admin_menu_add", StateFilter("*"))
 async def start_add_app_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
@@ -25,7 +28,7 @@ async def start_add_app_handler(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.apps_add_app_id)
 
 
-@router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.apps_add_app_id))
+@router.message(IsPrivate(), CanCreateProfile(), StateFilter(AdminStates.apps_add_app_id))
 async def receive_app_id_handler(message: Message, state: FSMContext):
     data = await state.get_data()
     await not_warning_delete_message(message=data.get("prompt_message"))
@@ -46,7 +49,7 @@ async def receive_app_id_handler(message: Message, state: FSMContext):
     await state.set_state(AdminStates.apps_add_api_hash)
 
 
-@router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.apps_add_api_hash))
+@router.message(IsPrivate(), CanCreateProfile(), StateFilter(AdminStates.apps_add_api_hash))
 async def receive_api_hash_handler(message: Message, state: FSMContext):
     data = await state.get_data()
     await not_warning_delete_message(message=data.get("prompt_message"))
@@ -63,7 +66,7 @@ async def receive_api_hash_handler(message: Message, state: FSMContext):
     await state.set_state(AdminStates.apps_add_tag_name)
 
 
-@router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.apps_add_tag_name))
+@router.message(IsPrivate(), CanCreateProfile(), StateFilter(AdminStates.apps_add_tag_name))
 async def receive_tag_name_handler(message: Message, state: FSMContext):
     data = await state.get_data()
     await not_warning_delete_message(message=data.get("prompt_message"))
@@ -75,8 +78,8 @@ async def receive_tag_name_handler(message: Message, state: FSMContext):
     await message.answer(
         text=constant_text.APPS_ADD_AGREE_TEXT.format(
             _app_id=data["app_id"],
-            _api_hash=data["api_hash"],
-            _tag_name=tag_name,
+            _api_hash=html.quote(data["api_hash"]),
+            _tag_name=html.quote(tag_name),
         ),
         reply_markup=agree_inline(),
     )
@@ -85,7 +88,7 @@ async def receive_tag_name_handler(message: Message, state: FSMContext):
     await state.set_state(AdminStates.apps_add_agree)
 
 
-@router.callback_query(IsPrivate(), IsAdmin(), F.data == "agree", StateFilter(AdminStates.apps_add_agree))
+@router.callback_query(IsPrivate(), CanCreateProfile(), F.data == "agree", StateFilter(AdminStates.apps_add_agree))
 async def confirm_add_app_handler(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     await state.clear()
@@ -98,7 +101,7 @@ async def confirm_add_app_handler(call: CallbackQuery, state: FSMContext):
     if await get_app_tg_to_params_all(user_id=user_id, app_id=app_id, api_hash=api_hash):
         return await call.message.edit_text(text=constant_text.ERROR_ALREADY_APP_TEXT)
 
-    if not await is_admin(user_id):
+    if not await can_create_profile(user_id):
         return await call.answer("Доступ администратора отозван.")
     await create_app_tg(
         user_id=user_id,

@@ -4,18 +4,16 @@ import asyncio
 import time
 from typing import Iterable
 
-from aiogram.types import InlineKeyboardButton
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import data.text as constant_text
 from core.async_tools import create_logged_task, tracked_job
+from core.thread_tools import run_blocking
 from core.logging import bot_logger
 from core.process_control import restart_with_clients
 from core.versioning import fetch_remote_version, get_local_version, get_remote_version_url, is_newer_version
-from data.config import admin_id_list
 from db.main import (
-    get_admins,
+    get_admin_ids,
     get_user_auto_update_enabled,
     get_user_update_notification_state,
     set_user_update_last_notified,
@@ -23,6 +21,8 @@ from db.main import (
 )
 from loader import bot
 from scripts.update_bot import download_and_extract_github_repo
+from scripts.startup_status import begin_operation
+from keyboards.inline.settings import update_notification_keyboard as _notification_keyboard
 
 NOTIFY_INTERVAL_SEC = 60 * 60 * 24
 
@@ -32,42 +32,9 @@ _update_run_lock = asyncio.Lock()
 _update_running = False
 
 
-def _notification_keyboard(
-    include_snooze: bool = True,
-    include_update: bool = False,
-    include_close: bool = True,
-):
-    keyboard = InlineKeyboardBuilder()
-    if include_update:
-        keyboard.row(
-            InlineKeyboardButton(
-                text=constant_text.UPDATE_NOTIFY_BTN_UPDATE_NOW,
-                callback_data="upd:update",
-            )
-        )
-    if include_snooze:
-        keyboard.row(
-            InlineKeyboardButton(
-                text=constant_text.UPDATE_NOTIFY_BTN_SNOOZE_WEEK,
-                callback_data="upd:snooze",
-            )
-        )
-    if include_close:
-        keyboard.row(
-            InlineKeyboardButton(
-                text=constant_text.UPDATE_NOTIFY_BTN_CLOSE,
-                callback_data="upd:close",
-            )
-        )
-    return keyboard.as_markup()
-
 
 async def _collect_admin_ids() -> list[int]:
-    ids = {int(x) for x in admin_id_list if int(x) > 10}
-    for user in await get_admins():
-        if int(user.user_id) > 10:
-            ids.add(int(user.user_id))
-    return sorted(ids)
+    return sorted(user_id for user_id in await get_admin_ids() if user_id > 10)
 
 
 async def _safe_send(
@@ -120,17 +87,24 @@ async def _run_auto_update(target_ids: Iterable[int], current_version: str, late
         bot_logger.info("Skip auto update: another update flow already running")
         return
 
+    reporter = begin_operation("Обновление", recipients=ids)
     try:
         start_text = constant_text.AUTO_UPDATE_START_TEXT.format(
             from_version=current_version,
             to_version=latest_version,
         )
-        for admin_id in ids:
-            await _safe_send(admin_id, start_text, include_snooze=False, include_close=False)
+        if reporter is not None:
+            reporter.update("Загрузка обновления", f"Версия {current_version} → {latest_version}")
+        else:
+            for admin_id in ids:
+                await _safe_send(admin_id, start_text, include_snooze=False, include_close=False)
 
-        ok = await asyncio.to_thread(download_and_extract_github_repo)
+        ok = await run_blocking(download_and_extract_github_repo)
 
         if not ok:
+            if reporter is not None:
+                reporter.finish(success=False, detail="Не удалось загрузить обновление. Бот продолжает работать на текущем коде; проверьте локальные логи.")
+                return
             for admin_id in ids:
                 await _safe_send(
                     admin_id,
@@ -141,11 +115,18 @@ async def _run_auto_update(target_ids: Iterable[int], current_version: str, late
             return
 
         done_text = constant_text.AUTO_UPDATE_DONE_TEXT.format(to_version=latest_version)
-        for admin_id in ids:
-            await _safe_send(admin_id, done_text, include_snooze=False, include_close=False)
+        if reporter is not None:
+            reporter.update("Обновление загружено", "Подготовка к перезапуску и проверке зависимостей")
+        else:
+            for admin_id in ids:
+                await _safe_send(admin_id, done_text, include_snooze=False, include_close=False)
 
         await asyncio.sleep(2)
         await _restart_process()
+    except BaseException as error:
+        if reporter is not None:
+            reporter.fail(error)
+        raise
     finally:
         await release_update_run()
 
