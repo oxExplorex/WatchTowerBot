@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -198,4 +200,64 @@ async def test_session_stop_defers_download_without_consuming_retry_or_leaving_p
         await downloading
     row = (await attachments(db_main))[0]
     assert row.status == "pending" and row.attempts == 0 and row.last_error == "SourceUnavailable"
+    assert not list(tmp_path.rglob("*.part"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked", [False, True])
+async def test_scheduled_media_pause_stays_pending_without_warning_or_network(
+        db_main, tmp_path, caplog, blocked):
+    from core.personal_crypto import create_key_bundle
+    from db.repositories.personal_repo import PersonalKeyRepository
+    from services.media_archive import archive_attachment
+
+    await PersonalKeyRepository(db_main.get_session_factory).install(123, create_key_bundle(123, "OfflineSecret123"))
+    await ingest(db_main, source="history", file_id="history-file")
+    repository = MediaRepository(db_main.get_session_factory)
+    now = int(time.time())
+    limits = SimpleNamespace(blocked_until=AsyncMock(return_value=now + 30 if blocked else 0),
+                             media_slot=AsyncMock(return_value=30))
+    resolver = AsyncMock()
+    bot = SimpleNamespace(download=AsyncMock())
+    with caplog.at_level(logging.WARNING):
+        await archive_attachment(bot, repository, MediaStore(tmp_path / "media"), await repository.claim(),
+                                 resolve_client=resolver, limits=limits)
+    row = (await attachments(db_main))[0]
+    assert row.status == "pending" and row.attempts == 0 and row.lease_token is None
+    assert row.last_error == "TelegramDeferred" and row.next_attempt_at >= now + 29
+    assert await repository.claim() is None
+    resolver.assert_not_awaited()
+    bot.download.assert_not_awaited()
+    assert not caplog.records
+    assert not list(tmp_path.rglob("*.part"))
+
+
+@pytest.mark.asyncio
+async def test_real_floodwait_logs_once_and_repeated_cooldown_is_quiet(db_main, tmp_path, caplog):
+    from pyrogram.errors import FloodWait
+    from services.media_archive import archive_attachment
+
+    await ingest(db_main, source="userbot", file_id="userbot-file")
+    repository = MediaRepository(db_main.get_session_factory)
+    limits = SimpleNamespace(blocked_until=AsyncMock(return_value=0), defer=AsyncMock())
+    async def stream(file_id):
+        raise FloodWait(120)
+        yield
+    resolver = AsyncMock(return_value=SimpleNamespace(stream_media=stream))
+    store = MediaStore(tmp_path / "media")
+    with caplog.at_level(logging.WARNING):
+        await archive_attachment(SimpleNamespace(), repository, store, await repository.claim(),
+            resolve_client=resolver, limits=limits, run_client=lambda client, operation: operation())
+        limits.defer.assert_awaited_once_with(456, 125)
+        row = (await attachments(db_main))[0]
+        assert row.status == "pending" and row.attempts == 0
+        # A second attachment encounters the existing cooldown without another network call.
+        limits.blocked_until.return_value = int(time.time()) + 125
+        await ingest(db_main, message_id=11, source="userbot", unique_id="second")
+        await archive_attachment(SimpleNamespace(), repository, store, await repository.claim(),
+            resolve_client=resolver, limits=limits)
+    assert resolver.await_count == 1
+    warnings = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert len(warnings) == 1 and "Attachment Telegram cooldown" in warnings[0].message
+    assert all(row.attempts == 0 and row.status == "pending" for row in await attachments(db_main))
     assert not list(tmp_path.rglob("*.part"))

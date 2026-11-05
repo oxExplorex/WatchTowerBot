@@ -35,10 +35,10 @@ def _build_logger() -> logging.Logger:
         route_library_errors(logger)
         return logger
 
-    log_path = Path(path_logs.format(d=DateTime().time_strftime("%d.%m.%Y")))
+    log_path = Path(path_logs.format(d=DateTime().time_strftime("%d.%m.%Y_%H-%M-%S_%f")))
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    file_log = logging.FileHandler(log_path, "a+", "utf-8")
+    file_log = logging.FileHandler(log_path, "x", "utf-8")
     # Stdout keeps logs visible in common Windows/PyCharm run consoles.
     console_out = logging.StreamHandler(sys.stdout)
 

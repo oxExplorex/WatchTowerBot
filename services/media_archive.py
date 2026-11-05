@@ -100,6 +100,8 @@ async def archive_attachment(bot, repository, store, item, *, resolve_client=res
                 raise
             except FloodWait as exc:
                 await limits.defer(source["account_user_id"], int(exc.value) + 5)
+                bot_logger.warning("Attachment Telegram cooldown: account_user_id=%s wait_seconds=%s",
+                                   source["account_user_id"], int(exc.value) + 5)
                 raise TelegramDeferred(int(exc.value) + 5) from None
             except Exception as exc:
                 last_error = exc
@@ -111,8 +113,11 @@ async def archive_attachment(bot, repository, store, item, *, resolve_client=res
         # Queue is durable; shutdown releases the lease rather than losing work.
         await repository.finish(item, error="Cancelled", delay=1)
         raise
+    except TelegramDeferred as exc:
+        # Rate limits are scheduled waits, not failed download attempts.
+        await repository.finish(item, error="TelegramDeferred", delay=exc.delay)
     except Exception as exc:
-        delay = (exc.delay if isinstance(exc, TelegramDeferred) else 60 if isinstance(exc, SourceUnavailable)
+        delay = (60 if isinstance(exc, SourceUnavailable)
                  else 3600 if isinstance(exc, MediaQuotaExceeded) else 0)
         await repository.finish(item, error=type(exc).__name__, delay=delay, permanent=isinstance(exc, MediaTooLarge))
         bot_logger.warning("Attachment download deferred or failed: %s", type(exc).__name__)
