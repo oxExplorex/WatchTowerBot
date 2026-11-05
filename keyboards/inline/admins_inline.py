@@ -5,7 +5,7 @@ from data.texts import admins as text
 from keyboards.inline.navigation import with_navigation
 
 
-def admin_list_keyboard(entries, page, pages):
+def admin_list_keyboard(entries, page, pages, *, can_manage):
     builder = InlineKeyboardBuilder()
     for user_id, label in entries:
         builder.row(InlineKeyboardButton(text=label, callback_data=f"adm:view:{user_id}:{page}"))
@@ -16,8 +16,9 @@ def admin_list_keyboard(entries, page, pages):
         navigation.append(InlineKeyboardButton(text=text.NEXT_BUTTON, callback_data=f"adm:list:{page + 1}"))
     if navigation:
         builder.row(*navigation)
-    builder.row(InlineKeyboardButton(text=text.ADD_BUTTON, callback_data="adm:add"))
-    return with_navigation(builder.as_markup(), "panel:settings")
+    if can_manage:
+        builder.row(InlineKeyboardButton(text=text.ADD_BUTTON, callback_data="adm:add"))
+    return with_navigation(builder.as_markup())
 
 
 def admin_detail_keyboard(user_id, page, *, can_revoke):

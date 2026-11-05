@@ -141,6 +141,7 @@ async def test_add_requires_confirmation_while_delete_does_not_and_entry_preserv
     call = SimpleNamespace(data="apps_admin_menu_add", message=message(), answer=AsyncMock())
     await gate(handler, update(call=call), context(state))
     assert await state.get_state() == SECRET_VERIFY
+    assert (await state.get_data())["secret_return_to"] == "panel:apps"
     handler.assert_not_awaited()
     await state.clear()
     call.data = "account_admin_menu_delete:offline"
@@ -179,16 +180,22 @@ async def test_cancel_expiry_rate_limit_and_revocation_do_not_install_key(setup)
 
 
 @pytest.mark.asyncio
-async def test_cancel_button_clears_short_dialog_but_stale_button_keeps_other_wizard(setup):
+@pytest.mark.parametrize("parent", ["panel:settings", "panel:apps", "own:status:offline-request:0"])
+async def test_cancel_button_clears_short_dialog_but_stale_button_keeps_other_wizard(setup, parent):
     repository, state, gate = setup
     await state.set_state(SECRET_INPUT)
-    await state.update_data(secret_expires=int(time.time()) + 60)
+    await state.update_data(secret_expires=int(time.time()) + 60, secret_return_to=parent)
     msg = message()
     msg.edit_text = AsyncMock()
     call = SimpleNamespace(data=CANCEL_CALLBACK, message=msg, answer=AsyncMock())
     await gate(AsyncMock(), update(call=call), context(state))
     assert await state.get_state() is None and await state.get_data() == {}
     msg.edit_text.assert_awaited_once()
+    markup = msg.edit_text.await_args.kwargs["reply_markup"]
+    callbacks = {button.callback_data for row in markup.inline_keyboard for button in row}
+    assert parent in callbacks
+    if parent != "panel:settings":
+        assert "panel:settings" not in callbacks
     await state.set_state("AdminStates:apps_add_app_id")
     await gate(AsyncMock(), update(call=call), context(state))
     assert await state.get_state() == "AdminStates:apps_add_app_id"

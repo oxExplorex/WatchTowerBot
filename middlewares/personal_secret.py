@@ -90,9 +90,10 @@ class PersonalSecretMiddleware(BaseMiddleware):
             if current not in SECRET_STATES:
                 await call.answer(texts.CANCEL_UNAVAILABLE)
                 return None
+            previous = await state.get_data()
             await state.clear()
             await call.answer(texts.INPUT_CANCELLED)
-            await edit_panel(call.message, texts.INPUT_CANCELLED, navigation_keyboard("panel:settings"))
+            await edit_panel(call.message, texts.INPUT_CANCELLED, navigation_keyboard(previous.get("secret_return_to", "panel:settings")))
             return None
         # Commands must never become wizard input or reach ordinary handlers.
         if command and command != "/start":
@@ -102,9 +103,11 @@ class PersonalSecretMiddleware(BaseMiddleware):
         if command == "/start" and current in SECRET_STATES:
             await state.clear()
             current = None
-        if current in SECRET_STATES and callback in {"panel:home", "panel:settings", "set:back"}:
-            await state.clear()
-            current = None
+        if current in SECRET_STATES and callback:
+            previous = await state.get_data()
+            if callback in {"panel:home", "panel:settings", "set:back", previous.get("secret_return_to")}:
+                await state.clear()
+                current = None
         if update.message is not None and current in SECRET_STATES:
             await self.dialog.handle_input(message, state, owner_id, key, current)
             return None
@@ -113,9 +116,8 @@ class PersonalSecretMiddleware(BaseMiddleware):
                 await call.answer()
             await self.dialog.begin(message, state, verify=key is not None)
             return None
-        if callback.startswith("own:") or (message.text or "") == ownership_text.MENU:
-            return await handler(update, data)
-        if key is None:
+        self_view = callback.startswith("own:") or (message.text or "") == ownership_text.MENU
+        if key is None and not self_view:
             if call:
                 await call.answer(texts.SETUP_REQUIRED)
             elif update.message and not (message.text or "").startswith("/"):
@@ -132,12 +134,12 @@ class PersonalSecretMiddleware(BaseMiddleware):
         if (addition or adding) and until < int(time.time()):
             if call:
                 await call.answer(texts.VERIFY_REQUIRED)
-            await self.dialog.begin(message, state, verify=True)
+            await self.dialog.begin(message, state, verify=True, back_callback="panel:apps")
             return None
         try:
             return await handler(update, data)
         finally:
-            # Entry handlers clear FSM data before starting the add wizard.
-            next_state = await state.get_state()
-            if addition and next_state:
+            # Navigation may reset a form, but the short-lived verification
+            # permit contains no key and remains valid until its original expiry.
+            if until > int(time.time()):
                 await state.update_data(personal_verified_until=until)

@@ -62,7 +62,10 @@ async def request_delete_warning(call, account_id):
                               (account.admin_id == call.from_user.id and await is_admin(call.from_user.id))):
         raise PermissionError("Account is not accessible")
     operation = await repository.request_delete(account_id, call.from_user.id)
-    await edit_panel(call.message, text.DELETE_WARNING.format(account_id=operation.account_user_id), delete_keyboard(operation))
+    parent = (f"acc:e:{account.uuid}" if (call.data or "").startswith("acc:del:") else
+              OwnAccount(action="detail", token=account.uuid.hex).pack())
+    await edit_panel(call.message, text.DELETE_WARNING.format(account_id=operation.account_user_id),
+                     delete_keyboard(operation, back_callback=parent))
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), OwnAccount.filter(), StateFilter("*"))
@@ -93,7 +96,7 @@ async def own_account_callback(call: CallbackQuery, callback_data: OwnAccount, s
                 page = total - 1
                 profiles, count = await get_app_tg_user_id(actor_id, page * PAGE_SIZE)
             await edit_panel(call.message, text.PROFILES if count else text.NO_PROFILES,
-                             profiles_keyboard(profiles, page, total))
+                             profiles_keyboard(profiles, page, total, account_uuid=account.uuid))
         elif action == "pick":
             account = await _self_account(actor_id)
             if await PersonalKeyRepository(get_session_factory).get(actor_id) is None:
@@ -112,7 +115,8 @@ async def own_account_callback(call: CallbackQuery, callback_data: OwnAccount, s
             if account is not None and account.user_id != actor_id and not await is_admin(actor_id):
                 raise PermissionError("Account management access was revoked")
             await repository.confirm_delete(operation.uuid, actor_id)
-            await edit_panel(call.message, text.DELETE_STARTED, navigation_keyboard(HOME_CALLBACK))
+            parent = "panel:accounts" if operation.owner_id == actor_id else HOME_CALLBACK
+            await edit_panel(call.message, text.DELETE_STARTED, navigation_keyboard(parent))
         elif action in {"approve", "reject", "status"}:
             operation = await repository.get(token, actor_id)
             if operation is None:

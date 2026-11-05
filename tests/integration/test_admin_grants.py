@@ -42,11 +42,18 @@ async def test_mutations_recheck_actor_and_protect_configured_and_self(admins):
     with pytest.raises(PermissionError):
         await admins.grant(9999, 2002)
     await admins.grant(1001, 2002)
-    await admins.grant(2002, 3003)
-    with pytest.raises(ValueError):
+    await admins.grant(1001, 3003)
+    with pytest.raises(PermissionError):
+        await admins.grant(2002, 4004)
+    with pytest.raises(PermissionError):
         await admins.revoke(2002, 1001)
-    with pytest.raises(ValueError):
+    with pytest.raises(PermissionError):
         await admins.revoke(2002, 2002)
+    with pytest.raises(PermissionError):
+        await admins.revoke(2002, 3003)
+    with pytest.raises(ValueError):
+        await admins.revoke(1001, 1001)
+    assert await admins.is_admin(2002)
     await admins.revoke(1001, 2002)
     with pytest.raises(PermissionError):
         await admins.grant(2002, 4004)

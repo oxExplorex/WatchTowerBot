@@ -33,7 +33,7 @@ def detail_keyboard(account, operation=None):
     return with_navigation(builder.as_markup(), HOME_CALLBACK)
 
 
-def profiles_keyboard(profiles, page, total_pages):
+def profiles_keyboard(profiles, page, total_pages, *, account_uuid=None):
     builder = InlineKeyboardBuilder()
     for profile in profiles:
         label = f"{profile.app_id} · {profile.tag_name or ''}"[:64]
@@ -46,8 +46,8 @@ def profiles_keyboard(profiles, page, total_pages):
     if nav:
         builder.row(*nav)
     builder.row(InlineKeyboardButton(text=text.BTN_PROFILE, callback_data="apps_admin_menu_add"))
-    builder.row(button(text.BTN_BACK, "home"))
-    return with_navigation(builder.as_markup())
+    parent = OwnAccount(action="detail", token=str(account_uuid)).pack() if account_uuid else HOME_CALLBACK
+    return with_navigation(builder.as_markup(), parent)
 
 
 def approval_keyboard(operation):
@@ -57,11 +57,11 @@ def approval_keyboard(operation):
     ]]), HOME_CALLBACK)
 
 
-def delete_keyboard(operation):
+def delete_keyboard(operation, *, back_callback=HOME_CALLBACK):
     return with_navigation(InlineKeyboardMarkup(inline_keyboard=[
         [button(text.BTN_CONFIRM_DELETE, "erase", operation.uuid.hex)],
         [button(text.BTN_CANCEL, "reject", operation.uuid.hex)],
-    ]), HOME_CALLBACK)
+    ]), back_callback)
 
 
 def status_keyboard(operation, actor_id):

@@ -17,10 +17,27 @@ from keyboards.main.start_keyboard import static_admin_keyboard
 
 from utils.others import close_state_pyrogram_client
 from utils.panel import edit_panel, edit_input_panel, remember_panel
+from keyboards.inline.navigation import navigation_keyboard
 
 router = Router(name=__name__)
 
 PAGE_SIZE = 8
+
+
+def _can_manage(actor_id):
+    return actor_id in get_configured_admin_ids()
+
+
+async def _require_management(event, state):
+    if _can_manage(event.from_user.id):
+        return True
+    if isinstance(event, CallbackQuery):
+        await _clear_flow(state)
+        await event.answer(text.MANAGEMENT_FORBIDDEN, show_alert=True)
+    else:
+        await edit_input_panel(event, state, text.MANAGEMENT_FORBIDDEN, navigation_keyboard("adm:list:0"))
+        await _clear_flow(state)
+    return False
 
 
 async def _clear_flow(state):
@@ -43,7 +60,7 @@ def _target_and_page(data):
     return user_id, page
 
 
-async def _show_list(message, *, page=0, edit=False):
+async def _show_list(message, *, actor_id, page=0, edit=False):
     configured = get_configured_admin_ids()
     ids = sorted(await get_admin_ids(), key=lambda user_id: (user_id not in configured, user_id))
     pages = max(1, (len(ids) + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -57,7 +74,7 @@ async def _show_list(message, *, page=0, edit=False):
             label += f" · {name[:30]}"
         entries.append((user_id, label))
     content = text.MENU_TEXT.format(count=len(ids), page=page + 1, pages=pages)
-    keyboard = admin_list_keyboard(entries, page, pages)
+    keyboard = admin_list_keyboard(entries, page, pages, can_manage=_can_manage(actor_id))
     if edit:
         await _edit(message, content, reply_markup=keyboard)
     else:
@@ -67,7 +84,7 @@ async def _show_list(message, *, page=0, edit=False):
 @router.message(IsPrivate(), IsAdmin(), F.text == text.MENU_BUTTON, StateFilter("*"))
 async def open_admins_handler(message: Message, state: FSMContext):
     await _clear_flow(state)
-    await _show_list(message)
+    await _show_list(message, actor_id=message.from_user.id)
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("adm:list:"), StateFilter("*"))
@@ -79,7 +96,7 @@ async def list_admins_handler(call: CallbackQuery, state: FSMContext):
     except (ValueError, IndexError):
         return await call.answer(text.EXPIRED)
     await _clear_flow(state)
-    await _show_list(call.message, page=page, edit=True)
+    await _show_list(call.message, actor_id=call.from_user.id, page=page, edit=True)
     await call.answer()
 
 
@@ -102,12 +119,14 @@ async def view_admin_handler(call: CallbackQuery, state: FSMContext):
     await _edit(call.message,
         text.DETAIL.format(name=html.quote(name), user_id=user_id, origin=origin),
         reply_markup=admin_detail_keyboard(user_id, page,
-            can_revoke=not configured and user_id != call.from_user.id))
+            can_revoke=_can_manage(call.from_user.id) and not configured and user_id != call.from_user.id))
     await call.answer()
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "adm:add", StateFilter("*"))
 async def add_admin_handler(call: CallbackQuery, state: FSMContext):
+    if not await _require_management(call, state):
+        return
     await _clear_flow(state)
     await state.set_state(AdminStates.admin_add_id)
     panel = await _edit(call.message, text.INPUT_ID, reply_markup=admin_cancel_keyboard())
@@ -118,11 +137,13 @@ async def add_admin_handler(call: CallbackQuery, state: FSMContext):
 @router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.admin_add_id), F.text == text.CANCEL_BUTTON)
 async def cancel_admin_input_handler(message: Message, state: FSMContext):
     await state.clear()
-    await _show_list(message)
+    await _show_list(message, actor_id=message.from_user.id)
 
 
 @router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.admin_add_id))
 async def receive_admin_id_handler(message: Message, state: FSMContext):
+    if not await _require_management(message, state):
+        return
     value = (message.text or "").strip()
     try:
         if not value.isascii() or not value.isdecimal():
@@ -141,6 +162,8 @@ async def receive_admin_id_handler(message: Message, state: FSMContext):
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("adm:grant:"), StateFilter(AdminStates.admin_confirm_add))
 async def confirm_admin_grant_handler(call: CallbackQuery, state: FSMContext):
+    if not await _require_management(call, state):
+        return
     data = await state.get_data()
     if not data.get("admin_nonce") or call.data != f"adm:grant:{data['admin_nonce']}":
         return await call.answer(text.EXPIRED)
@@ -149,12 +172,14 @@ async def confirm_admin_grant_handler(call: CallbackQuery, state: FSMContext):
         created = await grant_admin(call.from_user.id, data["admin_target"])
     except PermissionError:
         return await call.answer(text.ACCESS_REVOKED)
-    await _show_list(call.message, edit=True)
+    await _show_list(call.message, actor_id=call.from_user.id, edit=True)
     await call.answer(text.GRANTED if created else text.ALREADY_GRANTED)
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("adm:revoke:"), StateFilter("*"))
 async def request_admin_revoke_handler(call: CallbackQuery, state: FSMContext):
+    if not await _require_management(call, state):
+        return
     try:
         user_id, page = _target_and_page(call.data)
     except ValueError:
@@ -176,6 +201,8 @@ async def request_admin_revoke_handler(call: CallbackQuery, state: FSMContext):
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("adm:remove:"), StateFilter(AdminStates.admin_confirm_revoke))
 async def confirm_admin_revoke_handler(call: CallbackQuery, state: FSMContext):
+    if not await _require_management(call, state):
+        return
     data = await state.get_data()
     if not data.get("admin_nonce") or call.data != f"adm:remove:{data['admin_nonce']}":
         return await call.answer(text.EXPIRED)
@@ -186,7 +213,7 @@ async def confirm_admin_revoke_handler(call: CallbackQuery, state: FSMContext):
         return await call.answer(text.ACCESS_REVOKED)
     except ValueError:
         return await call.answer(text.EXPIRED)
-    await _show_list(call.message, page=data.get("admin_page", 0), edit=True)
+    await _show_list(call.message, actor_id=call.from_user.id, page=data.get("admin_page", 0), edit=True)
     await call.answer(text.REVOKED if removed else text.NO_ACCESS)
 
 

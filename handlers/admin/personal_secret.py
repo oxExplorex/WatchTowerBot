@@ -4,7 +4,7 @@ from collections import OrderedDict
 import time
 
 from aiogram.types import ForceReply
-from callbacks.account_ownership import HOME_CALLBACK
+from callbacks.account_ownership import OwnAccount
 
 from core.personal_crypto import InvalidSecret, create_key_bundle, normalize_secret, unlock_private_key
 from core.thread_tools import run_blocking
@@ -54,14 +54,16 @@ class PersonalSecretDialog:
             await message.answer(texts.DELETE_FAILED)
             return False
 
-    async def begin(self, message, state, *, verify=False, transfer_request=None):
+    async def begin(self, message, state, *, verify=False, transfer_request=None, back_callback="panel:settings"):
         from utils.others import close_state_pyrogram_client
 
         await close_state_pyrogram_client(state)
         await state.clear()
-        panel = await edit_panel(message, texts.INPUT_CONTROLS, cancel_keyboard())
+        if transfer_request is not None:
+            back_callback = OwnAccount(action="status", token=str(transfer_request)).pack()
+        panel = await edit_panel(message, texts.INPUT_CONTROLS, cancel_keyboard(back_callback))
         await remember_panel(state, panel or message)
-        await state.update_data(secret_expires=int(time.time()) + 600)
+        await state.update_data(secret_expires=int(time.time()) + 600, secret_return_to=back_callback)
         if transfer_request is not None:
             await state.update_data(transfer_request=str(transfer_request))
         await state.set_state(PersonalSecret.transfer if transfer_request is not None else
@@ -69,7 +71,8 @@ class PersonalSecretDialog:
         await message.answer(INPUT_PROMPT, protect_content=True, reply_markup=ForceReply(selective=True))
 
     async def _finish(self, message, state, content, markup=None):
-        await edit_input_panel(message, state, content, markup or navigation_keyboard("panel:settings"))
+        data = await state.get_data()
+        await edit_input_panel(message, state, content, markup or navigation_keyboard(data.get("secret_return_to", "panel:settings")))
         await state.clear()
 
     async def handle_input(self, message, state, owner_id, key, current):
@@ -80,7 +83,7 @@ class PersonalSecretDialog:
             await self._finish(message, state, texts.INPUT_EXPIRED, setup_keyboard() if key is None else None)
             return
         if self._blocked(owner_id):
-            await edit_input_panel(message, state, texts.TOO_MANY_ATTEMPTS, cancel_keyboard())
+            await edit_input_panel(message, state, texts.TOO_MANY_ATTEMPTS, cancel_keyboard(data.get("secret_return_to", "panel:settings")))
             return
         try:
             secret = normalize_secret(message.text or "")
@@ -113,8 +116,7 @@ class PersonalSecretDialog:
                     from data.texts import account_ownership
 
                     started = await start_transfer(message.bot, data.get("transfer_request"), owner_id, private)
-                    await self._finish(message, state, account_ownership.STARTED if started else account_ownership.UNAVAILABLE,
-                                       navigation_keyboard(HOME_CALLBACK))
+                    await self._finish(message, state, account_ownership.STARTED if started else account_ownership.UNAVAILABLE)
                 elif current == SECRET_CONFIRM:
                     if not await self.repository.install(owner_id, bundle):
                         await self._finish(message, state, texts.SETUP_CONFLICT)
@@ -127,7 +129,7 @@ class PersonalSecretDialog:
                 self._attempts.pop(owner_id, None)
         except InvalidSecret as exc:
             self._failed(owner_id)
-            await edit_input_panel(message, state, str(exc), cancel_keyboard())
+            await edit_input_panel(message, state, str(exc), cancel_keyboard(data.get("secret_return_to", "panel:settings")))
         except Exception:
             # No traceback/arguments/repr(Update) may contain a secret here.
             await self._finish(message, state, texts.ACTION_FAILED)

@@ -153,19 +153,52 @@ async def test_unknown_users_cannot_write_profiles_or_use_forged_buttons(panel):
 
 
 @pytest.mark.asyncio
-async def test_revocation_during_dialog_clears_state_and_cannot_remove_another_admin(panel):
+async def test_granted_admin_cannot_replay_management_confirmation_from_old_version(panel):
     await panel.repository.grant(1001, 2002)
     await panel.repository.grant(1001, 3003)
     await panel.feed(2002, callback="adm:revoke:1001:0")
     assert await panel.repository.is_admin(1001)
     await panel.feed(2002, callback="adm:revoke:2002:0")
     assert await panel.repository.is_admin(2002)
-    await panel.feed(2002, callback="adm:revoke:3003:0")
+    await panel.feed(1001, callback="adm:revoke:3003:0")
     confirmation = panel.button("adm:remove:")
-    await panel.repository.revoke(1001, 2002)
+    state = panel.dispatcher.fsm.get_context(bot=panel.bot, chat_id=2002, user_id=2002)
+    await state.set_state(panel.module.AdminStates.admin_confirm_revoke)
+    await state.update_data(admin_target=3003, admin_nonce=confirmation.split(":")[-1])
     await panel.feed(2002, callback=confirmation)
     assert await panel.repository.is_admin(3003)
+    assert await state.get_state() is None and await state.get_data() == {}
+
+
+@pytest.mark.asyncio
+async def test_granted_admin_cannot_continue_old_add_input(panel):
+    await panel.repository.grant(1001, 2002)
     state = panel.dispatcher.fsm.get_context(bot=panel.bot, chat_id=2002, user_id=2002)
+    await state.set_state(panel.module.AdminStates.admin_add_id)
+    await panel.feed(2002, text="4004")
+    assert not await panel.repository.is_admin(4004)
+    assert await state.get_state() is None and await state.get_data() == {}
+
+
+@pytest.mark.asyncio
+async def test_granted_admin_has_read_only_list_and_forged_add_is_rejected(panel):
+    await panel.repository.grant(1001, 2002)
+    await panel.repository.grant(1001, 3003)
+    await panel.feed(2002, callback="adm:list:0")
+    markup = panel.session.calls[-2].reply_markup
+    assert not any(button.callback_data == "adm:add" for row in markup.inline_keyboard for button in row)
+    await panel.feed(2002, callback="adm:view:3003:0")
+    markup = panel.session.calls[-2].reply_markup
+    assert not any(button.callback_data.startswith("adm:revoke:") for row in markup.inline_keyboard for button in row)
+    await panel.feed(2002, callback="adm:add")
+    assert panel.session.calls[-1].text == panel.module.text.MANAGEMENT_FORBIDDEN
+    state = panel.dispatcher.fsm.get_context(bot=panel.bot, chat_id=2002, user_id=2002)
+    assert await state.get_state() is None
+    await state.set_state(panel.module.AdminStates.admin_confirm_add)
+    await state.update_data(admin_target=4004, admin_nonce="oldnonce")
+    await panel.feed(2002, callback="adm:grant:oldnonce")
+    assert not await panel.repository.is_admin(4004)
+    assert await panel.repository.is_admin(2002)
     assert await state.get_state() is None and await state.get_data() == {}
 
 

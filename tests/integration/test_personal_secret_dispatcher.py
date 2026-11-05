@@ -321,6 +321,9 @@ async def test_foreign_profile_is_hidden_from_connected_account_even_with_admin_
     await flow.feed(2002, callback="apps_admin_menu:1")
     await flow.feed(2002, callback=OwnAccount(action="profiles").pack())
     assert "765432" in emitted_since(start)  # Own API profile remains selectable.
+    selector = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
+    assert selector.reply_markup.inline_keyboard[-1][0].callback_data == OwnAccount(
+        action="detail", token=str(account.uuid)).pack()
     # Stale/forged manager buttons must neither reveal credentials nor alter state.
     await flow.feed(2002, callback=f"acc:e:{account.uuid}")
     await flow.feed(2002, callback=f"acc:tn:{account.uuid}")
@@ -455,3 +458,61 @@ async def test_inline_sections_and_text_wizards_edit_same_panel_after_state_rese
     assert all(call.message_id == panel_id for call in edits)
     assert all(any(button.callback_data == "panel:home" for row in call.reply_markup.inline_keyboard
                    for button in row) for call in edits if "<b>WatchTowerBot</b>" not in call.text)
+
+
+@pytest.mark.asyncio
+async def test_navigation_uses_root_siblings_and_real_parent_buttons(setup_flow):
+    from core.personal_crypto import create_key_bundle
+    from data.texts.common import START_MESSAGE_TEXT
+
+    flow = setup_flow
+    await flow.admins.grant(1001, 2002)
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
+    await flow.feed(content="/start")
+    panel_id = flow.session.calls[-1].message_id
+
+    def screen():
+        return next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
+
+    def payload(expected):
+        return next(button.callback_data for row in screen().reply_markup.inline_keyboard for button in row
+                    if button.callback_data == expected)
+
+    await flow.feed(callback=payload("adm:list:0"), panel_id=panel_id)
+    assert [button.callback_data for button in screen().reply_markup.inline_keyboard[-1]] == ["panel:home"]
+    await flow.feed(callback=payload("adm:view:2002:0"), panel_id=panel_id)
+    await flow.feed(callback=payload("adm:list:0"), panel_id=panel_id)
+    assert screen().text.startswith("<b>Администраторы</b>")
+    await flow.state().clear()  # No navigation history in FSM is required.
+    await flow.feed(callback=payload("panel:home"), panel_id=panel_id)
+    assert screen().text == START_MESSAGE_TEXT
+    await flow.feed(callback=payload("panel:settings"), panel_id=panel_id)
+    assert not any(button.callback_data.startswith("adm:") for row in screen().reply_markup.inline_keyboard for button in row)
+    await flow.feed(callback=payload("set:tz:open"), panel_id=panel_id)
+    await flow.feed(callback=payload("set:back"), panel_id=panel_id)
+    assert screen().text.startswith("<b>Настройки</b>")
+    assert [button.callback_data for button in screen().reply_markup.inline_keyboard[-1]] == ["panel:home"]
+    await flow.feed(callback=payload("panel:home"), panel_id=panel_id)
+    assert screen().text == START_MESSAGE_TEXT and screen().message_id == panel_id
+
+
+@pytest.mark.asyncio
+async def test_secret_verification_returns_to_profiles_without_repeating_verification(setup_flow):
+    from core.personal_crypto import create_key_bundle
+    from states.personal_secret import SECRET_VERIFY
+
+    flow = setup_flow
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
+    await flow.feed(content="/start")
+    panel_id = flow.session.calls[-1].message_id
+    await flow.feed(callback="panel:apps", panel_id=panel_id)
+    await flow.feed(callback="apps_admin_menu_add", panel_id=panel_id)
+    assert await flow.state().get_state() == SECRET_VERIFY
+    await flow.feed(content="Личныйсекрет1001")
+    result = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
+    assert {button.callback_data for row in result.reply_markup.inline_keyboard for button in row} == {"panel:apps", "panel:home"}
+    await flow.feed(callback="panel:apps", panel_id=panel_id)
+    before = len(flow.session.calls)
+    await flow.feed(callback="apps_admin_menu_add", panel_id=panel_id)
+    assert await flow.state().get_state() == "AdminStates:apps_add_app_id"
+    assert not any(isinstance(call, SendMessage) for call in flow.session.calls[before:])

@@ -39,16 +39,16 @@ class AdminsRepository:
         elif session.get_bind().dialect.name == "sqlite":
             await session.execute(text("BEGIN IMMEDIATE"))
 
-    async def _authorize(self, session, actor_id):
+    def _authorize(self, actor_id):
         telegram_user_id(actor_id)
-        if actor_id not in self.configured_ids and await session.get(AdminGrant, actor_id) is None:
-            raise PermissionError("Administrator access is required")
+        if actor_id not in self.configured_ids:
+            raise PermissionError("Configured administrator access is required")
 
     async def grant(self, actor_id: int, user_id: int) -> bool:
+        self._authorize(actor_id)
         telegram_user_id(user_id)
         async with self._session_factory()() as session, session.begin():
             await self._lock(session)
-            await self._authorize(session, actor_id)
             if user_id in self.configured_ids:
                 return False
             statement = conflict_insert(session, AdminGrant).values(
@@ -58,10 +58,10 @@ class AdminsRepository:
             return result.scalar_one_or_none() is not None
 
     async def revoke(self, actor_id: int, user_id: int) -> bool:
+        self._authorize(actor_id)
         telegram_user_id(user_id)
         async with self._session_factory()() as session, session.begin():
             await self._lock(session)
-            await self._authorize(session, actor_id)
             if user_id in self.configured_ids:
                 raise ValueError("Configured administrators cannot be revoked")
             if user_id == actor_id:
