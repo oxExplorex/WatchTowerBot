@@ -459,7 +459,7 @@ async def test_only_start_opens_panel_and_other_commands_do_not_enter_wizards(se
     await flow.feed(callback=CANCEL_CALLBACK)
     assert await flow.state().get_state() is None
     await flow.feed(callback="panel:home")
-    assert flow.session.calls[-2].reply_markup.inline_keyboard
+    assert next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText)).reply_markup.inline_keyboard
 
 
 @pytest.mark.asyncio
@@ -479,9 +479,13 @@ async def test_start_sends_one_inline_menu_and_removes_legacy_keyboard_notice(se
     assert not any(isinstance(call, EditMessageText) for call in flow.session.calls)
 
     await flow.feed(content="/start")
-    assert isinstance(flow.session.calls[-1], EditMessageText)
-    assert flow.session.calls[-1].message_id == panel_id
-    assert sum(isinstance(call, SendMessage) and call.text == START_MESSAGE_TEXT for call in flow.session.calls) == 1
+    new_panel_id = (await flow.state().get_data())["panel_message_id"]
+    assert new_panel_id != panel_id
+    assert (1001, panel_id) not in flow.session.messages
+    assert sum(isinstance(call, SendMessage) and call.text == START_MESSAGE_TEXT for call in flow.session.calls) == 2
+    # An immediate third /start must also produce visible feedback.
+    await flow.feed(content="/start")
+    assert sum(isinstance(call, SendMessage) and call.text == START_MESSAGE_TEXT for call in flow.session.calls) == 3
 
 
 @pytest.mark.asyncio
@@ -505,6 +509,37 @@ async def test_start_still_opens_inline_menu_when_legacy_notice_cannot_be_delete
 
 
 @pytest.mark.asyncio
+async def test_secret_settings_show_status_without_requesting_secret(setup_flow):
+    import time
+    from callbacks.personal_secret import STATUS_CALLBACK
+    from core.personal_crypto import create_key_bundle
+    from data.texts import personal_secret as text
+    flow = setup_flow
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
+    until = int(time.time()) + 600
+    await flow.state().update_data(personal_verified_until=until)
+    await flow.feed(callback=STATUS_CALLBACK)
+    assert await flow.state().get_state() is None
+    assert (await flow.state().get_data())["personal_verified_until"] == until
+    panel = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
+    assert panel.text == text.STATUS_CONFIGURED
+    assert not any(isinstance(call, SendMessage) and call.text == text.INPUT_PROMPT for call in flow.session.calls)
+
+
+@pytest.mark.asyncio
+async def test_stats_button_is_acknowledged_before_collecting_data(setup_flow, monkeypatch):
+    from core.personal_crypto import create_key_bundle
+    flow = setup_flow
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
+    async def inspect(*args, **kwargs):
+        assert isinstance(flow.session.calls[-1], AnswerCallbackQuery)
+    collect = AsyncMock(side_effect=inspect)
+    monkeypatch.setattr(flow.settings, "_send_stats", collect)
+    await flow.feed(callback="panel:stats:own")
+    collect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_latest_log_button_streams_existing_file_and_denies_granted_admin(setup_flow, monkeypatch, tmp_path):
     from core.personal_crypto import create_key_bundle
     from aiogram.types import FSInputFile
@@ -516,13 +551,13 @@ async def test_latest_log_button_streams_existing_file_and_denies_granted_admin(
     for owner in (1001, 2002):
         await flow.keys.install(owner, create_key_bundle(owner, f"Личныйсекрет{owner}"))
     await flow.feed(callback="panel:settings")
-    assert "set:logs:last" in str(flow.session.calls[-2].reply_markup)
+    assert "set:logs:last" in str(next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText)).reply_markup)
     await flow.feed(callback="set:logs:last")
     document = flow.session.calls[-1]
     assert isinstance(document, SendDocument) and isinstance(document.document, FSInputFile)
     assert document.document.path == path and document.document.filename == "latest.txt"
     await flow.feed(2002, callback="panel:settings")
-    assert "set:logs:last" not in str(flow.session.calls[-2].reply_markup)
+    assert "set:logs:last" not in str(next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText)).reply_markup)
     start = len(flow.session.calls)
     await flow.feed(2002, callback="set:logs:last")
     assert not any(isinstance(call, SendDocument) for call in flow.session.calls[start:])
@@ -547,7 +582,9 @@ async def test_stats_are_one_chart_panel_and_home_removes_the_old_photo(setup_fl
     assert replacement != panel_id and (1001, panel_id) not in flow.session.messages
     assert len(flow.session.messages) == 1
     await flow.feed(content="/start")
-    assert flow.session.calls[-1].message_id == replacement
+    previous = replacement
+    replacement = (await flow.state().get_data())["panel_message_id"]
+    assert replacement != previous and (1001, previous) not in flow.session.messages
     # Telegram captions have a hard limit, including when counters and errors grow.
     monkeypatch.setattr(flow.settings, "get_accounts_overview", AsyncMock(return_value={
         name: 9_000_000_000_000_000_000 for name in ("own_active", "own_total", "all_active", "all_total")}))
@@ -557,7 +594,7 @@ async def test_stats_are_one_chart_panel_and_home_removes_the_old_photo(setup_fl
     monkeypatch.setattr(flow.settings, "get_admin_health_events", AsyncMock(return_value=[
         SimpleNamespace(date=1, reason="synthetic" * 30, status=0), SimpleNamespace(date=2, reason="synthetic" * 30, status=0)]))
     await flow.feed(callback="panel:stats:own", panel_id=replacement)
-    assert len(flow.session.calls[-2].media.caption) < 1024
+    assert len(next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageMedia)).media.caption) < 1024
 
 
 @pytest.mark.asyncio

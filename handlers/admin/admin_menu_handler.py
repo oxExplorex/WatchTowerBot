@@ -17,8 +17,8 @@ router = Router(name=__name__)
 @router.message(IsPrivate(), IsAdmin(), CommandStart(), StateFilter("*"))
 async def start_user_handler(message: Message, state: FSMContext):
     await close_state_pyrogram_client(state)
-    await clear_panel_state(state)
     data = await state.get_data()
+    await clear_panel_state(state)
     if type(data.get("panel_message_id")) is not int:
         # Telegram cannot edit a message sent with ReplyKeyboardRemove into an
         # inline menu. Remove legacy keyboards with a separate transient message.
@@ -28,7 +28,14 @@ async def start_user_handler(message: Message, state: FSMContext):
             await notice.delete()
         except TelegramBadRequest:
             pass  # A failed cleanup must not prevent opening the actual menu.
-    await edit_input_panel(message, state, constant_text.START_MESSAGE_TEXT, static_admin_keyboard())
+    panel = await message.answer(constant_text.START_MESSAGE_TEXT, reply_markup=static_admin_keyboard(), parse_mode="HTML")
+    await remember_panel(state, panel)
+    previous = data.get("panel_message_id")
+    if type(previous) is int and previous != panel.message_id:
+        try:
+            await message.bot.delete_message(message.chat.id, previous)
+        except TelegramBadRequest:
+            pass
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "noop", StateFilter("*"))
@@ -38,11 +45,11 @@ async def noop_callback_handler(call: CallbackQuery):
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "panel:home", StateFilter("*"))
 async def main_menu_handler(call: CallbackQuery, state: FSMContext):
+    await call.answer()
     await close_state_pyrogram_client(state)
     await clear_panel_state(state)
     panel = await edit_panel(call.message, constant_text.START_MESSAGE_TEXT, static_admin_keyboard())
     await remember_panel(state, panel or call.message)
-    await call.answer()
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "back_delete", StateFilter("*"))

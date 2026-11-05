@@ -13,7 +13,7 @@ from data.texts.topics import ENABLE_TOPICS
 from db.main import get_admin_ids, get_user_timezone_offset
 from db.repositories.topics_repo import TopicsRepository
 from db.session import get_session_factory
-from services.notification_topics import delivery
+from services.notification_topics import delivery, prepare_notification_topics
 
 TOPICS_IMAGE = Path(__file__).resolve().parents[1] / "assets/threaded-mode.png"
 
@@ -69,8 +69,12 @@ async def remind_missing_topics(bot, *, now=None, repository=None):
 
 
 async def run_topic_reminders(bot):
+    next_preparation = 0
     while True:
         try:
+            if time.monotonic() >= next_preparation:
+                await prepare_notification_topics(bot)
+                next_preparation = time.monotonic() + 300
             await remind_missing_topics(bot)
         except Exception as error:
             bot_logger.warning("Topic reminders unavailable: %s", type(error).__name__)

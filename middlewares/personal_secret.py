@@ -4,7 +4,7 @@ import time
 from aiogram import BaseMiddleware
 from aiogram.types import InaccessibleMessage
 
-from callbacks.personal_secret import CANCEL_CALLBACK, SETUP_CALLBACK, VERIFY_CALLBACK
+from callbacks.personal_secret import CANCEL_CALLBACK, SETUP_CALLBACK, VERIFY_CALLBACK, STATUS_CALLBACK
 from data.texts import personal_secret as texts
 from data.texts import account_ownership as ownership_text
 from data.texts.personal_secret import CONFIRM_PROMPT, INPUT_PROMPT, PROMPT
@@ -113,6 +113,16 @@ class PersonalSecretMiddleware(BaseMiddleware):
                 current = None
         if update.message is not None and current in SECRET_STATES:
             await self.dialog.handle_input(message, state, owner_id, key, current)
+            return None
+        if callback == STATUS_CALLBACK:
+            until = (await state.get_data()).get("personal_verified_until", 0)
+            await self.dialog.clear_prompt(message, state)
+            await state.clear()
+            if until > int(time.time()):
+                await state.update_data(personal_verified_until=until)
+            await call.answer()
+            await edit_panel(message, texts.STATUS_CONFIGURED if key is not None else PROMPT,
+                             navigation_keyboard("panel:settings") if key is not None else setup_keyboard())
             return None
         if callback in {SETUP_CALLBACK, VERIFY_CALLBACK}:
             if call:

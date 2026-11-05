@@ -61,7 +61,7 @@ async def _cleanup_session_files(session_name: str) -> None:
     await discard_session_files(session_name)
 
 
-async def _save_authorized_session(data: dict, result, owner_id: int, *, update_profile: bool = False) -> None:
+async def _save_authorized_session(data: dict, result, owner_id: int, *, update_profile: bool = False, bot=None) -> None:
     number = data["number"]
     temporary_name = data["temp_session_name"]
     final_name = f"data/session/{number}"
@@ -100,6 +100,10 @@ async def _save_authorized_session(data: dict, result, owner_id: int, *, update_
                 except Exception as exc:
                     bot_logger.error("Failed to restore previous client: %s", type(exc).__name__)
             raise
+    if bot is not None:
+        from services.notification_topics import schedule_topic_preparation
+
+        schedule_topic_preparation(bot, owner_id, result.id)
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("account_admin_menu_add:"), StateFilter("*"))
@@ -247,7 +251,7 @@ async def receive_account_code_handler(message: Message, state: FSMContext):
             phone_code=code,
         )
         await auth_clients.disconnect(app_temp)
-        await _save_authorized_session(data, result, user_id)
+        await _save_authorized_session(data, result, user_id, bot=message.bot)
         await _show_auth(message, state, constant_text.SUCCESS_ADD_ACCOUNT_TEXT)
         await clear_panel_state(state)
     except SessionPasswordNeeded:
@@ -289,7 +293,7 @@ async def receive_account_password_handler(message: Message, state: FSMContext):
     try:
         result = await app_temp.check_password(password)
         await auth_clients.disconnect(app_temp)
-        await _save_authorized_session(data, result, user_id, update_profile=True)
+        await _save_authorized_session(data, result, user_id, update_profile=True, bot=message.bot)
 
         await _show_auth(message, state, constant_text.SUCCESS_ADD_ACCOUNT_TEXT)
         await clear_panel_state(state)

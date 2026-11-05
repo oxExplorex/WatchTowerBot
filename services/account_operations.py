@@ -92,6 +92,9 @@ async def _transfer(bot, operation, private_key):
                     break
             await asyncio.sleep(0.1)
         await _activate(operation, client)
+        from services.notification_topics import schedule_topic_preparation
+
+        schedule_topic_preparation(bot, operation.actor_id, operation.account_user_id)
     except BaseException as error:
         await repository.pause(operation.uuid, operation.run_token, type(error).__name__)
         if stopped and not published and client is not None and not isinstance(error, asyncio.CancelledError):

@@ -1,5 +1,6 @@
 """Prefer private-chat topics; retain ordinary delivery when unavailable."""
 import time
+import asyncio
 from collections import OrderedDict
 
 from aiogram.exceptions import TelegramBadRequest
@@ -17,6 +18,7 @@ class TopicDelivery:
         self._enabled = None
         self._checked_until = 0
         self._creation_backoff = OrderedDict()
+        self._topic_retry_until = 0
 
     async def enabled(self):
         if time.monotonic() < self._checked_until:
@@ -42,18 +44,26 @@ class TopicDelivery:
                 await self.repository.save(self.bot.id, owner_id, key, thread_id)
             return thread_id
 
-    async def send(self, method, owner_id, key, title, **kwargs):
+    async def ensure_thread(self, owner_id, key, title):
         thread_id = None
         identity = (owner_id, key)
+        if time.monotonic() < self._topic_retry_until:
+            return await self.repository.get(self.bot.id, owner_id, key)
         if await self.enabled() and self._creation_backoff.get(identity, 0) <= time.monotonic():
             try:
                 thread_id = await self._thread(owner_id, key, title)
             except Exception as error:
+                if getattr(error, "retry_after", 0):
+                    self._topic_retry_until = time.monotonic() + error.retry_after
                 self._creation_backoff[identity] = time.monotonic() + max(60, getattr(error, "retry_after", 0))
                 self._creation_backoff.move_to_end(identity)
                 if len(self._creation_backoff) > 1024:
                     self._creation_backoff.popitem(last=False)
                 bot_logger.warning("Topic creation unavailable; using private chat: %s", type(error).__name__)
+        return thread_id
+
+    async def send(self, method, owner_id, key, title, **kwargs):
+        thread_id = await self.ensure_thread(owner_id, key, title)
         if thread_id is None:
             return await method(chat_id=owner_id, **kwargs)
         try:
@@ -89,3 +99,38 @@ async def send_account_log(bot, owner_id, account_user_id, text, **kwargs):
 
 async def send_spoiler(bot, method, owner_id, **kwargs):
     return await delivery(bot).send(method, owner_id, "spoiler", "spoiler", **kwargs)
+
+
+async def prepare_notification_topics(bot, *, owner_id=None, account_user_id=None):
+    """Prepare destinations without holding a user's FSM lock or sending log text."""
+    from db.main import get_account_all, get_admin_ids
+
+    service = delivery(bot)
+    if await service.enabled() is not True:
+        return
+    if owner_id is not None:
+        owners = {owner_id: {account_user_id} if account_user_id is not None else set()}
+    else:
+        owners = {user_id: set() for user_id in await get_admin_ids()}
+        for account in await get_account_all(active_only=False):
+            if account.admin_id is not None and account.user_id is not None:
+                owners.setdefault(account.admin_id, set()).add(account.user_id)
+    for owner, accounts in owners.items():
+        for key, title in [("spoiler", "spoiler"), *[(f"account:{user_id}", str(user_id)) for user_id in sorted(accounts)]]:
+            try:
+                # Existing destinations require no Telegram API request.
+                if await service.repository.get(bot.id, owner, key) is not None:
+                    continue
+                await service.ensure_thread(owner, key, title)
+                if time.monotonic() < service._topic_retry_until:
+                    return
+            except Exception as error:
+                bot_logger.warning("Topic preparation deferred: %s", type(error).__name__)
+            await asyncio.sleep(0.2)
+
+
+def schedule_topic_preparation(bot, owner_id, account_user_id):
+    from core.async_tools import create_logged_task
+
+    create_logged_task(prepare_notification_topics(bot, owner_id=owner_id, account_user_id=account_user_id),
+                       name=f"notification_topics:{owner_id}:{account_user_id}")

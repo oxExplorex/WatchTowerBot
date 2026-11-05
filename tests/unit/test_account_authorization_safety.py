@@ -91,6 +91,7 @@ async def test_cancelled_save_also_restores_session(authorization, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_successful_reauthorization_saves_account_and_promotes_session(db_main, authorization, monkeypatch):
+    from services import notification_topics
     module = authorization
     await db_main.create_app_tg(1001, 12345, "synthetic", "app")
     apps, _ = await db_main.get_app_tg_user_id(1001)
@@ -101,7 +102,11 @@ async def test_successful_reauthorization_saves_account_and_promotes_session(db_
     monkeypatch.setattr(module, "create_unit_of_work", db_main.create_unit_of_work)
     data = {"number": "79000000001", "temp_session_name": "data/session/temporary", "uuid_app": apps[0].uuid}
     result = types.SimpleNamespace(id=9001, username="new_user", full_name="New User")
-    await module._save_authorized_session(data, result, 1001, update_profile=True)
+    prepare = Mock()
+    monkeypatch.setattr(notification_topics, "schedule_topic_preparation", prepare)
+    bot = types.SimpleNamespace(id=123456)
+    await module._save_authorized_session(data, result, 1001, update_profile=True, bot=bot)
+    prepare.assert_called_once_with(bot, 1001, 9001)
     assert Path("data/session/79000000001.session").read_bytes() == b"authorized"
     assert (await db_main.get_account_by_number("79000000001")).user_id == 9001
     assert (await db_main.get_user(9001)).username == "new_user"

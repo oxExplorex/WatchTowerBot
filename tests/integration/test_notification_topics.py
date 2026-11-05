@@ -26,6 +26,53 @@ def fake_bot(enabled):
 
 
 @pytest.mark.asyncio
+async def test_startup_prepares_all_account_and_spoiler_topics_without_waiting_for_logs(db_main, monkeypatch):
+    from services.notification_topics import TopicDelivery, prepare_notification_topics
+    bot = fake_bot(True)
+    bot._watchtower_topic_delivery = TopicDelivery(bot, TopicsRepository(db_main.get_session_factory))
+    monkeypatch.setattr(db_main, "get_admin_ids", AsyncMock(return_value=[1001, 2002]))
+    accounts = [SimpleNamespace(admin_id=1001, user_id=456), SimpleNamespace(admin_id=1001, user_id=789)]
+    monkeypatch.setattr(db_main, "get_account_all", AsyncMock(return_value=accounts))
+    await prepare_notification_topics(bot)
+    assert {(c.kwargs["chat_id"], c.kwargs["name"]) for c in bot.create_forum_topic.call_args_list} == {
+        (1001, "456"), (1001, "789"), (1001, "spoiler"), (2002, "spoiler")}
+    bot.send_message.assert_not_awaited()
+    await prepare_notification_topics(bot)
+    assert bot.create_forum_topic.await_count == 4
+    await prepare_notification_topics(bot, owner_id=2002, account_user_id=999)
+    assert bot.create_forum_topic.await_count == 5
+    assert bot.create_forum_topic.call_args.kwargs == dict(chat_id=2002, name="999")
+
+
+@pytest.mark.asyncio
+async def test_preparation_respects_disabled_mode_and_flood_backoff(db_main):
+    from services.notification_topics import TopicDelivery, prepare_notification_topics
+    bot = fake_bot(False)
+    bot._watchtower_topic_delivery = service = TopicDelivery(bot, TopicsRepository(db_main.get_session_factory))
+    await prepare_notification_topics(bot, owner_id=1001, account_user_id=456)
+    bot.create_forum_topic.assert_not_awaited()
+    bot.get_me.return_value.has_topics_enabled = True
+    service._checked_until = 0
+    bot.create_forum_topic.side_effect = TelegramRetryAfter(
+        method=CreateForumTopic(chat_id=1001, name="spoiler"), message="flood", retry_after=120)
+    await prepare_notification_topics(bot, owner_id=1001, account_user_id=456)
+    await prepare_notification_topics(bot, owner_id=1001, account_user_id=456)
+    assert bot.create_forum_topic.await_count == 1  # FloodWait pauses creation of every destination.
+
+
+@pytest.mark.asyncio
+async def test_topic_worker_prepares_before_first_reminder(offline_module):
+    module = offline_module("aiotask/topic_reminder.py")
+    prepared = AsyncMock()
+    module.prepare_notification_topics = prepared
+    module.remind_missing_topics = AsyncMock(side_effect=asyncio.CancelledError)
+    bot = SimpleNamespace()
+    with pytest.raises(asyncio.CancelledError):
+        await module.run_topic_reminders(bot)
+    prepared.assert_awaited_once_with(bot)
+
+
+@pytest.mark.asyncio
 async def test_topics_are_scoped_persistent_and_created_once_for_concurrent_events(db_main):
     from services.notification_topics import TopicDelivery
 
@@ -110,6 +157,18 @@ async def test_topic_creation_flood_wait_falls_back_without_repeated_creation(db
     bot.create_forum_topic.assert_awaited_once()
     assert bot.send_message.await_count == 2
     assert all("message_thread_id" not in call.kwargs for call in bot.send_message.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_creation_pause_does_not_disable_existing_topics(db_main):
+    from services.notification_topics import TopicDelivery
+    bot = fake_bot(True)
+    service = TopicDelivery(bot, TopicsRepository(db_main.get_session_factory))
+    await service.send(bot.send_message, 1001, "account:456", "456", text="before")
+    service._topic_retry_until = float("inf")
+    await service.send(bot.send_message, 1001, "account:456", "456", text="during pause")
+    assert bot.send_message.call_args.kwargs["message_thread_id"] == 1
+    bot.create_forum_topic.assert_awaited_once()
 
 
 @pytest.mark.asyncio

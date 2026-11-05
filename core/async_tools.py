@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import Any
@@ -49,7 +50,13 @@ def tracked_job(function: Callable[..., Awaitable[Any]]):
 
 @tracked_job
 async def track_update_task(handler, event, data):
-    return await handler(event, data)
+    started = time.monotonic()
+    try:
+        return await handler(event, data)
+    finally:
+        elapsed = time.monotonic() - started
+        if elapsed >= 2:
+            bot_logger.warning("Slow bot update: update_id=%s elapsed=%.2fs", getattr(event, "update_id", None), elapsed)
 
 
 async def cancel_logged_tasks() -> None:

@@ -3,7 +3,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import data.text as constant_text
-from callbacks.personal_secret import SETUP_CALLBACK
+from callbacks.personal_secret import STATUS_CALLBACK
 from data.texts.personal_secret import MENU_BUTTON as SECRET_BUTTON
 from utils.settings_formatting import auto_update_label, proxy_status_label, tz_offset_label
 from keyboards.inline.navigation import with_navigation
@@ -28,7 +28,7 @@ def settings_keyboard(tz_offset: int, auto_update: int, proxy_cfg: dict, has_upd
         )
     )
 
-    keyboard.row(InlineKeyboardButton(text=SECRET_BUTTON, callback_data=SETUP_CALLBACK))
+    keyboard.row(InlineKeyboardButton(text=SECRET_BUTTON, callback_data=STATUS_CALLBACK))
     if can_export_logs:
         keyboard.row(InlineKeyboardButton(text=LOG_BUTTON, callback_data="set:logs:last"))
 

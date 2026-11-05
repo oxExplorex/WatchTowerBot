@@ -386,6 +386,7 @@ async def set_auto_update_handler(call: CallbackQuery, state: FSMContext):
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:tz:open", StateFilter("*"))
 async def open_timezone_menu_handler(call: CallbackQuery, state: FSMContext):
+    await call.answer()
     await state.clear()
 
     current_offset = await get_user_timezone_offset(call.from_user.id)
@@ -440,16 +441,16 @@ async def set_timezone_handler(call: CallbackQuery, state: FSMContext):
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:back", StateFilter("*"))
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "panel:settings", StateFilter("*"))
 async def back_to_settings_handler(call: CallbackQuery, state: FSMContext):
+    await call.answer()
     await state.clear()
     await _safe_edit_settings(call)
-    await call.answer()
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.in_({"panel:stats:own", "panel:stats:all"}), StateFilter("*"))
 async def open_stats_callback(call: CallbackQuery, state: FSMContext):
+    await call.answer()
     await state.clear()
     await _send_stats(call.message, admin_only=call.data.endswith(":own"), admin_id=call.from_user.id, edit=True, state=state)
-    await call.answer()
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:reboot", StateFilter("*"))
