@@ -58,6 +58,7 @@ from utils.panel import chart_panel, edit_panel, remember_panel
 from utils.runtime_chart import render_runtime_chart
 from core.session_runtime import is_session_running
 from services.log_export import latest_log_file
+from services.notification_topics import send_log_file
 from data.texts import logs as log_text
 from keyboards.main.start_keyboard import static_admin_keyboard
 
@@ -359,7 +360,8 @@ async def send_latest_log_handler(call: CallbackQuery, state: FSMContext):
         return
     filename = path.with_suffix(".txt").name
     caption = log_text.CAPTION.format(filename=html.quote(filename))
-    await call.message.answer_document(FSInputFile(path, filename=filename), caption=caption, parse_mode="HTML")
+    await send_log_file(call.bot, call.from_user.id, document=FSInputFile(path, filename=filename),
+                        caption=caption, parse_mode="HTML")
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:proxy:disable", StateFilter("*"))

@@ -9,7 +9,7 @@ from core.account_runtime import account_guard
 from core.logging import bot_logger
 from db.repositories.topics_repo import TopicsRepository
 from db.session import get_session_factory
-from data.texts.topics import MENU_TITLE
+from data.texts.topics import LOGS_TITLE, MENU_TITLE
 
 
 class TopicDelivery:
@@ -102,6 +102,10 @@ async def send_spoiler(bot, method, owner_id, **kwargs):
     return await delivery(bot).send(method, owner_id, "spoiler", "spoiler", **kwargs)
 
 
+async def send_log_file(bot, owner_id, **kwargs):
+    return await delivery(bot).send(bot.send_document, owner_id, "logs", LOGS_TITLE, **kwargs)
+
+
 async def send_menu(bot, owner_id):
     from data.texts.common import START_MESSAGE_TEXT
     from keyboards.main.start_keyboard import static_admin_keyboard
@@ -112,7 +116,7 @@ async def send_menu(bot, owner_id):
 
 async def prepare_notification_topics(bot, *, owner_id=None, account_user_id=None):
     """Prepare destinations without holding a user's FSM lock or sending log text."""
-    from db.main import get_account_all, get_admin_ids
+    from db.main import get_account_all, get_admin_ids, get_configured_admin_ids
 
     service = delivery(bot)
     if await service.enabled() is not True:
@@ -124,8 +128,13 @@ async def prepare_notification_topics(bot, *, owner_id=None, account_user_id=Non
         for account in await get_account_all(active_only=False):
             if account.admin_id is not None and account.user_id is not None:
                 owners.setdefault(account.admin_id, set()).add(account.user_id)
+    configured_admins = set(get_configured_admin_ids())
     for owner, accounts in owners.items():
-        for key, title in [("menu", MENU_TITLE), ("spoiler", "spoiler"), *[(f"account:{user_id}", str(user_id)) for user_id in sorted(accounts)]]:
+        topics = [("menu", MENU_TITLE), ("spoiler", "spoiler")]
+        if owner in configured_admins:
+            topics.append(("logs", LOGS_TITLE))
+        topics.extend((f"account:{user_id}", str(user_id)) for user_id in sorted(accounts))
+        for key, title in topics:
             try:
                 async with account_guard(("topic-preparation", bot.id, owner, key)):
                     # Existing destinations require no Telegram API request.

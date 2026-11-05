@@ -567,10 +567,12 @@ async def test_stats_button_is_acknowledged_before_collecting_data(setup_flow, m
 
 
 @pytest.mark.asyncio
-async def test_latest_log_button_streams_existing_file_and_denies_granted_admin(setup_flow, monkeypatch, tmp_path):
+@pytest.mark.parametrize("topics", [False, True])
+async def test_latest_log_button_streams_to_log_topic_and_denies_granted_admin(setup_flow, monkeypatch, tmp_path, topics):
     from core.personal_crypto import create_key_bundle
     from aiogram.types import FSInputFile
     flow = setup_flow
+    flow.bot.get_me.return_value.has_topics_enabled = topics
     path = tmp_path / "latest.log"
     path.write_text("синтетический лог", encoding="utf-8")
     monkeypatch.setattr(flow.settings, "latest_log_file", lambda: path)
@@ -579,15 +581,27 @@ async def test_latest_log_button_streams_existing_file_and_denies_granted_admin(
         await flow.keys.install(owner, create_key_bundle(owner, f"Личныйсекрет{owner}"))
     await flow.feed(callback="panel:settings")
     assert "set:logs:last" in str(next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText)).reply_markup)
-    await flow.feed(callback="set:logs:last")
+    await flow.feed(callback="set:logs:last", thread_id=77 if topics else None)
     document = flow.session.calls[-1]
     assert isinstance(document, SendDocument) and isinstance(document.document, FSInputFile)
     assert document.document.path == path and document.document.filename == "latest.txt"
+    if topics:
+        from db.repositories.topics_repo import TopicsRepository
+        thread_id = await TopicsRepository(flow.db.get_session_factory).get(flow.bot.id, 1001, "logs")
+        assert document.message_thread_id == thread_id and thread_id != 77
+        assert any(isinstance(call, CreateForumTopic) and call.name == "Логи" for call in flow.session.calls)
+        await flow.feed(callback="set:logs:last", thread_id=77)
+        assert flow.session.calls[-1].message_thread_id == thread_id
+        assert sum(isinstance(call, CreateForumTopic) for call in flow.session.calls) == 1
+    else:
+        assert document.message_thread_id is None
+        assert not any(isinstance(call, CreateForumTopic) for call in flow.session.calls)
     await flow.feed(2002, callback="panel:settings")
     assert "set:logs:last" not in str(next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText)).reply_markup)
     start = len(flow.session.calls)
     await flow.feed(2002, callback="set:logs:last")
     assert not any(isinstance(call, SendDocument) for call in flow.session.calls[start:])
+    assert not any(isinstance(call, CreateForumTopic) for call in flow.session.calls[start:])
     assert path.read_text(encoding="utf-8") == "синтетический лог"
 
 

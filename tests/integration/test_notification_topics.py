@@ -26,23 +26,25 @@ def fake_bot(enabled):
 
 
 @pytest.mark.asyncio
-async def test_startup_prepares_all_account_and_spoiler_topics_without_waiting_for_logs(db_main, monkeypatch):
+async def test_startup_prepares_topics_including_server_logs_only_for_configured_admins(db_main, monkeypatch):
     from services.notification_topics import TopicDelivery, prepare_notification_topics
     bot = fake_bot(True)
     bot._watchtower_topic_delivery = TopicDelivery(bot, TopicsRepository(db_main.get_session_factory))
     monkeypatch.setattr(db_main, "get_admin_ids", AsyncMock(return_value=[1001, 2002]))
+    monkeypatch.setattr(db_main, "get_configured_admin_ids", lambda: [1001])
     accounts = [SimpleNamespace(admin_id=1001, user_id=456), SimpleNamespace(admin_id=1001, user_id=789)]
     monkeypatch.setattr(db_main, "get_account_all", AsyncMock(return_value=accounts))
     await prepare_notification_topics(bot)
     assert {(c.kwargs["chat_id"], c.kwargs["name"]) for c in bot.create_forum_topic.call_args_list} == {
-        (1001, "456"), (1001, "789"), (1001, "spoiler"), (2002, "spoiler"), (1001, "Меню"), (2002, "Меню")}
+        (1001, "456"), (1001, "789"), (1001, "spoiler"), (2002, "spoiler"), (1001, "Меню"), (2002, "Меню"),
+        (1001, "Логи")}
     assert bot.send_message.await_count == 2
     assert all(call.kwargs["reply_markup"].inline_keyboard for call in bot.send_message.call_args_list)
     await prepare_notification_topics(bot)
-    assert bot.create_forum_topic.await_count == 6
+    assert bot.create_forum_topic.await_count == 7
     assert bot.send_message.await_count == 2
     await prepare_notification_topics(bot, owner_id=2002, account_user_id=999)
-    assert bot.create_forum_topic.await_count == 7
+    assert bot.create_forum_topic.await_count == 8
     assert bot.create_forum_topic.call_args.kwargs == dict(chat_id=2002, name="999")
 
 
