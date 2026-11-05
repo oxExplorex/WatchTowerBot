@@ -4,7 +4,7 @@ import time
 from aiogram import F, Router, html
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
 import data.text as constant_text
 from data.config import GEMINI_KEY
@@ -16,6 +16,9 @@ from db.main import (
     disable_user_gemini_proxy,
     get_accounts_overview,
     get_archive_statistics,
+    get_configured_admin_ids,
+    get_account_all,
+    get_runtime_health,
     get_admin_health_events,
     get_all_health_events,
     get_latest_admin_health_event,
@@ -33,15 +36,11 @@ from filters.all_filters import IsAdmin, IsPrivate
 from aiotask.update_notifier import release_update_run, try_acquire_update_run
 from handlers.admin.proxy_manager.proxy_checker import check_proxy_now
 from utils.settings_formatting import (
-    auto_update_label,
-    build_daily_rows_desc,
-    build_hourly_rows_desc,
     gemini_runtime_label,
     minutes_ago,
     parser_runtime_label,
     proxy_status_label,
     recent_failures,
-    success_percent,
     timezone_rows_text,
     tz_full_label,
     tz_offset_label,
@@ -55,7 +54,11 @@ from utils.proxy_utils import compact_proxy_display, normalize_http_proxy_input
 
 from keyboards.inline.settings import settings_keyboard, timezone_keyboard, update_notice_close_keyboard
 from keyboards.inline.navigation import navigation_keyboard
-from utils.panel import edit_panel
+from utils.panel import chart_panel, edit_panel, remember_panel
+from utils.runtime_chart import render_runtime_chart
+from core.session_runtime import is_session_running
+from services.log_export import latest_log_file
+from data.texts import logs as log_text
 from keyboards.main.start_keyboard import static_admin_keyboard
 
 router = Router(name=__name__)
@@ -93,55 +96,49 @@ async def _get_cached_version_state() -> tuple[str, int, str | None]:
     return await get_version_state_cache(default_state=constant_text.VERSION_STATE_UNKNOWN)
 
 
-async def _send_stats(message: Message, admin_only: bool, *, admin_id=None, edit=False) -> None:
+async def _send_stats(message: Message, admin_only: bool, *, admin_id=None, edit=False, state=None) -> None:
     admin_id = message.from_user.id if admin_id is None else admin_id
     overview = await get_accounts_overview(admin_id)
     archive = await get_archive_statistics(admin_id)
+    running = {"own_running": 0, "all_running": 0}
+    for account in await get_account_all(active_only=True):
+        if await is_session_running(account.number):
+            running["all_running"] += 1
+            running["own_running"] += int(account.admin_id == admin_id)
 
     tz_offset = await get_user_timezone_offset(admin_id)
     dt = DateTime(tz_offset)
 
     now_ts = int(time.time())
-    since_24h = now_ts - 60 * 60 * 24
     since_14d = now_ts - 60 * 60 * 24 * 14
 
     if admin_only:
-        events_24h = await get_admin_health_events(admin_id, since_24h)
         events_14d = await get_admin_health_events(admin_id, since_14d)
         title = f"{constant_text.STATS_TITLE_OWN} ({tz_offset_label(tz_offset)})"
     else:
-        events_24h = await get_all_health_events(since_24h)
         events_14d = await get_all_health_events(since_14d)
         title = f"{constant_text.STATS_TITLE_GLOBAL} ({tz_offset_label(tz_offset)})"
 
-    fail_24h = sum(1 for x in events_24h if int(x.status) == 0)
-    fail_14d = sum(1 for x in events_14d if int(x.status) == 0)
+    observations = await get_runtime_health(admin_id if admin_only else 0, since_14d)
+    image = await asyncio.to_thread(render_runtime_chart, observations, tz_offset, now_ts)
 
-    success_24h = success_percent(events_24h)
-    success_14d = success_percent(events_14d)
-
-    by_hour_text = "\n".join(build_hourly_rows_desc(events_24h, hours=24, dt=dt))
-    by_day_text = "\n".join(build_daily_rows_desc(events_14d, days=14, dt=dt))
-
-    content = constant_text.STATS_TEXT.format(
+    values = dict(
             title=title,
             own_active=overview["own_active"],
             own_total=overview["own_total"],
             all_active=overview["all_active"],
             all_total=overview["all_total"],
+            **running,
             **{f"archive_{key}": value for key, value in archive.items()},
-            success_24h=success_24h,
-            fail_24h=fail_24h,
-            success_14d=success_14d,
-            fail_14d=fail_14d,
-            by_hour_text=by_hour_text,
-            by_day_text=by_day_text,
-            recent_failures=recent_failures(events_14d, dt=dt, limit=5),
+            recent_failures=recent_failures(events_14d, dt=dt, limit=2),
         )
-    if edit:
-        await edit_panel(message, content, navigation_keyboard())
-    else:
-        await message.answer(content, reply_markup=navigation_keyboard())
+    content = constant_text.STATS_TEXT.format(**values)
+    if len(content) > 1024:
+        values["recent_failures"] = constant_text.STATS_RECENT_IN_ACCOUNT
+        content = constant_text.STATS_TEXT.format(**values)
+    panel = await chart_panel(message, image, content, navigation_keyboard(), edit=edit)
+    if state is not None and type(getattr(panel, "message_id", None)) is int:
+        await remember_panel(state, panel)
 
 
 async def _settings_text(admin_id: int) -> str:
@@ -189,7 +186,8 @@ async def _settings_inline(admin_id: int):
     _, _, latest_version = await _get_cached_version_state()
     has_update = bool(latest_version and is_newer_version(local_version, latest_version))
 
-    return settings_keyboard(tz_offset, auto_update, proxy_cfg, has_update)
+    return settings_keyboard(tz_offset, auto_update, proxy_cfg, has_update,
+                             can_export_logs=admin_id in get_configured_admin_ids())
 
 
 async def _safe_edit_settings(call: CallbackQuery, notice=None) -> None:
@@ -243,13 +241,13 @@ async def _run_update_flow(
 @router.message(IsPrivate(), IsAdmin(), F.text == constant_text.SETTINGS_BOT_KEYBOARD[0], StateFilter("*"))
 async def open_my_stats_handler(message: Message, state: FSMContext):
     await state.clear()
-    await _send_stats(message, admin_only=True)
+    await _send_stats(message, admin_only=True, state=state)
 
 
 @router.message(IsPrivate(), IsAdmin(), F.text == constant_text.SETTINGS_BOT_KEYBOARD[1], StateFilter("*"))
 async def open_global_stats_handler(message: Message, state: FSMContext):
     await state.clear()
-    await _send_stats(message, admin_only=False)
+    await _send_stats(message, admin_only=False, state=state)
 
 
 @router.message(IsPrivate(), IsAdmin(), F.text == constant_text.SETTINGS_BOT_KEYBOARD[2], StateFilter("*"))
@@ -346,6 +344,24 @@ async def check_proxy_from_settings_handler(call: CallbackQuery, state: FSMConte
     await _safe_edit_settings(call, notice)
 
 
+@router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:logs:last", StateFilter("*"))
+async def send_latest_log_handler(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in get_configured_admin_ids():
+        await call.answer(log_text.FORBIDDEN, show_alert=True)
+        return
+    await state.clear()
+    await call.answer(log_text.PREPARING)
+    try:
+        path = await asyncio.to_thread(latest_log_file)
+    except OSError as exc:
+        bot_logger.warning("Log export unavailable: %s", type(exc).__name__)
+        await _safe_edit_settings(call, log_text.UNAVAILABLE)
+        return
+    filename = path.with_suffix(".txt").name
+    caption = log_text.CAPTION.format(filename=html.quote(filename))
+    await call.message.answer_document(FSInputFile(path, filename=filename), caption=caption, parse_mode="HTML")
+
+
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:proxy:disable", StateFilter("*"))
 async def disable_proxy_from_settings_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -432,7 +448,7 @@ async def back_to_settings_handler(call: CallbackQuery, state: FSMContext):
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.in_({"panel:stats:own", "panel:stats:all"}), StateFilter("*"))
 async def open_stats_callback(call: CallbackQuery, state: FSMContext):
     await state.clear()
-    await _send_stats(call.message, admin_only=call.data.endswith(":own"), admin_id=call.from_user.id, edit=True)
+    await _send_stats(call.message, admin_only=call.data.endswith(":own"), admin_id=call.from_user.id, edit=True, state=state)
     await call.answer()
 
 

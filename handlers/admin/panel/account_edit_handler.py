@@ -29,7 +29,8 @@ from keyboards.inline.account_manage.account_edit_inline import account_edit_adm
 from keyboards.inline.account_manage.account_menu_inline import account_tg_admin_inline
 
 from utils.datetime_tools import DateTime
-from utils.settings_formatting import build_hourly_rows_desc
+from utils.settings_formatting import build_hourly_rows_desc, session_error_label
+from data.texts.runtime_status import ACCOUNT_LAST_ERROR
 from utils.panel import edit_panel
 
 router = Router(name=__name__)
@@ -153,6 +154,14 @@ async def _render_account_editor(call: CallbackQuery, account: Account) -> None:
         if account.is_active
         else constant_text.ACCOUNT_STATUS_DISABLED_TEXT
     )
+    latest = max(events_48h, key=lambda event: event.date, default=None)
+    if latest is not None and latest.reason == "not_running":
+        startup = max((event for event in events_48h if (event.reason or "").startswith("startup")),
+                      key=lambda event: event.date, default=None)
+        if startup is not None and startup.status == 0:
+            latest = startup
+    last_error = (ACCOUNT_LAST_ERROR.format(reason=html.quote(session_error_label(latest.reason)))
+                  if latest is not None and latest.status == 0 else "")
 
     await edit_panel(call.message,
         text=constant_text.ACCOUNT_EDIT_INFO_TEXT.format(
@@ -162,6 +171,7 @@ async def _render_account_editor(call: CallbackQuery, account: Account) -> None:
             api_hash=_spoil(app_tg.api_hash),
             last_update=_format_last_update(account.last_update, dt=dt),
             session_status=f"{state_text} | {status_runtime}",
+            last_error=last_error,
             hours_chart="\n".join(rows_48h),
             date=dt.time_strftime("%d.%m.%Y %H:%M:%S"),
         ),
@@ -318,6 +328,7 @@ async def account_check_handler(call: CallbackQuery, state: FSMContext):
         await add_account_health_event(account.uuid, account.admin_id, account.user_id, 1, now_ts, "manual_check")
         await call.answer(constant_text.ACCOUNT_SESSION_RESPONDS_TOAST)
     except SessionUnavailable:
+        await add_account_health_event(account.uuid, account.admin_id, account.user_id, 0, now_ts, "not_running")
         await call.answer(constant_text.ACCOUNT_SESSION_NOT_RUNNING_TOAST)
     except Exception as exc:
         await add_account_health_event(account.uuid, account.admin_id, account.user_id, 0, now_ts, exc.__class__.__name__)

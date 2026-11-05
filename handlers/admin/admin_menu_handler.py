@@ -1,4 +1,5 @@
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
@@ -8,7 +9,7 @@ from filters.all_filters import IsAdmin, IsPrivate
 from keyboards.main.start_keyboard import static_admin_keyboard
 
 from utils.others import close_state_pyrogram_client
-from utils.panel import edit_panel
+from utils.panel import clear_panel_state, edit_input_panel, edit_panel, remember_panel
 
 router = Router(name=__name__)
 
@@ -16,14 +17,18 @@ router = Router(name=__name__)
 @router.message(IsPrivate(), IsAdmin(), CommandStart(), StateFilter("*"))
 async def start_user_handler(message: Message, state: FSMContext):
     await close_state_pyrogram_client(state)
-    await state.clear()
-
-    panel = await message.answer(
-        text=constant_text.START_MESSAGE_TEXT,
-        reply_markup=ReplyKeyboardRemove(),
-        parse_mode="HTML",
-    )
-    await edit_panel(panel, constant_text.START_MESSAGE_TEXT, static_admin_keyboard())
+    await clear_panel_state(state)
+    data = await state.get_data()
+    if type(data.get("panel_message_id")) is not int:
+        # Telegram cannot edit a message sent with ReplyKeyboardRemove into an
+        # inline menu. Remove legacy keyboards with a separate transient message.
+        notice = await message.answer(constant_text.START_PANEL_OPENING_TEXT,
+                                      reply_markup=ReplyKeyboardRemove(), disable_notification=True)
+        try:
+            await notice.delete()
+        except TelegramBadRequest:
+            pass  # A failed cleanup must not prevent opening the actual menu.
+    await edit_input_panel(message, state, constant_text.START_MESSAGE_TEXT, static_admin_keyboard())
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "noop", StateFilter("*"))
@@ -34,8 +39,9 @@ async def noop_callback_handler(call: CallbackQuery):
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "panel:home", StateFilter("*"))
 async def main_menu_handler(call: CallbackQuery, state: FSMContext):
     await close_state_pyrogram_client(state)
-    await state.clear()
-    await edit_panel(call.message, constant_text.START_MESSAGE_TEXT, static_admin_keyboard())
+    await clear_panel_state(state)
+    panel = await edit_panel(call.message, constant_text.START_MESSAGE_TEXT, static_admin_keyboard())
+    await remember_panel(state, panel or call.message)
     await call.answer()
 
 

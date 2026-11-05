@@ -1,5 +1,6 @@
 EMOJI_YES_OR_NO_TEXT = ["✅", "❌"]
 START_COMMAND_DESCRIPTION = "Открыть панель управления"
+START_PANEL_OPENING_TEXT = "Открываю панель управления…"
 
 START_MESSAGE_TEXT = (
     "<b>WatchTowerBot</b>\n\n"

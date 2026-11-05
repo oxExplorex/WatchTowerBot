@@ -156,6 +156,7 @@ version_state_db = VersionState
 
 # Register archive tables in the same SQLModel metadata used by Alembic.
 from db.admin_models import AdminGrant  # noqa: E402,F401
+from db.runtime_health_models import RuntimeHealth  # noqa: E402,F401
 from db.history_models import HistoryChat, HistoryRange, HistoryRun, TelegramCooldown  # noqa: E402,F401
 from db.topic_models import BotPhotoCache, NotificationTopic, TopicReminder  # noqa: E402,F401
 from db.account_operation_models import AccountOperation, TransferRevision, TransferAttachment, ArchiveBlobCleanup  # noqa: E402,F401

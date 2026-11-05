@@ -12,6 +12,7 @@ ACCOUNT_EDIT_INFO_TEXT = (
     "app_id: {app_id}\n"
     "api_hash: {api_hash}\n\n"
     "Последняя успешная проверка: {last_update}\n\n"
+    "{last_error}"
     "<b>Мониторинг за 48 часов</b> · свежее сверху\n"
     "<blockquote expandable>{hours_chart}</blockquote>\n\n"
     "<code>{date}</code>"

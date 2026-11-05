@@ -5,6 +5,7 @@ from html import escape
 from datetime import timedelta
 
 import data.text as constant_text
+from data.texts.runtime_status import SESSION_ERRORS, STARTUP_FAILED
 from utils.datetime_tools import DateTime
 
 
@@ -95,11 +96,12 @@ def status_icon(fails: int, total: int) -> str:
     return constant_text.STATS_ICON_FAIL
 
 
-def success_percent(events) -> float:
-    if not events:
-        return 0.0
-    ok = sum(1 for x in events if int(x.status) == 1)
-    return round((ok / len(events)) * 100, 2)
+def session_error_label(reason):
+    reason = (reason or "error").strip()
+    if reason.startswith("startup:"):
+        code = reason.removeprefix("startup:")
+        return STARTUP_FAILED.format(reason=SESSION_ERRORS.get(code, code))
+    return SESSION_ERRORS.get(reason, reason)
 
 
 def build_hourly_rows_desc(events, hours: int, dt: DateTime, *, label_format: str = "%H:00") -> list[str]:
@@ -116,11 +118,12 @@ def build_hourly_rows_desc(events, hours: int, dt: DateTime, *, label_format: st
         bucket_events = [x for x in events if start_ts <= int(x.date) < end_ts]
         total = len(bucket_events)
         fails = sum(1 for x in bucket_events if int(x.status) == 0)
-        pct = 0 if total == 0 else round(((total - fails) / total) * 100)
+        result = (constant_text.STATS_NO_CHECKS if total == 0 else constant_text.STATS_CHECK_RESULT.format(
+            percent=round(((total - fails) / total) * 100), count=total))
 
         end_label = end_dt.strftime(label_format)
         start_label = start_dt.strftime(label_format)
-        rows.append(f"{end_label} - {status_icon(fails, total)} - {pct}% - {start_label}")
+        rows.append(f"{start_label} → {end_label} · {status_icon(fails, total)} {result}")
 
     return rows
 
@@ -139,11 +142,12 @@ def build_daily_rows_desc(events, days: int, dt: DateTime) -> list[str]:
         bucket_events = [x for x in events if start_ts <= int(x.date) < end_ts]
         total = len(bucket_events)
         fails = sum(1 for x in bucket_events if int(x.status) == 0)
-        pct = 0 if total == 0 else round(((total - fails) / total) * 100)
+        result = (constant_text.STATS_NO_CHECKS if total == 0 else constant_text.STATS_CHECK_RESULT.format(
+            percent=round(((total - fails) / total) * 100), count=total))
 
         end_label = end_dt.strftime("%d.%m 00:00")
         start_label = start_dt.strftime("%d.%m 00:00")
-        rows.append(f"{end_label} - {status_icon(fails, total)} - {pct}% - {start_label}")
+        rows.append(f"{start_label} → {end_label} · {status_icon(fails, total)} {result}")
 
     return rows
 
@@ -158,9 +162,9 @@ def recent_failures(events, dt: DateTime, limit: int = 5) -> str:
     rows = []
     for item in failed[:limit]:
         stamp = dt.convert_timestamp(int(item.date), "%d.%m %H:%M")["str"]
-        reason = (item.reason or "error").strip()
-        if len(reason) > 28:
-            reason = reason[:28] + "..."
+        reason = session_error_label(item.reason)
+        if len(reason) > 120:
+            reason = reason[:120] + "…"
         rows.append(constant_text.STATS_RECENT_ROW.format(stamp=stamp, reason=escape(reason)))
 
     return "\n".join(rows)

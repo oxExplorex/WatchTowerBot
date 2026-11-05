@@ -5,8 +5,9 @@ from unittest.mock import AsyncMock
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.session.base import BaseSession
 from aiogram.fsm.storage.memory import SimpleEventIsolation
-from aiogram.methods import AnswerCallbackQuery, DeleteMessage, EditMessageText, SendMessage
-from aiogram.types import Message, Update
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import AnswerCallbackQuery, DeleteMessage, EditMessageMedia, EditMessageText, SendDocument, SendMessage, SendPhoto
+from aiogram.types import Message, ReplyKeyboardRemove, Update
 import pytest
 import pytest_asyncio
 
@@ -20,6 +21,7 @@ class OfflineSession(BaseSession):
     def __init__(self):
         super().__init__()
         self.calls = []
+        self.messages = {}
 
     async def close(self):
         pass
@@ -30,12 +32,30 @@ class OfflineSession(BaseSession):
 
     async def make_request(self, bot, method, timeout=None):
         self.calls.append(method)
-        if isinstance(method, (AnswerCallbackQuery, DeleteMessage)):
+        if isinstance(method, DeleteMessage):
+            self.messages.pop((int(method.chat_id), method.message_id), None)
             return True
-        assert isinstance(method, (SendMessage, EditMessageText))
-        return Message.model_validate({"message_id": getattr(method, "message_id", None) or len(self.calls), "date": 1,
-            "chat": {"id": int(method.chat_id), "type": "private"}, "text": method.text,
-            "from_user": {"id": bot.id, "is_bot": True, "first_name": "Offline bot"}}).as_(bot)
+        if isinstance(method, AnswerCallbackQuery):
+            return True
+        assert isinstance(method, (SendMessage, EditMessageText, SendPhoto, EditMessageMedia, SendDocument))
+        identity = (int(method.chat_id), getattr(method, "message_id", None) or len(self.calls))
+        previous = self.messages.get(identity)
+        if isinstance(method, EditMessageText) and previous is not None and isinstance(previous.reply_markup, ReplyKeyboardRemove):
+            raise TelegramBadRequest(method=method, message="Bad Request: message can't be edited")
+        if isinstance(method, EditMessageText) and isinstance(previous, (SendPhoto, EditMessageMedia)):
+            raise TelegramBadRequest(method=method, message="Bad Request: there is no text in the message to edit")
+        self.messages[identity] = method
+        payload = {"message_id": identity[1], "date": 1,
+            "chat": {"id": int(method.chat_id), "type": "private"},
+            "from_user": {"id": bot.id, "is_bot": True, "first_name": "Offline bot"}}
+        if isinstance(method, SendDocument):
+            payload.update(caption=method.caption, document={"file_id": "synthetic-log", "file_unique_id": "synthetic-log"})
+        elif isinstance(method, (SendPhoto, EditMessageMedia)):
+            payload.update(caption=method.media.caption if isinstance(method, EditMessageMedia) else method.caption,
+                           photo=[{"file_id": "synthetic-chart", "file_unique_id": "synthetic-chart", "width": 1120, "height": 1110}])
+        else:
+            payload["text"] = method.text
+        return Message.model_validate(payload).as_(bot)
 
 
 @pytest_asyncio.fixture
@@ -79,14 +99,15 @@ async def setup_flow(db_main, offline_module, monkeypatch):
     app_menu.get_account_counts_by_apps = db_main.get_account_counts_by_apps
     editor = offline_module("handlers/admin/panel/account_edit_handler.py")
     for name in ("get_account_uuid", "get_app_tg_uuid", "get_user_timezone_offset", "get_account_health_events",
-                 "get_account_user_id", "get_app_tg_user_id", "get_user_names_by_ids", "update_account_uuid"):
+                 "get_account_user_id", "get_app_tg_user_id", "get_user_names_by_ids", "update_account_uuid",
+                 "add_account_health_event"):
         setattr(editor, name, getattr(db_main, name))
     editor.is_session_running = AsyncMock(return_value=False)
     accounts = offline_module("handlers/admin/panel/accounts_menu_handler.py")
     for name in ("get_account_user_id", "get_app_tg_user_id", "get_user_names_by_ids"):
         setattr(accounts, name, getattr(db_main, name))
     settings = offline_module("handlers/admin/settings/setting_menu_handler.py")
-    for name in ("get_accounts_overview", "get_archive_statistics", "get_admin_health_events", "get_all_health_events",
+    for name in ("get_accounts_overview", "get_archive_statistics", "get_account_all", "get_runtime_health", "get_configured_admin_ids", "get_admin_health_events", "get_all_health_events",
                  "get_latest_admin_health_event", "get_user_auto_update_enabled", "get_user_gemini_proxy_config",
                  "get_user_timezone_offset", "get_version_state_cache", "set_version_state_cache"):
         setattr(settings, name, getattr(db_main, name))
@@ -138,7 +159,7 @@ async def setup_flow(db_main, offline_module, monkeypatch):
     try:
         yield SimpleNamespace(feed=feed, keys=keys, admins=repository, handled=handled, session=session, writes=writes,
                               state=lambda uid=1001: dispatcher.fsm.get_context(bot=bot, chat_id=uid, user_id=uid),
-                              db=db_main, ownership=ownership, search=search, bot=bot)
+                              db=db_main, ownership=ownership, search=search, settings=settings, editor=editor, bot=bot)
     finally:
         await dispatcher.storage.close()
         await dispatcher.fsm.events_isolation.close()
@@ -402,6 +423,121 @@ async def test_only_start_opens_panel_and_other_commands_do_not_enter_wizards(se
 
 
 @pytest.mark.asyncio
+async def test_start_sends_one_inline_menu_and_removes_legacy_keyboard_notice(setup_flow):
+    from core.personal_crypto import create_key_bundle
+    from data.texts.common import START_MESSAGE_TEXT, START_PANEL_OPENING_TEXT
+
+    flow = setup_flow
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
+    await flow.feed(content="/start")
+    panels = [(identity, method) for identity, method in flow.session.messages.items()
+              if method.text == START_MESSAGE_TEXT]
+    assert len(panels) == 1 and panels[0][1].reply_markup.inline_keyboard
+    assert not any(method.text == START_PANEL_OPENING_TEXT for method in flow.session.messages.values())
+    panel_id = panels[0][0][1]
+    assert (await flow.state().get_data())["panel_message_id"] == panel_id
+    assert not any(isinstance(call, EditMessageText) for call in flow.session.calls)
+
+    await flow.feed(content="/start")
+    assert isinstance(flow.session.calls[-1], EditMessageText)
+    assert flow.session.calls[-1].message_id == panel_id
+    assert sum(isinstance(call, SendMessage) and call.text == START_MESSAGE_TEXT for call in flow.session.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_start_still_opens_inline_menu_when_legacy_notice_cannot_be_deleted(setup_flow, monkeypatch):
+    from core.personal_crypto import create_key_bundle
+    from data.texts.common import START_MESSAGE_TEXT
+
+    flow = setup_flow
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
+    original = flow.session.make_request
+
+    async def cannot_delete(bot, method, timeout=None):
+        if isinstance(method, DeleteMessage):
+            raise TelegramBadRequest(method=method, message="Bad Request: message can't be deleted")
+        return await original(bot, method, timeout)
+
+    monkeypatch.setattr(flow.session, "make_request", cannot_delete)
+    await flow.feed(content="/start")
+    menus = [method for method in flow.session.messages.values() if method.text == START_MESSAGE_TEXT]
+    assert len(menus) == 1 and menus[0].reply_markup.inline_keyboard
+
+
+@pytest.mark.asyncio
+async def test_latest_log_button_streams_existing_file_and_denies_granted_admin(setup_flow, monkeypatch, tmp_path):
+    from core.personal_crypto import create_key_bundle
+    from aiogram.types import FSInputFile
+    flow = setup_flow
+    path = tmp_path / "latest.log"
+    path.write_text("синтетический лог", encoding="utf-8")
+    monkeypatch.setattr(flow.settings, "latest_log_file", lambda: path)
+    await flow.admins.grant(1001, 2002)
+    for owner in (1001, 2002):
+        await flow.keys.install(owner, create_key_bundle(owner, f"Личныйсекрет{owner}"))
+    await flow.feed(callback="panel:settings")
+    assert "set:logs:last" in str(flow.session.calls[-2].reply_markup)
+    await flow.feed(callback="set:logs:last")
+    document = flow.session.calls[-1]
+    assert isinstance(document, SendDocument) and isinstance(document.document, FSInputFile)
+    assert document.document.path == path and document.document.filename == "latest.txt"
+    await flow.feed(2002, callback="panel:settings")
+    assert "set:logs:last" not in str(flow.session.calls[-2].reply_markup)
+    start = len(flow.session.calls)
+    await flow.feed(2002, callback="set:logs:last")
+    assert not any(isinstance(call, SendDocument) for call in flow.session.calls[start:])
+    assert path.read_text(encoding="utf-8") == "синтетический лог"
+
+
+@pytest.mark.asyncio
+async def test_stats_are_one_chart_panel_and_home_removes_the_old_photo(setup_flow, monkeypatch):
+    from core.personal_crypto import create_key_bundle
+    flow = setup_flow
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
+    await flow.feed(content="/start")
+    panel_id = (await flow.state().get_data())["panel_message_id"]
+    for callback in ("panel:stats:own", "panel:stats:all"):
+        await flow.feed(callback=callback, panel_id=panel_id)
+        chart = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageMedia))
+        assert chart.message_id == panel_id
+        assert len(chart.media.caption) < 1024 and "0.0%" not in chart.media.caption
+        assert chart.media.media.data.startswith(b"\x89PNG")
+    await flow.feed(callback="panel:home", panel_id=panel_id)
+    replacement = (await flow.state().get_data())["panel_message_id"]
+    assert replacement != panel_id and (1001, panel_id) not in flow.session.messages
+    assert len(flow.session.messages) == 1
+    await flow.feed(content="/start")
+    assert flow.session.calls[-1].message_id == replacement
+    # Telegram captions have a hard limit, including when counters and errors grow.
+    monkeypatch.setattr(flow.settings, "get_accounts_overview", AsyncMock(return_value={
+        name: 9_000_000_000_000_000_000 for name in ("own_active", "own_total", "all_active", "all_total")}))
+    monkeypatch.setattr(flow.settings, "get_archive_statistics", AsyncMock(return_value={
+        name: 9_000_000_000_000_000_000 for name in ("messages", "edited", "revisions", "deleted", "missing",
+            "media_stored", "media_pending", "media_failed", "history_reached", "history_chats")}))
+    monkeypatch.setattr(flow.settings, "get_admin_health_events", AsyncMock(return_value=[
+        SimpleNamespace(date=1, reason="synthetic" * 30, status=0), SimpleNamespace(date=2, reason="synthetic" * 30, status=0)]))
+    await flow.feed(callback="panel:stats:own", panel_id=replacement)
+    assert len(flow.session.calls[-2].media.caption) < 1024
+
+
+@pytest.mark.asyncio
+async def test_manual_check_of_failed_runtime_records_failure_without_deleting_account(setup_flow, monkeypatch):
+    from core.personal_crypto import create_key_bundle
+    from core.session_manager import SessionUnavailable
+    flow = setup_flow
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
+    await flow.db.create_app_tg(1001, 12345, "synthetic", "app")
+    app = (await flow.db.get_app_tg_user_id(1001))[0][0]
+    account = await flow.db.create_account_tg(1001, 2002, app.uuid, "79000000001")
+    monkeypatch.setattr(flow.editor, "get_client_by_number", AsyncMock(return_value=SimpleNamespace(get_me=AsyncMock())))
+    monkeypatch.setattr(flow.editor, "run_client_operation", AsyncMock(side_effect=SessionUnavailable()))
+    await flow.feed(callback=f"acc:chk:{account.uuid}")
+    events = await flow.db.get_account_health_events(account.uuid, 0)
+    assert len(events) == 1 and events[0].status == 0 and events[0].reason == "not_running"
+    assert (await flow.db.get_account_uuid(account.uuid, 1001)).is_active == 1
+
+
+@pytest.mark.asyncio
 async def test_inline_sections_and_text_wizards_edit_same_panel_after_state_reset(setup_flow, monkeypatch):
     import time
     from callbacks.account_ownership import HOME_CALLBACK
@@ -410,11 +546,11 @@ async def test_inline_sections_and_text_wizards_edit_same_panel_after_state_rese
     flow = setup_flow
     await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
     await flow.feed(content="/start")
-    panel_id = flow.session.calls[-1].message_id
+    panel_id = (await flow.state().get_data())["panel_message_id"]
     first = len(flow.session.calls)
     for callback in ("panel:settings", "set:tz:open", "set:back", "panel:home", "panel:accounts",
                      "panel:apps", "panel:home", HOME_CALLBACK, "panel:home", "adm:list:0",
-                     "panel:home", "panel:stats:own", "panel:stats:all", "panel:home", "panel:search"):
+                      "panel:home", "panel:search"):
         await flow.state().clear()  # Navigation survives loss of a short-lived dialog.
         before = len(flow.session.calls)
         await flow.feed(callback=callback, panel_id=panel_id)
@@ -469,10 +605,10 @@ async def test_navigation_uses_root_siblings_and_real_parent_buttons(setup_flow)
     await flow.admins.grant(1001, 2002)
     await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
     await flow.feed(content="/start")
-    panel_id = flow.session.calls[-1].message_id
+    panel_id = (await flow.state().get_data())["panel_message_id"]
 
     def screen():
-        return next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
+        return next(call for call in reversed(flow.session.calls) if isinstance(call, (SendMessage, EditMessageText)))
 
     def payload(expected):
         return next(button.callback_data for row in screen().reply_markup.inline_keyboard for button in row
@@ -504,7 +640,7 @@ async def test_secret_verification_returns_to_profiles_without_repeating_verific
     flow = setup_flow
     await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
     await flow.feed(content="/start")
-    panel_id = flow.session.calls[-1].message_id
+    panel_id = (await flow.state().get_data())["panel_message_id"]
     await flow.feed(callback="panel:apps", panel_id=panel_id)
     await flow.feed(callback="apps_admin_menu_add", panel_id=panel_id)
     assert await flow.state().get_state() == SECRET_VERIFY

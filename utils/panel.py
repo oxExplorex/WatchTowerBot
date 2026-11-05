@@ -1,5 +1,6 @@
 """Edit navigation screens; replace a panel only when Telegram cannot edit it."""
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import BufferedInputFile, InputMediaPhoto
 
 
 async def _edit_or_replace(message, text, reply_markup, *, message_id=None):
@@ -19,11 +20,34 @@ async def _edit_or_replace(message, text, reply_markup, *, message_id=None):
             "there is no text in the message to edit",
         )):
             raise
-        return await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
+        panel = await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
+        if "there is no text in the message to edit" in reason:
+            # A photo cannot become a text message. Deliver the replacement first.
+            try:
+                await message.bot.delete_message(message.chat.id, message_id or message.message_id)
+            except TelegramBadRequest:
+                pass
+        return panel
 
 
 async def edit_panel(message, text, reply_markup=None):
     return await _edit_or_replace(message, text, reply_markup)
+
+
+async def chart_panel(message, image, caption, reply_markup, *, edit):
+    photo = BufferedInputFile(image, filename="runtime-health.png")
+    if edit:
+        try:
+            return await message.bot.edit_message_media(
+                chat_id=message.chat.id, message_id=message.message_id,
+                media=InputMediaPhoto(media=photo, caption=caption, parse_mode="HTML"), reply_markup=reply_markup)
+        except TelegramBadRequest as exc:
+            if "message is not modified" in exc.message.lower():
+                return None
+            if not any(reason in exc.message.lower() for reason in (
+                    "message to edit not found", "message can't be edited", "message cannot be edited")):
+                raise
+    return await message.answer_photo(photo, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
 
 
 async def remember_panel(state, message):

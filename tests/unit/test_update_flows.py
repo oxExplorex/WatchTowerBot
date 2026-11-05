@@ -27,6 +27,7 @@ async def update_modules(monkeypatch, offline_module):
     notifier = offline_module("aiotask/update_notifier.py")
     monkeypatch.setitem(sys.modules, "aiotask.update_notifier", notifier)
     settings = offline_module("handlers/admin/settings/setting_menu_handler.py")
+    monkeypatch.setattr(settings, "get_configured_admin_ids", lambda: frozenset({1001}))
     monkeypatch.setattr(notifier, "_safe_send", AsyncMock())
     return notifier, settings, loader.session_manager
 

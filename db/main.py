@@ -368,6 +368,11 @@ async def get_archive_statistics(owner_id: int) -> dict[str, int]:
     return await messages_repository.statistics(owner_id)
 
 
+async def get_runtime_health(owner_id: int, since: int):
+    from db.repositories.runtime_health_repo import RuntimeHealthRepository
+    return await RuntimeHealthRepository(get_session_factory).get(owner_id, since)
+
+
 async def get_all_health_events(since_ts: int) -> list[AccountHealth]:
     return await accounts_repository.get_all_health_events(since_ts=since_ts)
 

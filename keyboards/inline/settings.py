@@ -7,9 +7,11 @@ from callbacks.personal_secret import SETUP_CALLBACK
 from data.texts.personal_secret import MENU_BUTTON as SECRET_BUTTON
 from utils.settings_formatting import auto_update_label, proxy_status_label, tz_offset_label
 from keyboards.inline.navigation import with_navigation
+from data.texts.logs import BUTTON as LOG_BUTTON
 
 
-def settings_keyboard(tz_offset: int, auto_update: int, proxy_cfg: dict, has_update: bool) -> InlineKeyboardMarkup:
+def settings_keyboard(tz_offset: int, auto_update: int, proxy_cfg: dict, has_update: bool,
+                      *, can_export_logs=False) -> InlineKeyboardMarkup:
     keyboard = InlineKeyboardBuilder()
 
     keyboard.row(
@@ -27,6 +29,8 @@ def settings_keyboard(tz_offset: int, auto_update: int, proxy_cfg: dict, has_upd
     )
 
     keyboard.row(InlineKeyboardButton(text=SECRET_BUTTON, callback_data=SETUP_CALLBACK))
+    if can_export_logs:
+        keyboard.row(InlineKeyboardButton(text=LOG_BUTTON, callback_data="set:logs:last"))
 
     keyboard.row(
         InlineKeyboardButton(

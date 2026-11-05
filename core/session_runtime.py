@@ -5,6 +5,7 @@ from functools import wraps
 
 from core.logging import bot_logger
 from core.session_manager import SessionUnavailable
+from core.session_diagnostics import failure_location, session_error_code
 
 
 def session_number_from_client(app_session) -> str | None:
@@ -85,10 +86,23 @@ async def start_client(client, *, connect_only=False):
 
 
 async def start_all_clients(clients):
+    clients = list(clients)
     results = await asyncio.gather(*(start_client(client) for client in clients), return_exceptions=True)
-    for result in results:
+    for client, result in zip(clients, results):
         if isinstance(result, Exception):
-            bot_logger.error("Telegram client startup failed: %s", type(result).__name__)
+            bot_logger.error("Telegram client startup failed: %s; reason=%s; location=%s",
+                             type(result).__name__, session_error_code(result), failure_location(result))
+        elif isinstance(result, BaseException):
+            continue
+        try:
+            from db.main import add_account_health_event, get_account_by_number
+            account = await get_account_by_number(session_number_from_client(client))
+            if account is not None:
+                await add_account_health_event(
+                    account.uuid, account.admin_id, account.user_id, int(not isinstance(result, Exception)),
+                    reason=f"startup:{session_error_code(result)}" if isinstance(result, Exception) else "startup_ok")
+        except Exception as exc:
+            bot_logger.warning("Could not record Telegram startup status: %s", type(exc).__name__)
 
 
 def managed_session_handler(function):

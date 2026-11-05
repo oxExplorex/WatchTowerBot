@@ -59,6 +59,7 @@ from middlewares.personal_secret import PersonalSecretMiddleware, notify_missing
 from utils.others import send_log_to_active_bot
 from services.media_archive import run_media_archiver
 from services.history_backfill import run_history_backfill
+from services.runtime_health import PollingHealth, run_runtime_health
 from services.bot_commands import register_bot_commands
 from services.personal_archive import run_personal_archive_migration
 from services.account_operations import repository as account_operations, run_account_operations
@@ -148,6 +149,8 @@ async def start_polling_bot():
     clients_start_task = None
     auth_clients.resume()
     reporter = current_reporter()
+    polling_health = PollingHealth()
+    bot.session.middleware(polling_health)
     try:
         if reporter is not None:
             reporter.update("База данных", "Подключение, миграции и подготовка хранилища")
@@ -192,6 +195,7 @@ async def start_polling_bot():
             reporter.update("Фоновые службы", "Запуск мониторинга, архива и проверки обновлений")
         create_logged_task(run_media_archiver(bot), name="media_archiver")
         create_logged_task(run_history_backfill(bot, session_manager), name="history_backfill")
+        create_logged_task(run_runtime_health(session_manager, polling_health), name="runtime_health")
         create_logged_task(run_personal_archive_migration(bot), name="personal_archive_migration")
         create_logged_task(run_account_operations(bot), name="account_operations")
         create_logged_task(run_topic_reminders(bot), name="topic_reminders")
@@ -215,6 +219,7 @@ async def start_polling_bot():
             reporter.fail(error)
         raise
     finally:
+        bot.session.middleware.unregister(polling_health)
         await _shutdown_runtime(clients_start_task)
 
 
