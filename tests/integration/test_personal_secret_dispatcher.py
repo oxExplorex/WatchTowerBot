@@ -103,6 +103,8 @@ async def setup_flow(db_main, offline_module, monkeypatch):
                  "add_account_health_event"):
         setattr(editor, name, getattr(db_main, name))
     editor.is_session_running = AsyncMock(return_value=False)
+    deleter = offline_module("handlers/admin/panel/account_del_handler.py")
+    deleter.request_delete_warning = ownership.request_delete_warning
     accounts = offline_module("handlers/admin/panel/accounts_menu_handler.py")
     for name in ("get_account_user_id", "get_app_tg_user_id", "get_user_names_by_ids"):
         setattr(accounts, name, getattr(db_main, name))
@@ -132,6 +134,7 @@ async def setup_flow(db_main, offline_module, monkeypatch):
     dispatcher.include_router(apps.router)
     dispatcher.include_router(app_menu.router)
     dispatcher.include_router(editor.router)
+    dispatcher.include_router(deleter.router)
     dispatcher.include_routers(accounts.router, settings.router, admins.router, search.router)
     dispatcher.include_router(loader.router)
     session = OfflineSession()
@@ -195,6 +198,41 @@ async def test_real_dispatcher_setup_deletes_inputs_before_profile_writes_and_ha
     assert isinstance(flow.session.calls[-1], AnswerCallbackQuery)
     replacement = next(call for call in reversed(flow.session.calls) if isinstance(call, SendMessage))
     assert replacement.reply_markup.inline_keyboard
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("full", [False, True])
+async def test_editor_delete_buttons_keep_mode_until_explicit_confirmation(setup_flow, monkeypatch, full):
+    from unittest.mock import Mock
+    from sqlalchemy import select
+    from core.personal_crypto import create_key_bundle
+    from db.account_operation_models import AccountOperation
+    from db.repositories.account_operations_repo import AccountOperationsRepository
+    from callbacks.account_ownership import OwnAccount
+    from data.texts import account_ownership as text
+
+    flow = setup_flow
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет527"))
+    await flow.db.create_app_tg(1001, 12345, "synthetic-api-hash", "owner")
+    profile = (await flow.db.get_app_tg_user_id(1001))[0][0]
+    account = await flow.db.create_account_tg(1001, 2002, profile.uuid, "79000000001")
+    operations = AccountOperationsRepository(flow.db.get_session_factory)
+    monkeypatch.setattr(flow.ownership, "repository", operations)
+    schedule = Mock()
+    monkeypatch.setattr(flow.ownership, "schedule_deletion", schedule)
+    await flow.feed(callback=f"acc:{'purge' if full else 'del'}:{account.uuid}")
+    schedule.assert_not_called()
+    async with flow.db.get_session_factory()() as session:
+        operation = await session.scalar(select(AccountOperation))
+    assert operation.kind == ("delete_full" if full else "delete")
+    assert operation.status == "confirm_delete"
+    panel = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
+    expected = text.DELETE_FULL_WARNING if full else text.DELETE_WARNING
+    assert panel.text == expected.format(account_id=2002)
+    await flow.feed(callback=OwnAccount(action="erase", token=operation.uuid.hex).pack())
+    schedule.assert_called_once()
+    assert schedule.call_args.args[0].kind == operation.kind
+    assert (await operations.get(operation.uuid, 1001)).status == "deleting"
 
 
 @pytest.mark.asyncio

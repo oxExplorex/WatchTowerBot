@@ -199,7 +199,8 @@ async def notify_operations(bot):
             targets = [(operation.owner_id, "owner_notified")]
             keyboard = approval_keyboard(operation)
         else:
-            template = (text.DELETE_DONE if operation.kind == "delete" and operation.status == "complete" else
+            template = (text.DELETE_FULL_DONE if operation.kind == "delete_full" and operation.status == "complete" else
+                        text.DELETE_DONE if operation.kind == "delete" and operation.status == "complete" else
                         text.TRANSFER_DONE if operation.status == "complete" else text.REJECTED)
             if operation.kind == "transfer" and operation.last_error and operation.status == "complete":
                 template += text.RUNTIME_WARNING

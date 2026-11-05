@@ -10,11 +10,11 @@ from handlers.user.account_ownership import request_delete_warning
 router = Router(name=__name__)
 
 
-@router.callback_query(IsPrivate(), IsAccountManager(), F.data.startswith("acc:del:"), StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAccountManager(), F.data.startswith("acc:del:") | F.data.startswith("acc:purge:"), StateFilter("*"))
 async def account_delete_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
     try:
-        await request_delete_warning(call, call.data.split(":")[-1])
+        await request_delete_warning(call, call.data.split(":")[-1], erase_archive=call.data.startswith("acc:purge:"))
     except (PermissionError, ValueError, TypeError):
         await call.answer(text.UNAVAILABLE, show_alert=True)
         return

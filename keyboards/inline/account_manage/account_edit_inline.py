@@ -4,6 +4,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 import data.text as constant_text
 from db.models import apps_db
 from keyboards.inline.navigation import with_navigation
+from data.texts import account_ownership as ownership_text
 
 
 def _state_emoji(value: int) -> str:
@@ -55,10 +56,8 @@ async def account_edit_admin_inline(account: apps_db):
             text=constant_text.ACCOUNT_EDIT_BTN_CHECK_NOW,
             callback_data=f"acc:chk:{account.uuid}",
         ),
-        InlineKeyboardButton(
-            text=constant_text.ACCOUNT_EDIT_BTN_DELETE,
-            callback_data=f"acc:del:{account.uuid}",
-        ),
     )
+    keyboard.row(InlineKeyboardButton(text=ownership_text.BTN_DISCONNECT, callback_data=f"acc:del:{account.uuid}"))
+    keyboard.row(InlineKeyboardButton(text=ownership_text.BTN_DELETE_FULL, callback_data=f"acc:purge:{account.uuid}"))
 
     return with_navigation(keyboard.as_markup(), "acc:m:1")

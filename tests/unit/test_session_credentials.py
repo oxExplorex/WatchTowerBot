@@ -3,7 +3,7 @@ import pytest
 
 from core.session_credentials import sync_session_api
 import sqlite3
-from scripts.migrate_telegram_sessions import SessionSchemaError
+from core.session_schema import SessionSchemaError
 
 
 @pytest.mark.asyncio

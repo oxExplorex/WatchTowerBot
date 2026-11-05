@@ -1,13 +1,13 @@
 """Classify session failures without persisting credentials, paths or SQL values."""
 import sqlite3
 from pathlib import Path
-from scripts.migrate_telegram_sessions import SessionSchemaError
+from core.session_schema import SessionSchemaError
 
 
 def session_error_code(error):
     cause = getattr(error, "orig", error)
     if isinstance(cause, SessionSchemaError):
-        return "sqlite_schema"
+        return "reauthorization_required"
     if isinstance(cause, sqlite3.Error):
         text = str(cause).lower()
         for markers, code in (

@@ -6,8 +6,8 @@ from core.media_store import MediaStore
 from core.personal_crypto import context, create_key_bundle, seal_text, unlock_private_key
 from db.account_operation_models import AccountOperation, TransferRevision
 from db.media_models import MessageAttachment
-from db.message_models import MessageRevision, StoredMessage
-from db.models import HistoryUser
+from db.message_models import MessageReceipt, MessageRevision, PendingMessageDeletion, StoredMessage
+from db.models import AccountHealth, DumpChatUser, HistoryUser
 from db.repositories.account_locks import AccountAlreadyConnected
 from db.repositories.account_operations_repo import AccountOperationsRepository
 from db.repositories.personal_repo import PersonalKeyRepository
@@ -309,3 +309,77 @@ async def test_completed_self_delete_sends_one_notification_without_repeating(ac
     await account_operations.notify_operations(bot)
     bot.send_message.assert_awaited_once()
     assert bot.send_message.call_args.args[0] == 1001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared_blob", [False, True])
+async def test_full_delete_is_durable_scoped_and_cleans_only_unreferenced_files(account_data, monkeypatch, shared_blob):
+    from services import account_operations
+    data = account_data
+    db, operations, store = data["db"], data["operations"], data["store"]
+    bundle, _, private, _ = await install_keys(data)
+    target = await record(data, 1, media=True)
+    target_revision = (await db.messages_repository.get_revisions(owner_id=1001, message_uuid=target.message_uuid))[0]
+    other = await db.create_account_tg(1001, 3003, data["source_app"].uuid, "79000000002")
+    untouched = await record(data, 2, account_id=other.user_id, media=True)
+    with store.writer(1001, public_key=bundle["public_key"]) as writer:
+        writer.write(b"synthetic personal attachment")
+        blob, size = writer.finish()
+    async with db.create_unit_of_work() as uow:
+        for attachment in await uow.session.scalars(select(MessageAttachment)):
+            if shared_blob or attachment.revision_uuid == target_revision.uuid:
+                attachment.status, attachment.blob_key, attachment.stored_size = "stored", blob, size
+        uow.session.add_all([
+            HistoryUser(admin_id=1001, user_id=42, chat_id=42, account_user_id=2002, action_id=1, date=1),
+            HistoryUser(admin_id=1001, user_id=42, chat_id=42, account_user_id=3003, action_id=1, date=1),
+            AccountHealth(account_uuid=data["account"].uuid, admin_id=1001, user_id=2002, status=1, date=1),
+            PendingMessageDeletion(owner_id=1001, account_user_id=2002, message_id=99, observed_at=1),
+        ])
+    with pytest.raises(PermissionError):
+        await operations.request_delete(data["account"].uuid, 2002, erase_archive=True)
+    keep = await operations.request_delete(data["account"].uuid, 1001)
+    full = await operations.request_delete(data["account"].uuid, 1001, erase_archive=True)
+    assert keep.uuid != full.uuid and full.kind == "delete_full"
+    assert await db.messages_repository.get_revisions(owner_id=1001, message_uuid=target.message_uuid)
+    restarted = AccountOperationsRepository(db.get_session_factory)
+    full = await restarted.confirm_delete(full.uuid, 1001)
+    assert full.kind == "delete_full"
+    with pytest.raises(ValueError):
+        await restarted.confirm_delete(keep.uuid, 1001)
+    assert await restarted.remove_connection(full.uuid)
+    assert not await restarted.remove_connection(full.uuid)
+    await restarted.finish_delete(full.uuid)
+    async with db.create_unit_of_work() as uow:
+        assert await uow.session.get(StoredMessage, target.message_uuid) is None
+        assert not list(await uow.session.scalars(select(MessageRevision).where(MessageRevision.message_uuid == target.message_uuid)))
+        assert not list(await uow.session.scalars(select(MessageReceipt).where(MessageReceipt.message_uuid == target.message_uuid)))
+        assert not list(await uow.session.scalars(select(PendingMessageDeletion)))
+        assert not list(await uow.session.scalars(select(AccountHealth)))
+        histories = list(await uow.session.scalars(select(HistoryUser)))
+        assert histories and all(event.account_user_id == 3003 for event in histories)
+        assert list(await uow.session.scalars(select(DumpChatUser)))  # Shared chat survives.
+        assert len(list(await uow.session.scalars(select(MessageAttachment)))) == 1
+    revision = (await db.messages_repository.get_revisions(owner_id=1001, message_uuid=untouched.message_uuid))[0]
+    assert db.messages_repository.decode_payload(revision, owner_id=1001, private_key=private)["text"].endswith("2")
+    monkeypatch.setattr(account_operations, "get_session_factory", db.get_session_factory)
+    await account_operations.cleanup_blobs(store)
+    assert store.path(1001, blob).is_file() == shared_blob
+
+
+@pytest.mark.asyncio
+async def test_full_delete_waits_for_active_attachment_download(account_data):
+    import time
+    data = account_data
+    db, operations = data["db"], data["operations"]
+    result = await record(data, 1, media=True)
+    async with db.create_unit_of_work() as uow:
+        attachment = await uow.session.scalar(select(MessageAttachment))
+        attachment.status, attachment.lease_until = "downloading", int(time.time()) + 600
+    request = await operations.request_delete(data["account"].uuid, 1001, erase_archive=True)
+    await operations.confirm_delete(request.uuid, 1001)
+    assert not await operations.remove_connection(request.uuid)
+    assert await db.messages_repository.get_revisions(owner_id=1001, message_uuid=result.message_uuid)
+    async with db.create_unit_of_work() as uow:
+        attachment = await uow.session.scalar(select(MessageAttachment))
+        attachment.lease_until = 0
+    assert await operations.remove_connection(request.uuid)

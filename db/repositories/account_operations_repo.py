@@ -79,19 +79,22 @@ class AccountOperationsRepository:
             session.add(operation)
             return operation
 
-    async def request_delete(self, account_id, actor_id):
+    async def request_delete(self, account_id, actor_id, *, erase_archive=False):
         async with self._session_factory()() as session, session.begin():
             account = await session.get(Account, UUID(str(account_id)))
             if account is None or actor_id not in {account.admin_id, account.user_id}:
                 raise PermissionError("Account is not accessible")
+            if erase_archive and actor_id != account.admin_id:
+                raise PermissionError("Only the archive owner can erase its contents")
+            kind = "delete_full" if erase_archive else "delete"
             current = await session.scalar(select(AccountOperation).where(
                 AccountOperation.account_uuid == account.uuid, AccountOperation.actor_id == actor_id,
-                AccountOperation.kind == "delete", AccountOperation.status == "confirm_delete"))
+                AccountOperation.kind == kind, AccountOperation.status == "confirm_delete"))
             if current:
                 return current
             now = int(time.time())
             operation = AccountOperation(account_uuid=account.uuid, account_user_id=account.user_id,
-                owner_id=account.admin_id, actor_id=actor_id, kind="delete", status="confirm_delete",
+                owner_id=account.admin_id, actor_id=actor_id, kind=kind, status="confirm_delete",
                 created_at=now, updated_at=now)
             session.add(operation)
             return operation
@@ -99,7 +102,7 @@ class AccountOperationsRepository:
     async def confirm_delete(self, operation_id, actor_id):
         async with self._session_factory()() as session, session.begin():
             operation = await session.get(AccountOperation, UUID(str(operation_id)))
-            if operation is None or operation.kind != "delete" or operation.actor_id != actor_id:
+            if operation is None or operation.kind not in {"delete", "delete_full"} or operation.actor_id != actor_id:
                 raise PermissionError("Delete confirmation is not accessible")
             await lock_account(session, operation.account_user_id)
             account = await session.get(Account, operation.account_uuid, populate_existing=True)
@@ -107,11 +110,15 @@ class AccountOperationsRepository:
                 return operation
             if operation.status != "confirm_delete" or account is None or actor_id not in {account.admin_id, account.user_id}:
                 raise PermissionError("Account ownership has changed")
+            if operation.kind == "delete_full" and (actor_id != account.admin_id or operation.owner_id != account.admin_id):
+                raise PermissionError("Archive ownership has changed")
             # Stopping one number-based session must never stop another legacy owner.
             await unique_account(session, account.user_id)
             active = await session.scalar(select(AccountOperation).where(AccountOperation.active_account_id == account.user_id))
             if active and active.uuid != operation.uuid:
                 if active.kind != "transfer":
+                    if active.kind != operation.kind:
+                        raise ValueError("A different deletion mode is already running")
                     return active
                 active.status, active.active_account_id, active.run_token = "cancelled", None, None
                 active.owner_notified = active.result_notified = False
@@ -129,7 +136,7 @@ class AccountOperationsRepository:
             operation = await session.get(AccountOperation, UUID(str(operation_id)))
             if operation is None or actor_id not in {operation.owner_id, operation.actor_id}:
                 raise PermissionError("Request is not accessible")
-            if operation.kind == "delete" and actor_id != operation.actor_id:
+            if operation.kind in {"delete", "delete_full"} and actor_id != operation.actor_id:
                 raise PermissionError("Only the requester can cancel deletion")
             await lock_account(session, operation.account_user_id)
             await session.refresh(operation)
@@ -219,7 +226,11 @@ class AccountOperationsRepository:
             await session.refresh(operation)
             if operation.status != "deleting":
                 return False
-            # Archive ownership, ciphertext, revisions and media remain untouched.
+            if operation.kind == "delete_full":
+                from db.repositories.account_archive import erase_account_archive
+                if not await erase_account_archive(session, operation):
+                    return False
+            # Ordinary disconnect leaves the archive entirely untouched.
             await session.execute(delete(Account).where(Account.uuid == operation.account_uuid))
             operation.status = "removing_session"
             operation.updated_at = int(time.time())

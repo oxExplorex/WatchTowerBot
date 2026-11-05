@@ -55,16 +55,17 @@ async def my_account(message: Message, state: FSMContext):
     await _show_home(message, message.from_user.id, state)
 
 
-async def request_delete_warning(call, account_id):
+async def request_delete_warning(call, account_id, *, erase_archive=False):
     async with get_session_factory()() as session:
         account = await session.get(Account, UUID(str(account_id)))
     if account is None or not (account.user_id == call.from_user.id or
                               (account.admin_id == call.from_user.id and await is_admin(call.from_user.id))):
         raise PermissionError("Account is not accessible")
-    operation = await repository.request_delete(account_id, call.from_user.id)
-    parent = (f"acc:e:{account.uuid}" if (call.data or "").startswith("acc:del:") else
+    operation = await repository.request_delete(account_id, call.from_user.id, erase_archive=erase_archive)
+    parent = (f"acc:e:{account.uuid}" if (call.data or "").startswith(("acc:del:", "acc:purge:")) else
               OwnAccount(action="detail", token=account.uuid.hex).pack())
-    await edit_panel(call.message, text.DELETE_WARNING.format(account_id=operation.account_user_id),
+    template = text.DELETE_FULL_WARNING if operation.kind == "delete_full" else text.DELETE_WARNING
+    await edit_panel(call.message, template.format(account_id=operation.account_user_id),
                      delete_keyboard(operation, back_callback=parent))
 
 
@@ -108,7 +109,7 @@ async def own_account_callback(call: CallbackQuery, callback_data: OwnAccount, s
             await request_delete_warning(call, token)
         elif action == "erase":
             operation = await repository.get(token, actor_id)
-            if operation is None or operation.kind != "delete":
+            if operation is None or operation.kind not in {"delete", "delete_full"}:
                 raise PermissionError("Delete request is not accessible")
             async with get_session_factory()() as session:
                 account = await session.get(Account, operation.account_uuid)
@@ -117,7 +118,7 @@ async def own_account_callback(call: CallbackQuery, callback_data: OwnAccount, s
             operation = await repository.confirm_delete(operation.uuid, actor_id)
             schedule_deletion(operation)
             parent = "panel:accounts" if operation.owner_id == actor_id else HOME_CALLBACK
-            await edit_panel(call.message, text.DELETE_STARTED, navigation_keyboard(parent))
+            await edit_panel(call.message, text.DELETE_FULL_STARTED if operation.kind == "delete_full" else text.DELETE_STARTED, navigation_keyboard(parent))
         elif action in {"approve", "reject", "status"}:
             operation = await repository.get(token, actor_id)
             if operation is None:

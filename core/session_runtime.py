@@ -96,9 +96,9 @@ async def start_all_clients(clients):
         if isinstance(result, Exception):
             bot_logger.error("Telegram client startup failed: %s; reason=%s; location=%s",
                              type(result).__name__, session_error_code(result), failure_location(result))
-            from scripts.migrate_telegram_sessions import SessionSchemaError
+            from core.session_schema import SessionSchemaError
             if isinstance(result, SessionSchemaError):
-                bot_logger.error("Session schema metadata: usernames.columns=%s", result.columns)
+                bot_logger.error("Legacy session requires manual reauthorization; disconnect the account keeping its archive, then add it again")
         elif isinstance(result, BaseException):
             continue
         try:
