@@ -81,17 +81,24 @@ class HistoryRepository:
             return account if claimed.scalar_one_or_none() is not None else None
 
     async def seed(self, account, bot_id):
+        from core.logging import bot_logger
+
         async with self._session_factory()() as session, session.begin():
             heads = dict((await session.execute(select(StoredMessage.chat_id, func.max(StoredMessage.message_id)).where(
                 StoredMessage.owner_id == account.admin_id, StoredMessage.account_user_id == account.user_id,
                 StoredMessage.chat_id > 0, StoredMessage.chat_id != bot_id
             ).group_by(StoredMessage.chat_id))).all())
-            chats = set(await session.scalars(select(DumpChatUser.chat_id).where(
-                DumpChatUser.admin_id == account.user_id, DumpChatUser.chat_id > 0, DumpChatUser.chat_id != bot_id))) | heads.keys()
-            await self._observe(session, account.uuid, {chat: heads.get(chat, 0) for chat in chats})
+            dump_chats = set(await session.scalars(select(DumpChatUser.chat_id).where(
+                DumpChatUser.admin_id == account.user_id, DumpChatUser.chat_id > 0, DumpChatUser.chat_id != bot_id)))
+            chats = dump_chats | heads.keys()
+            bot_logger.debug("History seed: account_uuid=%s owner_id=%s account_user_id=%s dump_admin_id=%s dump_chats=%s stored_chats=%s",
+                account.uuid, account.admin_id, account.user_id, account.user_id, len(dump_chats), len(heads))
+            await self._observe(session, account.uuid, {chat: heads.get(chat, 0) for chat in chats}, source="seed")
 
     @staticmethod
-    async def _observe(session, account_uuid, heads):
+    async def _observe(session, account_uuid, heads, *, source):
+        from core.logging import bot_logger
+
         items = list(heads.items())
         for offset in range(0, len(items), 100):
             values = [dict(account_uuid=account_uuid, chat_id=chat, known_top_id=top)
@@ -102,10 +109,12 @@ class HistoryRepository:
             await session.execute(insert.on_conflict_do_update(index_elements=["account_uuid", "chat_id"], set_={
                 "known_top_id": case((HistoryChat.known_top_id > insert.excluded.known_top_id, HistoryChat.known_top_id),
                                      else_=insert.excluded.known_top_id)}))
+            bot_logger.debug("History targets upsert: account_uuid=%s source=%s chat_id_top_id=%s",
+                             account_uuid, source, items[offset:offset + 100])
 
     async def observe_heads(self, account_uuid, heads):
         async with self._session_factory()() as session, session.begin():
-            await self._observe(session, account_uuid, heads)
+            await self._observe(session, account_uuid, heads, source="dialogs")
 
     async def due_chats(self, account_uuid, *, now=None):
         now = int(time.time()) if now is None else now

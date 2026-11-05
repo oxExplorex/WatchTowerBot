@@ -297,6 +297,29 @@ async def test_recent_empty_dialog_list_is_not_treated_as_uninitialized(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_fresh_client_loads_peers_once_despite_unchanged_dialog_count(monkeypatch, parser_mod):
+    class CountedClient(_FakeClient):
+        scans = 0
+        async def get_dialogs(self, limit=0):
+            self.scans += 1
+            async for dialog in super().get_dialogs(limit):
+                yield dialog
+    client = CountedClient([11, 22])
+    monkeypatch.setattr(parser_mod, "session_number_from_client", lambda _: "offline")
+    monkeypatch.setattr(parser_mod, "get_account_by_number", AsyncMock(return_value=_account(
+        last_dialogs_count=2, last_full_dialogs_scan=parser_mod.DateTime().timestamp())))
+    monkeypatch.setattr(parser_mod, "get_dump_chat_admin_all", AsyncMock(return_value=[
+        types.SimpleNamespace(chat_id=11), types.SimpleNamespace(chat_id=22)]))
+    monkeypatch.setattr(parser_mod, "update_user", AsyncMock())
+    monkeypatch.setattr(parser_mod, "update_account_uuid", AsyncMock())
+    monkeypatch.setattr(parser_mod, "add_account_health_event", AsyncMock())
+    await parser_mod._scan_session(client)
+    assert client.scans == 1 and client._watchtower_dialogs_loaded
+    await parser_mod._scan_session(client)
+    assert client.scans == 1
+
+
+@pytest.mark.asyncio
 async def test_stopping_during_partial_scan_does_not_record_false_deletions(monkeypatch, parser_mod):
     started = asyncio.Event()
 

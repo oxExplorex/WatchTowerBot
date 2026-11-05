@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+import logging
 
 import pytest
 
@@ -34,3 +35,29 @@ async def test_raw_adapter_bounds_one_request_and_does_not_fetch_replies(offline
     client.invoke.reset_mock()
     assert await module.fetch_history_page(client, -100123, HistoryWindow()) is None
     client.invoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["resolve_peer", "GetHistory"])
+async def test_peer_diagnostics_identify_failure_stage_without_dumping_access_hash(offline_module, caplog, stage):
+    from pyrogram import raw
+    from pyrogram.errors import PeerIdInvalid
+
+    module = offline_module("services/history_backfill.py")
+    caplog.set_level(logging.DEBUG, logger=module.bot_logger.name)
+    secret_hash = 987654321012345
+    peer = raw.types.InputPeerUser(user_id=123, access_hash=secret_hash)
+    client = SimpleNamespace(storage=SimpleNamespace(get_peer_by_id=AsyncMock(
+        return_value=peer, side_effect=KeyError() if stage == "resolve_peer" else None)),
+        resolve_peer=AsyncMock(return_value=peer), invoke=AsyncMock())
+    failing = client.resolve_peer if stage == "resolve_peer" else client.invoke
+    failing.side_effect = PeerIdInvalid()
+    with pytest.raises(PeerIdInvalid):
+        await module.fetch_history_page(client, 123, HistoryWindow(70, 80))
+    assert f"stage={stage} chat_id=123 error=PeerIdInvalid" in caplog.text
+    assert f"state={'miss' if stage == 'resolve_peer' else 'hit'}" in caplog.text
+    assert str(secret_hash) not in caplog.text
+    if stage == "resolve_peer":
+        client.invoke.assert_not_awaited()
+    else:
+        client.invoke.assert_awaited_once()

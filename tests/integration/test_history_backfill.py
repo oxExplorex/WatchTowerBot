@@ -43,9 +43,42 @@ async def reset_run(history):
         await uow.session.execute(update(HistoryRun).values(next_run_at=0))
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loaded", [False, True])
+async def test_worker_waits_for_initial_peer_cache_before_history_requests(offline_module, monkeypatch, loaded):
+    import sys
+    module = offline_module("services/history_backfill.py")
+    lookup = AsyncMock(return_value=SimpleNamespace())
+    monkeypatch.setattr(sys.modules["db.main"], "get_account_by_number", lookup)
+    monkeypatch.setattr(module, "session_number_from_client", lambda _: "offline")
+    client = SimpleNamespace(_watchtower_dialogs_loaded=loaded)
+    manager = SimpleNamespace(get_snapshot=AsyncMock(return_value=[client]),
+        is_available=AsyncMock(return_value=True), run=AsyncMock())
+    monkeypatch.setattr(module.asyncio, "sleep", AsyncMock(side_effect=[None, asyncio.CancelledError]))
+    with pytest.raises(asyncio.CancelledError):
+        await module.run_history_backfill(SimpleNamespace(id=777777), manager)
+    assert lookup.await_count == int(loaded)
+    assert manager.run.await_count == int(loaded)
+
+
 async def rows(history, model):
     async with history.db.create_unit_of_work() as uow:
         return list(await uow.session.scalars(select(model)))
+
+
+@pytest.mark.asyncio
+async def test_history_target_logs_distinguish_owner_account_and_dialog_ids(history, caplog):
+    import logging
+    h = history
+    caplog.set_level(logging.DEBUG)
+    await h.db.create_dump_chat_user(2002, 11)
+    await h.repository.observe_heads(h.account.uuid, {11: 75})
+    fetch = AsyncMock(return_value=([], []))
+    await h.module.backfill_account(h.bot, object(), h.account, h.repository, fetch_page=fetch, pause=h.pause)
+    assert "source=dialogs chat_id_top_id=[(11, 75)]" in caplog.text
+    assert "owner_id=1001 account_user_id=2002 dump_admin_id=2002" in caplog.text
+    assert "owner_id=1001 account_user_id=2002 chat_id=11" in caplog.text
+    assert "Личныйсекрет1001" not in caplog.text
 
 
 @pytest.mark.asyncio

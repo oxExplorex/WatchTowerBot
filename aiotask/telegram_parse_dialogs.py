@@ -174,6 +174,7 @@ async def _scan_session(app_session):
 
         should_full_scan = (
             previous_count < 0
+            or (total_dialogs > 0 and not getattr(app_session, "_watchtower_dialogs_loaded", False))
             or total_dialogs != previous_count
             or int(getattr(account_settings, "pending_delete_count", 0) or 0) > 0
             or (now_ts - last_full_scan) >= FULL_SCAN_FORCE_INTERVAL_SEC
@@ -220,6 +221,9 @@ async def _scan_session(app_session):
                 chat_id = chat.id
                 seen_chat_ids.add(chat_id)
                 top = getattr(dialog, "top_message", None)
+                bot_logger.debug("Dialog observed: owner_id=%s account_user_id=%s chat_id=%s chat_type=%s top_message_id=%s top_chat_id=%s",
+                    account_settings.admin_id, user_id, chat_id, enum_value(getattr(chat, "type", None)),
+                    getattr(top, "id", None), getattr(getattr(top, "chat", None), "id", None))
                 if enum_value(getattr(chat, "type", None)) == "private" and chat_id != getattr(bot, "id", None):
                     history_heads[chat_id] = int(getattr(top, "id", 0) or 0)
 
@@ -247,6 +251,9 @@ async def _scan_session(app_session):
             return
 
         await history.observe_heads(account_settings.uuid, history_heads)
+        # A fresh client must populate its peer/access-hash cache before history
+        # requests, even when application-level counts survived reauthorization.
+        app_session._watchtower_dialogs_loaded = True
         bot_logger.info(
             f"DIALOG SCAN USER: {user_id} | dialogs_count={total_dialogs} | "
             f"parsed_unique={len(current_chat_ids)} | seen_total={len(seen_chat_ids)} | "

@@ -51,8 +51,8 @@ def test_real_loader_and_consumers_share_one_registry():
             from aiogram import Bot, Dispatcher
             from aiogram.client.session.base import BaseSession
             from aiogram.exceptions import TelegramBadRequest
-            from aiogram.types import Message as BotMessage, Update
-            from aiogram.methods import SendMessage
+            from aiogram.types import Message as BotMessage, Update, User as BotUser
+            from aiogram.methods import GetMe, SendMessage
 
             class OfflineSession(BaseSession):
                 def __init__(self):
@@ -68,6 +68,8 @@ def test_real_loader_and_consumers_share_one_registry():
                     self.calls.append(method)
                     if self.fail:
                         raise TelegramBadRequest(method=method, message="synthetic-private-error")
+                    if isinstance(method, GetMe):
+                        return BotUser(id=bot.id, is_bot=True, first_name="Offline", has_topics_enabled=False)
                     if isinstance(method, SendMessage):
                         return BotMessage.model_validate({"message_id": 99, "date": 1,
                             "chat": {"id": int(method.chat_id), "type": "private"}, "text": method.text}).as_(bot)
@@ -81,10 +83,10 @@ def test_real_loader_and_consumers_share_one_registry():
                 "chat": {"id": 1001, "type": "private"}, "text": "/start",
                 "from_user": {"id": 1001, "first_name": "Offline", "is_bot": False}}}
             await real_dispatcher.feed_update(test_bot, Update.model_validate(payload))
-            assert len(session.calls) == 3  # Remove the legacy keyboard, delete its notice, send one inline panel.
+            assert len(session.calls) == 4  # Keyboard reset, delete notice, topic capability, inline panel.
             session.fail = True
             await real_dispatcher.feed_update(test_bot, Update.model_validate(payload | {"update_id": 2}))
-            assert len(session.calls) == 4  # Root error router handles a sibling's error.
+            assert len(session.calls) == 5  # Root error router handles a sibling's error.
             await real_dispatcher.storage.close()
             await test_bot.session.close()
 

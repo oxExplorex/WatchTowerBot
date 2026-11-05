@@ -9,6 +9,7 @@ from core.account_runtime import account_guard
 from core.logging import bot_logger
 from db.repositories.topics_repo import TopicsRepository
 from db.session import get_session_factory
+from data.texts.topics import MENU_TITLE
 
 
 class TopicDelivery:
@@ -101,6 +102,14 @@ async def send_spoiler(bot, method, owner_id, **kwargs):
     return await delivery(bot).send(method, owner_id, "spoiler", "spoiler", **kwargs)
 
 
+async def send_menu(bot, owner_id):
+    from data.texts.common import START_MESSAGE_TEXT
+    from keyboards.main.start_keyboard import static_admin_keyboard
+
+    return await delivery(bot).send(bot.send_message, owner_id, "menu", MENU_TITLE,
+        text=START_MESSAGE_TEXT, reply_markup=static_admin_keyboard(), parse_mode="HTML")
+
+
 async def prepare_notification_topics(bot, *, owner_id=None, account_user_id=None):
     """Prepare destinations without holding a user's FSM lock or sending log text."""
     from db.main import get_account_all, get_admin_ids
@@ -116,14 +125,17 @@ async def prepare_notification_topics(bot, *, owner_id=None, account_user_id=Non
             if account.admin_id is not None and account.user_id is not None:
                 owners.setdefault(account.admin_id, set()).add(account.user_id)
     for owner, accounts in owners.items():
-        for key, title in [("spoiler", "spoiler"), *[(f"account:{user_id}", str(user_id)) for user_id in sorted(accounts)]]:
+        for key, title in [("menu", MENU_TITLE), ("spoiler", "spoiler"), *[(f"account:{user_id}", str(user_id)) for user_id in sorted(accounts)]]:
             try:
-                # Existing destinations require no Telegram API request.
-                if await service.repository.get(bot.id, owner, key) is not None:
-                    continue
-                await service.ensure_thread(owner, key, title)
-                if time.monotonic() < service._topic_retry_until:
-                    return
+                async with account_guard(("topic-preparation", bot.id, owner, key)):
+                    # Existing destinations require no Telegram API request.
+                    if await service.repository.get(bot.id, owner, key) is not None:
+                        continue
+                    thread_id = await service.ensure_thread(owner, key, title)
+                    if key == "menu" and thread_id is not None:
+                        await send_menu(bot, owner)
+                    if time.monotonic() < service._topic_retry_until:
+                        return
             except Exception as error:
                 bot_logger.warning("Topic preparation deferred: %s", type(error).__name__)
             await asyncio.sleep(0.2)

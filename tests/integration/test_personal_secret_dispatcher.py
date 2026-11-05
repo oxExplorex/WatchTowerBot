@@ -6,8 +6,8 @@ from aiogram import Bot, Dispatcher, Router
 from aiogram.client.session.base import BaseSession
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.methods import AnswerCallbackQuery, DeleteMessage, EditMessageMedia, EditMessageText, SendDocument, SendMessage, SendPhoto
-from aiogram.types import Message, ReplyKeyboardRemove, Update
+from aiogram.methods import AnswerCallbackQuery, CreateForumTopic, DeleteMessage, EditMessageMedia, EditMessageText, SendDocument, SendMessage, SendPhoto
+from aiogram.types import ForumTopic, Message, ReplyKeyboardRemove, Update
 import pytest
 import pytest_asyncio
 
@@ -32,6 +32,8 @@ class OfflineSession(BaseSession):
 
     async def make_request(self, bot, method, timeout=None):
         self.calls.append(method)
+        if isinstance(method, CreateForumTopic):
+            return ForumTopic(message_thread_id=1000 + len(self.calls), name=method.name, icon_color=0)
         if isinstance(method, DeleteMessage):
             self.messages.pop((int(method.chat_id), method.message_id), None)
             return True
@@ -48,6 +50,8 @@ class OfflineSession(BaseSession):
         payload = {"message_id": identity[1], "date": 1,
             "chat": {"id": int(method.chat_id), "type": "private"},
             "from_user": {"id": bot.id, "is_bot": True, "first_name": "Offline bot"}}
+        if getattr(method, "message_thread_id", None) is not None:
+            payload["message_thread_id"] = method.message_thread_id
         if isinstance(method, SendDocument):
             payload.update(caption=method.caption, document={"file_id": "synthetic-log", "file_unique_id": "synthetic-log"})
         elif isinstance(method, (SendPhoto, EditMessageMedia)):
@@ -139,14 +143,17 @@ async def setup_flow(db_main, offline_module, monkeypatch):
     dispatcher.include_router(loader.router)
     session = OfflineSession()
     bot = Bot("123456:offline_test_token", session=session)
+    monkeypatch.setattr(bot, "get_me", AsyncMock(return_value=SimpleNamespace(has_topics_enabled=False)))
     serial = 0
 
-    async def feed(user_id=1001, *, content=None, callback=None, inaccessible=False, panel_id=None):
+    async def feed(user_id=1001, *, content=None, callback=None, inaccessible=False, panel_id=None, thread_id=None):
         nonlocal serial
         serial += 1
         user = {"id": user_id, "is_bot": False, "first_name": "Offline admin"}
         message = {"message_id": serial, "date": 0 if inaccessible else 1,
                    "chat": {"id": user_id, "type": "private"}, "from_user": user, "text": content or "old menu"}
+        if thread_id is not None:
+            message["message_thread_id"] = thread_id
         if callback is not None:
             message["message_id"] = panel_id if panel_id is not None else serial
             message["from_user"] = {"id": bot.id, "is_bot": True, "first_name": "Offline bot"}
@@ -524,6 +531,26 @@ async def test_secret_settings_show_status_without_requesting_secret(setup_flow)
     panel = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
     assert panel.text == text.STATUS_CONFIGURED
     assert not any(isinstance(call, SendMessage) and call.text == text.INPUT_PROMPT for call in flow.session.calls)
+
+
+@pytest.mark.asyncio
+async def test_start_and_home_route_to_menu_topic_and_navigation_stays_there(setup_flow):
+    from core.personal_crypto import create_key_bundle
+    from db.repositories.topics_repo import TopicsRepository
+    flow = setup_flow
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
+    flow.bot.get_me.return_value.has_topics_enabled = True
+    await flow.feed(content="/start")
+    thread = await TopicsRepository(flow.db.get_session_factory).get(flow.bot.id, 1001, "menu")
+    panel = next(call for call in reversed(flow.session.calls) if isinstance(call, SendMessage))
+    assert thread is not None and panel.message_thread_id == thread
+    # Home from a legacy/root panel opens the dedicated menu destination.
+    await flow.feed(callback="panel:home", panel_id=99)
+    panel_id = (await flow.state().get_data())["panel_message_id"]
+    assert flow.session.messages[(1001, panel_id)].message_thread_id == thread
+    count = sum(isinstance(call, SendMessage) for call in flow.session.calls)
+    await flow.feed(callback="panel:home", panel_id=panel_id, thread_id=thread)
+    assert sum(isinstance(call, SendMessage) for call in flow.session.calls) == count
 
 
 @pytest.mark.asyncio

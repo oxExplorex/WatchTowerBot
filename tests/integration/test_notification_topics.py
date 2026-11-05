@@ -35,12 +35,14 @@ async def test_startup_prepares_all_account_and_spoiler_topics_without_waiting_f
     monkeypatch.setattr(db_main, "get_account_all", AsyncMock(return_value=accounts))
     await prepare_notification_topics(bot)
     assert {(c.kwargs["chat_id"], c.kwargs["name"]) for c in bot.create_forum_topic.call_args_list} == {
-        (1001, "456"), (1001, "789"), (1001, "spoiler"), (2002, "spoiler")}
-    bot.send_message.assert_not_awaited()
+        (1001, "456"), (1001, "789"), (1001, "spoiler"), (2002, "spoiler"), (1001, "Меню"), (2002, "Меню")}
+    assert bot.send_message.await_count == 2
+    assert all(call.kwargs["reply_markup"].inline_keyboard for call in bot.send_message.call_args_list)
     await prepare_notification_topics(bot)
-    assert bot.create_forum_topic.await_count == 4
+    assert bot.create_forum_topic.await_count == 6
+    assert bot.send_message.await_count == 2
     await prepare_notification_topics(bot, owner_id=2002, account_user_id=999)
-    assert bot.create_forum_topic.await_count == 5
+    assert bot.create_forum_topic.await_count == 7
     assert bot.create_forum_topic.call_args.kwargs == dict(chat_id=2002, name="999")
 
 
