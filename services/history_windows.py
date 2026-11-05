@@ -9,10 +9,6 @@ class HistoryWindow:
     low_id: int = 1
     high_id: int | None = None
 
-    @property
-    def offset_id(self):
-        return self.high_id + 1 if self.high_id is not None and self.high_id < 2**31 - 1 else 0
-
 
 def merge_ranges(ranges):
     merged = []

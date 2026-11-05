@@ -73,11 +73,15 @@ async def test_history_target_logs_distinguish_owner_account_and_dialog_ids(hist
     caplog.set_level(logging.DEBUG)
     await h.db.create_dump_chat_user(2002, 11)
     await h.repository.observe_heads(h.account.uuid, {11: 75})
-    fetch = AsyncMock(return_value=([], []))
+    error = TimeoutError("synthetic-private-message")
+    fetch = AsyncMock(side_effect=error)
     await h.module.backfill_account(h.bot, object(), h.account, h.repository, fetch_page=fetch, pause=h.pause)
-    assert "source=dialogs chat_id_top_id=[(11, 75)]" in caplog.text
+    assert "source=dialogs chats=1" in caplog.text
     assert "owner_id=1001 account_user_id=2002 dump_admin_id=2002" in caplog.text
-    assert "owner_id=1001 account_user_id=2002 chat_id=11" in caplog.text
+    assert "account_user_id=2002 owner_id=1001 chat_id=11 stage=get_chat_history error=TimeoutError" in caplog.text
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "chat_id_top_id" not in caplog.text and "synthetic-private-message" not in caplog.text
     assert "Личныйсекрет1001" not in caplog.text
 
 

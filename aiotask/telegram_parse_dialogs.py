@@ -221,9 +221,6 @@ async def _scan_session(app_session):
                 chat_id = chat.id
                 seen_chat_ids.add(chat_id)
                 top = getattr(dialog, "top_message", None)
-                bot_logger.debug("Dialog observed: owner_id=%s account_user_id=%s chat_id=%s chat_type=%s top_message_id=%s top_chat_id=%s",
-                    account_settings.admin_id, user_id, chat_id, enum_value(getattr(chat, "type", None)),
-                    getattr(top, "id", None), getattr(getattr(top, "chat", None), "id", None))
                 if enum_value(getattr(chat, "type", None)) == "private" and chat_id != getattr(bot, "id", None):
                     history_heads[chat_id] = int(getattr(top, "id", 0) or 0)
 

@@ -1,9 +1,7 @@
-"""One raw history page per selected DM, with durable limits and coverage."""
+"""Bounded DM history batches, with durable limits and coverage."""
 import asyncio
-import logging
 import time
 
-from pyrogram import raw, utils
 from pyrogram.errors import FloodWait
 
 from core.logging import bot_logger
@@ -16,63 +14,23 @@ from services.message_service import AccountContext, save_message
 from utils.message_payload import enum_value, timestamp
 
 
-async def _log_peer_cache(client, chat_id):
-    if not bot_logger.isEnabledFor(logging.DEBUG):
-        return
-    lookup = getattr(getattr(client, "storage", None), "get_peer_by_id", None)
-    state, peer = "unavailable", None
-    if callable(lookup):
-        try:
-            peer = await lookup(chat_id)
-            state = "hit"
-        except KeyError:
-            state = "miss"
-        except Exception as error:
-            state = type(error).__name__
-    bot_logger.debug("History peer cache: chat_id=%s state=%s peer_type=%s cached_user_id=%s access_hash_present=%s",
-        chat_id, state, type(peer).__name__, getattr(peer, "user_id", None),
-        getattr(peer, "access_hash", None) not in (None, 0))
-
-
 async def fetch_history_page(client, chat_id, window):
     if not isinstance(chat_id, int) or chat_id <= 0:
         return None
-    await _log_peer_cache(client, chat_id)
-    try:
-        peer = await client.resolve_peer(chat_id)
-    except Exception as error:
-        bot_logger.warning("History fetch failed: stage=resolve_peer chat_id=%s error=%s", chat_id, type(error).__name__)
-        raise
-    bot_logger.debug("History peer resolved: chat_id=%s peer_type=%s resolved_user_id=%s access_hash_present=%s",
-        chat_id, type(peer).__name__, getattr(peer, "user_id", None),
-        getattr(peer, "access_hash", None) not in (None, 0))
-    if not isinstance(peer, (raw.types.InputPeerUser, raw.types.InputPeerSelf)):
-        return None
-    try:
-        response = await client.invoke(raw.functions.messages.GetHistory(
-            peer=peer, offset_id=window.offset_id, offset_date=0, add_offset=0,
-            limit=HISTORY_PAGE_SIZE, max_id=window.offset_id, min_id=window.low_id - 1, hash=0,
-        ), sleep_threshold=0, retries=0)
-    except Exception as error:
-        bot_logger.warning("History fetch failed: stage=GetHistory chat_id=%s error=%s", chat_id, type(error).__name__)
-        raise
-    if not hasattr(response, "messages"):
-        raise ValueError("Unexpected history response")
-    if any(getattr(user, "id", None) == chat_id and getattr(user, "bot", False)
-           for user in getattr(response, "users", [])):
-        return None
-    raw_ids = [item.id for item in response.messages]
-    bot_logger.debug("History response: chat_id=%s count=%s first_id=%s last_id=%s",
-        chat_id, len(raw_ids), max(raw_ids, default=None), min(raw_ids, default=None))
-    if len(raw_ids) > HISTORY_PAGE_SIZE or any(
-            item < window.low_id or (window.high_id is not None and item > window.high_id) for item in raw_ids):
-        raise ValueError("History response outside requested window")
-    messages = await utils.parse_messages(client, response, replies=0)
-    for message in messages:
-        if not getattr(message, "empty", False) and (
-                message.chat is None or message.chat.id != chat_id or enum_value(message.chat.type) != "private"):
+    observed_ids, messages = [], []
+    # Kurigram's public bounds are inclusive; pagination and parsing belong to the SDK.
+    async for message in client.get_chat_history(
+            chat_id, limit=HISTORY_PAGE_SIZE, min_id=window.low_id, max_id=window.high_id or 0):
+        if len(observed_ids) >= HISTORY_PAGE_SIZE or message.id < window.low_id or (
+                window.high_id is not None and message.id > window.high_id):
+            raise ValueError("History response outside requested window")
+        observed_ids.append(message.id)
+        if getattr(message, "empty", False):
+            continue
+        if message.chat is None or message.chat.id != chat_id or enum_value(message.chat.type) != "private":
             return None
-    return raw_ids, [item for item in messages if not getattr(item, "empty", False)]
+        messages.append(message)
+    return observed_ids, messages
 
 
 async def backfill_account(bot, client, account, repository, *, fetch_page=fetch_history_page, save=save_message,
@@ -84,6 +42,7 @@ async def backfill_account(bot, client, account, repository, *, fetch_page=fetch
     context = AccountContext.from_account(account)
     if context is None:
         return
+    checked = processed = failed = 0
     for index, progress in enumerate(await repository.due_chats(account.uuid)):
         if index >= HISTORY_CHAT_LIMIT:
             break
@@ -94,9 +53,8 @@ async def backfill_account(bot, client, account, repository, *, fetch_page=fetch
         await repository.attempt(progress)
         window = plan_window(progress, await repository.ranges(account.uuid, progress.chat_id), int(time.time()))
         started_at = time.time_ns() // 1000
-        bot_logger.debug("History page request: account_uuid=%s owner_id=%s account_user_id=%s chat_id=%s low_id=%s high_id=%s offset_id=%s limit=%s",
-            account.uuid, account.admin_id, account.user_id, progress.chat_id,
-            window.low_id, window.high_id, window.offset_id, HISTORY_PAGE_SIZE)
+        checked += 1
+        stage = "get_chat_history"
         try:
             page = await fetch_page(client, progress.chat_id, window)
             if page is None:
@@ -106,6 +64,7 @@ async def backfill_account(bot, client, account, repository, *, fetch_page=fetch
             if len(raw_ids) > HISTORY_PAGE_SIZE:
                 raise ValueError("History page exceeds limit")
             saved_ids = []
+            stage = "save_messages"
             for message in messages:
                 edited = getattr(message, "edit_date", None) is not None
                 version_at = timestamp(message.edit_date if edited else message.date) or 0
@@ -114,19 +73,27 @@ async def backfill_account(bot, client, account, repository, *, fetch_page=fetch
                 if result is None:
                     return  # No checkpoint after revocation, deletion or missing personal key.
                 saved_ids.append(message.id)
+            stage = "checkpoint"
             await repository.checkpoint(progress, window, raw_ids, saved_ids, started_at)
+            processed += len(saved_ids)
         except FloodWait as exc:
+            failed += 1
             await repository.defer(account.user_id, int(exc.value) + 5)
             await repository.attempt(progress, error="FloodWait", delay=int(exc.value) + 5)
             break
         except SessionUnavailable:
             return
         except Exception as exc:
+            failed += 1
             await repository.attempt(progress, error=type(exc).__name__, delay=60 * 60)
-            bot_logger.warning("History page deferred: account_user_id=%s owner_id=%s chat_id=%s error=%s",
-                               account.user_id, account.admin_id, progress.chat_id, type(exc).__name__)
+            bot_logger.warning("History page deferred: account_user_id=%s owner_id=%s chat_id=%s stage=%s error=%s range=%s..%s",
+                account.user_id, account.admin_id, progress.chat_id, stage,
+                type(exc).__name__, window.low_id, window.high_id)
             if is_fatal_session_error(exc, include_not_started=True):
                 return
+    if checked:
+        bot_logger.info("History pass: account_user_id=%s chats=%s messages_processed=%s deferred=%s",
+                        account.user_id, checked, processed, failed)
 
 
 async def run_history_backfill(bot, session_manager):

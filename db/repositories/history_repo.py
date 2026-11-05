@@ -109,8 +109,7 @@ class HistoryRepository:
             await session.execute(insert.on_conflict_do_update(index_elements=["account_uuid", "chat_id"], set_={
                 "known_top_id": case((HistoryChat.known_top_id > insert.excluded.known_top_id, HistoryChat.known_top_id),
                                      else_=insert.excluded.known_top_id)}))
-            bot_logger.debug("History targets upsert: account_uuid=%s source=%s chat_id_top_id=%s",
-                             account_uuid, source, items[offset:offset + 100])
+        bot_logger.debug("History targets: account_uuid=%s source=%s chats=%s", account_uuid, source, len(items))
 
     async def observe_heads(self, account_uuid, heads):
         async with self._session_factory()() as session, session.begin():
