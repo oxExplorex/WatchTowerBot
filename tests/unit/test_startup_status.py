@@ -45,6 +45,19 @@ def test_html_and_bursts_are_coalesced_with_a_permanent_final_message(tmp_path):
     assert report.render().count("<b>") == 2
 
 
+def test_fatal_failure_sends_a_new_alert_instead_of_silently_editing_progress(tmp_path):
+    sender = Transport()
+    report = reporter(tmp_path, sender)
+    report.update("Подготовка", "Запуск")
+    assert sender.first.wait(3)
+    report.fail(RuntimeError("password=private-never-send"))
+    report.close(timeout=3)
+    method, payload = sender.calls[-1]
+    assert method == "sendMessage" and payload["disable_notification"] is False
+    assert "RuntimeError" in payload["text"] and "private-never-send" not in payload["text"]
+    assert sum(not values.get("disable_notification", True) for _, values in sender.calls) == 1
+
+
 def test_edit_failure_sends_replacement_and_handoff_reuses_new_message_id(tmp_path):
     sender = Transport()
 

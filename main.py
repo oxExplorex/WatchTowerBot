@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 
-from scripts.migrate_telegram_sessions import migrate_legacy_sessions
 from scripts.startup_status import current_reporter, start_bootstrap_notifications
 
 if __name__ == "__main__":
@@ -164,10 +163,8 @@ async def start_polling_bot():
                     await _notify_admins_startup_failure(constant_text.STARTUP_MISSING_ENCRYPTION_KEY_TEXT)
             raise
         if reporter is not None:
-            from db.main import get_admin_ids
-            reporter.configure(bot.token, await get_admin_ids())
+            reporter.configure(bot.token, admin_id_list)
             reporter.update("Telegram-сессии", "Подготовка сохранённых авторизаций")
-        await run_blocking(migrate_legacy_sessions)
         await account_operations.recover_interrupted()
         await initialize_runtime_state()
 
@@ -217,6 +214,10 @@ async def start_polling_bot():
     except BaseException as error:
         if reporter is not None and reporter.state != "failed":
             reporter.fail(error)
+            await run_blocking(reporter.close)
+        elif reporter is None and isinstance(error, Exception):
+            await _notify_admins_startup_failure(constant_text.STARTUP_FATAL_ERROR_TEXT.format(
+                error=type(error).__name__))
         raise
     finally:
         bot.session.middleware.unregister(polling_health)

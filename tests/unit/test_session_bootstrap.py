@@ -138,7 +138,6 @@ def test_real_loader_and_consumers_share_one_registry():
             dispatcher = types.SimpleNamespace(include_router=Mock(), start_polling=AsyncMock(),
                                                update=types.SimpleNamespace(outer_middleware=Mock()))
             main.Dispatcher = lambda **kwargs: dispatcher
-            main.migrate_legacy_sessions = Mock(return_value=0)
             main.send_log_to_active_bot = AsyncMock()
             main.starting_tg_parse_dialogs_handler = AsyncMock()
             ready = asyncio.get_running_loop().create_future()
@@ -195,11 +194,11 @@ def test_real_loader_and_consumers_share_one_registry():
             async def skip_delays(seconds):
                 await original_sleep(0)
 
-            for phase in ("database", "session_migration", "polling", "cancellation"):
+            for phase in ("database", "account_recovery", "polling", "cancellation"):
                 main.bot.session.close.reset_mock()
                 main.close_database.reset_mock()
                 main.connect_database.side_effect = RuntimeError("offline DB failure") if phase == "database" else None
-                main.migrate_legacy_sessions.side_effect = RuntimeError("offline migration failure") if phase == "session_migration" else None
+                main.account_operations.recover_interrupted.side_effect = RuntimeError("offline recovery failure") if phase == "account_recovery" else None
                 dispatcher.start_polling.side_effect = (
                     asyncio.CancelledError() if phase == "cancellation" else
                     RuntimeError("offline polling failure") if phase == "polling" else None

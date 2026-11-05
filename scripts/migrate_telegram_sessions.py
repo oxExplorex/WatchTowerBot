@@ -9,10 +9,18 @@ from uuid import uuid4
 DEFAULT_SESSION_DIRECTORY = Path(__file__).resolve().parents[1] / "data" / "session"
 
 
+class SessionSchemaError(RuntimeError):
+    """Only schema metadata, never session row values or credentials."""
+
+    def __init__(self, columns):
+        self.columns = tuple(sorted(columns))
+        super().__init__("Unsupported legacy Telegram username schema; automatic conversion stopped")
+
+
 def migrate_legacy_session(path: Path) -> bool:
     """Keep the pyrofork v4 bridge: its schema version differs from Kurigram v4.
 
-    Only run with the bot stopped. Preserve the original SQLite database through
+    Only run with this client stopped. Preserve the original SQLite database through
     SQLite's backup API before changing metadata, peers or usernames.
     A failed earlier migration may already have created usernames while leaving
     version 4. Its existence alone does not mean this bridge has completed.
@@ -39,7 +47,7 @@ def migrate_legacy_session(path: Path) -> bool:
         if {row[1] for row in connection.execute("PRAGMA table_info(update_state)")} != {"id", "pts", "qts", "date", "seq"}:
             raise RuntimeError("Unsupported legacy Telegram update schema; automatic conversion stopped")
         if "usernames" in tables and {row[1] for row in connection.execute("PRAGMA table_info(usernames)")} != {"id", "username"}:
-            raise RuntimeError("Unsupported legacy Telegram username schema; automatic conversion stopped")
+            raise SessionSchemaError(row[1] for row in connection.execute("PRAGMA table_info(usernames)"))
 
         backup_path = path.with_name(f"{path.name}.pyrofork-v4.{uuid4().hex}.bak")
         backup = sqlite3.connect(backup_path)

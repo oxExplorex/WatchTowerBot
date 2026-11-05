@@ -1,5 +1,9 @@
 EMOJI_YES_OR_NO_TEXT = ["✅", "❌"]
 START_COMMAND_DESCRIPTION = "Открыть панель управления"
+STARTUP_FATAL_ERROR_TEXT = (
+    "<b>WatchTowerBot не запущен</b>\n\nОшибка: <code>{error}</code>.\n"
+    "Подробности — в последнем файле лога. После исправления нужен ручной запуск."
+)
 START_PANEL_OPENING_TEXT = "Открываю панель управления…"
 
 START_MESSAGE_TEXT = (

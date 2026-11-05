@@ -237,10 +237,10 @@ class StartupReporter:
         if self.thread is not None and self.thread is not threading.current_thread():
             self.thread.join(timeout=timeout)
 
-    def _deliver(self, chat_id, text):
+    def _deliver(self, chat_id, text, *, alert=False):
         common = dict(chat_id=chat_id, text=text, parse_mode="HTML")
         identity = self.message_ids.get(chat_id)
-        if identity:
+        if identity and not alert:
             try:
                 self.transport("editMessageText", dict(common, message_id=identity))
                 return
@@ -249,7 +249,7 @@ class StartupReporter:
                     return
                 if error.code != 400:
                     raise
-        result = self.transport("sendMessage", dict(common, disable_notification=True))
+        result = self.transport("sendMessage", dict(common, disable_notification=not alert))
         with self.condition:
             self.message_ids[chat_id] = int(result["message_id"])
             self._save()
@@ -273,12 +273,13 @@ class StartupReporter:
                     self.condition.wait(delay)
                     continue
                 revision, text, recipients = self.revision, self.render(), list(self.recipients)
+                alert = self.state == "failed"
             retry = False
             for chat_id in recipients:
                 if chat_id in self.blocked or self.sent_text.get(chat_id) == text:
                     continue
                 try:
-                    self._deliver(chat_id, text)
+                    self._deliver(chat_id, text, alert=alert)
                     self.sent_text[chat_id] = text
                 except DeliveryError as error:
                     if error.code in (401, 403):

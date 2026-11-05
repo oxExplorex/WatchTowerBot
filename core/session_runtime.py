@@ -71,7 +71,11 @@ async def stop_client(app_session) -> None:
 async def close_partial_client(client):
     await stop_client(client)
     storage = getattr(client, "storage", None)
-    if not getattr(client, "is_connected", False) and getattr(storage, "conn", None) is not None:
+    try:
+        connection = getattr(storage, "conn", None)
+    except RuntimeError:
+        connection = None  # Kurigram rejects conn access before storage.open().
+    if not getattr(client, "is_connected", False) and connection is not None:
         await storage.close()
 
 
@@ -92,6 +96,9 @@ async def start_all_clients(clients):
         if isinstance(result, Exception):
             bot_logger.error("Telegram client startup failed: %s; reason=%s; location=%s",
                              type(result).__name__, session_error_code(result), failure_location(result))
+            from scripts.migrate_telegram_sessions import SessionSchemaError
+            if isinstance(result, SessionSchemaError):
+                bot_logger.error("Session schema metadata: usernames.columns=%s", result.columns)
         elif isinstance(result, BaseException):
             continue
         try:

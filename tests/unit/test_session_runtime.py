@@ -29,6 +29,22 @@ def client(number, *, connected=True, initialized=True):
 
 
 @pytest.mark.asyncio
+async def test_one_unknown_session_does_not_prevent_other_clients_starting(runtime, monkeypatch, caplog):
+    from scripts.migrate_telegram_sessions import SessionSchemaError
+    module, manager = runtime
+    broken, healthy = client("111"), client("222")
+    started = []
+    async def start(value):
+        if value is broken:
+            raise SessionSchemaError(["unknown"])
+        started.append(value)
+    monkeypatch.setattr(module, "start_client", start)
+    await module.start_all_clients([broken, healthy])
+    assert started == [healthy]
+    assert "usernames.columns" in caplog.text and "unknown" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_lookup_and_status_use_current_registry(runtime):
     module, manager = runtime
     active = client("111")
