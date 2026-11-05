@@ -175,13 +175,15 @@ async def test_real_dispatcher_setup_deletes_inputs_before_profile_writes_and_ha
     flow.writes.assert_not_awaited()
     await flow.feed(callback="personal_secret:setup")
     assert await flow.state().get_state() == SECRET_INPUT
+    first_prompt = (await flow.state().get_data())["secret_prompt_id"]
     first = await flow.feed(content="Рыжий кот 527")
     assert await flow.state().get_state() == SECRET_CONFIRM
     assert await flow.keys.get(1001) is None
     assert "рыжийкот527" not in str(await flow.state().get_data())
+    second_prompt = (await flow.state().get_data())["secret_prompt_id"]
     second = await flow.feed(content="рыжийКОТ527")
     assert await flow.keys.get(1001) is not None
-    assert {call.message_id for call in flow.session.calls if isinstance(call, DeleteMessage)} == {first, second}
+    assert {call.message_id for call in flow.session.calls if isinstance(call, DeleteMessage)} == {first, second, first_prompt, second_prompt}
     assert "Рыжий кот 527" not in str(flow.session.calls)
     flow.writes.assert_not_awaited()
     assert flow.handled == []

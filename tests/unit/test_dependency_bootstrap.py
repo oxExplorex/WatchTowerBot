@@ -52,7 +52,8 @@ def test_old_updater_restart_installs_all_requirements_once(bootstrap):
     telegram.assert_called_once_with()
     pip.assert_called_once()
     arguments = pip.call_args.args
-    assert arguments[:6] == ("install", "--upgrade", "--upgrade-strategy", "eager", "--index-url", "https://pypi.org/simple")
+    assert arguments[:3] == ("install", "--index-url", "https://pypi.org/simple")
+    assert "--upgrade" not in arguments
     assert "--constraint" in arguments and arguments[-2] == "-r"
     marker = installer.PROJECT_ROOT / "data/temp/dependency-state.json"
     assert json.loads(marker.read_text(encoding="utf-8"))["packages"]["google-genai"] == "2.34.0"
@@ -91,9 +92,13 @@ def test_failed_install_is_not_cached_and_can_be_retried(bootstrap):
     assert installer.ensure_project_dependencies() is True
 
 
-def test_explicit_installer_rechecks_even_with_valid_cache(bootstrap):
+def test_explicit_installer_reuses_valid_cache(monkeypatch, bootstrap):
     installer.ensure_project_dependencies()
     bootstrap[-1].reset_mock()
+    monkeypatch.setattr(installer.sys, "argv", ["install_dependencies.py"])
+    installer.install_project_dependencies()
+    bootstrap[-1].assert_not_called()
+    monkeypatch.setattr(installer.sys, "argv", ["install_dependencies.py", "--force"])
     installer.install_project_dependencies()
     bootstrap[-1].assert_called_once()
 
@@ -141,7 +146,7 @@ def test_missing_accelerator_is_optional(monkeypatch):
     assert all("--only-binary=:all:" in call.args for call in pip.call_args_list)
 
 
-def test_batches_have_five_requirements_full_constraints_and_truthful_progress(monkeypatch, bootstrap):
+def test_one_resolver_pass_has_full_constraints_and_truthful_progress(monkeypatch, bootstrap):
     requirements, _, _, pip = bootstrap
     lines = [installer.KURIGRAM_REQUIREMENT] + [f"package{i}[extra]==1.0" for i in range(12)]
     requirements.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -153,10 +158,10 @@ def test_batches_have_five_requirements_full_constraints_and_truthful_progress(m
 
     pip.side_effect = install
     installer.ensure_project_dependencies(progress=lambda *args: progress.append(args))
-    assert list(map(len, batches)) == [5, 5, 2]
+    assert list(map(len, batches)) == [12]
     assert [item for batch in batches for item in batch] == lines[1:]
     assert all("kurigram==" in value and "[extra]" not in value for value in constraints)
-    assert [entry[0] for entry in progress if len(entry) == 2] == [6, 11, 13]
+    assert [entry[0] for entry in progress if len(entry) == 2] == [13]
     assert progress[-1] == (13, 13)
 
 

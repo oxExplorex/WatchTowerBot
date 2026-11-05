@@ -7,7 +7,7 @@ from pathlib import Path
 
 import colorlog
 
-from core.log_safety import RedactingFormatter
+from core.log_safety import RedactingFormatter, route_library_errors
 from data.config import path_logs
 from utils.datetime_tools import DateTime
 
@@ -32,6 +32,7 @@ def _build_logger() -> logging.Logger:
             if not isinstance(handler.formatter, RedactingFormatter):
                 handler.setFormatter(RedactingFormatter(handler.formatter or logging.Formatter()))
         _apply_level(logger, level)
+        route_library_errors(logger)
         return logger
 
     log_path = Path(path_logs.format(d=DateTime().time_strftime("%d.%m.%Y")))
@@ -58,7 +59,7 @@ def _build_logger() -> logging.Logger:
     file_log.setFormatter(
         RedactingFormatter(logging.Formatter(
             "[%(asctime)s | %(levelname)s]: %(filename)s | %(funcName)s:%(lineno)d - %(message)s",
-            datefmt="%m.%d.%Y %H:%M:%S",
+            datefmt="%d.%m.%Y %H:%M:%S",
         ))
     )
 
@@ -66,6 +67,7 @@ def _build_logger() -> logging.Logger:
     logger.addHandler(console_out)
     logger.propagate = False
     _apply_level(logger, level)
+    route_library_errors(logger)
 
     logging.getLogger("aiogram").setLevel(logging.ERROR)
     logging.getLogger("apscheduler").setLevel(logging.ERROR)

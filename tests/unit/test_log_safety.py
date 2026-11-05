@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.log_safety import RedactingFormatter, redact_log_text
+from core.log_safety import RedactingFormatter, redact_log_text, route_library_errors, LibraryErrorHandler
 
 
 @pytest.mark.parametrize("message,private", [
@@ -41,6 +41,34 @@ def test_formatter_redacts_exception_text_and_preserves_stack_location():
     assert "synthetic-private-password" not in output
     assert "Traceback" in output
     assert "test_log_safety.py" in output
+
+
+def test_library_errors_reach_the_file_once_with_redaction(tmp_path):
+    path = tmp_path / "errors.txt"
+    target = logging.Logger("offline-library-target")
+    target.propagate = False
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setFormatter(RedactingFormatter(logging.Formatter("%(name)s %(message)s")))
+    target.addHandler(handler)
+    root = logging.getLogger()
+    original = list(root.handlers)
+    try:
+        route_library_errors(target)
+        route_library_errors(target)
+        assert sum(isinstance(item, LibraryErrorHandler) and item.target is target for item in root.handlers) == 1
+        source = logging.Logger("pyrogram.dispatcher", level=logging.ERROR)
+        source.parent = root
+        try:
+            raise RuntimeError("password=synthetic-private-password")
+        except RuntimeError:
+            source.exception("Unexpected exception raised in MessageHandler")
+    finally:
+        root.handlers[:] = original
+        handler.close()
+    output = path.read_text(encoding="utf-8")
+    assert output.count("Unexpected exception raised in MessageHandler") == 1
+    assert "Traceback" in output and "pyrogram.dispatcher" in output
+    assert "synthetic-private-password" not in output
 
 
 @pytest.mark.asyncio

@@ -58,10 +58,10 @@ def approval_keyboard(operation):
 
 
 def delete_keyboard(operation, *, back_callback=HOME_CALLBACK):
-    return with_navigation(InlineKeyboardMarkup(inline_keyboard=[
+    return InlineKeyboardMarkup(inline_keyboard=[
         [button(text.BTN_CONFIRM_DELETE, "erase", operation.uuid.hex)],
         [button(text.BTN_CANCEL, "reject", operation.uuid.hex)],
-    ]), back_callback)
+    ])
 
 
 def status_keyboard(operation, actor_id):

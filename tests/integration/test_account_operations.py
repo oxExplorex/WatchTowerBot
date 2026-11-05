@@ -118,7 +118,7 @@ async def test_transfer_survives_restart_keeps_originals_and_publishes_account_o
 
 
 @pytest.mark.asyncio
-async def test_self_delete_erases_content_but_keeps_chat_history_and_shared_files(account_data, monkeypatch):
+async def test_self_delete_preserves_content_chat_history_and_shared_files(account_data, monkeypatch):
     from services import account_operations
 
     data = account_data
@@ -141,12 +141,22 @@ async def test_self_delete_erases_content_but_keeps_chat_history_and_shared_file
     assert (await restarted.get(pending.uuid, 2002)).status == "confirm_delete"
     await restarted.confirm_delete(pending.uuid, 2002)
     assert await record(data, 9) is None
-    assert await restarted.erase_content(pending.uuid)
-    await restarted.finish_delete(pending.uuid)
+    from unittest.mock import AsyncMock, Mock
+    monkeypatch.setattr(account_operations, "repository", restarted)
+    monkeypatch.setattr(account_operations, "stop_and_remove_session", AsyncMock())
+    files = Mock()
+    monkeypatch.setattr(account_operations, "remove_account_session_files", files)
+    # The immediate task and the periodic retry share this idempotent path.
+    operation = await restarted.get(pending.uuid, 2002)
+    await account_operations.process_deletion(operation)
+    await account_operations.process_deletion(operation)
+    files.assert_called_once_with("79000000001", strict=True)
+    assert (await restarted.get(pending.uuid, 2002)).status == "complete"
     async with db.create_unit_of_work() as uow:
         messages = (await uow.session.scalars(select(StoredMessage).where(StoredMessage.account_user_id == 2002))).all()
-        assert len(messages) == 1 and messages[0].latest_revision_uuid is None
-        assert not list(await uow.session.scalars(select(MessageRevision).where(MessageRevision.message_uuid == messages[0].uuid)))
+        assert len(messages) == 1 and messages[0].latest_revision_uuid is not None
+        assert len(list(await uow.session.scalars(select(MessageRevision).where(MessageRevision.message_uuid == messages[0].uuid)))) == 1
+        assert len(list(await uow.session.scalars(select(MessageAttachment)))) == 2
         assert len(list(await uow.session.scalars(select(HistoryUser)))) == before
     assert await db.get_account_uuid(data["account"].uuid, 1001) is None
     assert await db.get_account_uuid(other.uuid, 1001) is not None
@@ -213,7 +223,7 @@ async def test_failed_publication_rolls_back_ciphertext_and_can_resume(account_d
 
 
 @pytest.mark.asyncio
-async def test_delete_waits_for_media_lease_and_only_requester_can_cancel(account_data):
+async def test_disconnection_preserves_inflight_media_and_only_requester_can_cancel(account_data):
     import time
 
     data = account_data
@@ -226,12 +236,12 @@ async def test_delete_waits_for_media_lease_and_only_requester_can_cancel(accoun
         attachment = await uow.session.scalar(select(MessageAttachment))
         attachment.status, attachment.lease_until = "downloading", int(time.time()) + 600
     await operations.confirm_delete(pending.uuid, 2002)
-    assert not await operations.erase_content(pending.uuid)
-    assert await db.get_account_uuid(data["account"].uuid, 1001) is not None
+    assert await operations.remove_connection(pending.uuid)
+    assert await db.get_account_uuid(data["account"].uuid, 1001) is None
     async with db.create_unit_of_work() as uow:
         attachment = await uow.session.scalar(select(MessageAttachment))
-        attachment.lease_until = 0
-    assert await operations.erase_content(pending.uuid)
+        assert attachment.status == "downloading" and attachment.lease_until > int(time.time())
+
 
 
 @pytest.mark.asyncio
@@ -291,7 +301,7 @@ async def test_completed_self_delete_sends_one_notification_without_repeating(ac
     account = await db.create_account_tg(1001, 1001, data["source_app"].uuid, "79000000003")
     pending = await operations.request_delete(account.uuid, 1001)
     await operations.confirm_delete(pending.uuid, 1001)
-    assert await operations.erase_content(pending.uuid)
+    assert await operations.remove_connection(pending.uuid)
     await operations.finish_delete(pending.uuid)
     monkeypatch.setattr(account_operations, "get_session_factory", db.get_session_factory)
     bot = AsyncMock()

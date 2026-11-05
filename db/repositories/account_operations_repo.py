@@ -1,17 +1,14 @@
-"""Persistent approvals and account-scoped erasure, independent of Telegram FSM."""
+"""Persistent approvals and account disconnection, independent of Telegram FSM."""
 import time
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, exists, or_, select, update
 
 from db.account_operation_models import AccountOperation, ArchiveBlobCleanup, TransferAttachment, TransferRevision
-from db.media_models import MessageAttachment
-from db.message_models import MessageReceipt, MessageRevision, StoredMessage
 from db.models import Account, TelegramApp
 from db.personal_models import OwnerArchiveKey
 from db.repositories.account_locks import lock_account, unique_account
 from db.repositories.base import conflict_insert
-from db.repositories.personal_repo import lock_owner
 
 TRANSFER_OPEN = {"pending", "needs_secret", "preparing"}
 
@@ -213,7 +210,7 @@ class AccountOperationsRepository:
             return list((await session.scalars(select(AccountOperation).where(
                 AccountOperation.status.in_({"deleting", "removing_session"})))).all())
 
-    async def erase_content(self, operation_id):
+    async def remove_connection(self, operation_id):
         async with self._session_factory()() as session, session.begin():
             operation = await session.get(AccountOperation, operation_id)
             if operation is None or operation.status != "deleting":
@@ -222,23 +219,7 @@ class AccountOperationsRepository:
             await session.refresh(operation)
             if operation.status != "deleting":
                 return False
-            await lock_owner(session, operation.owner_id)
-            message_ids = select(StoredMessage.uuid).where(StoredMessage.owner_id == operation.owner_id,
-                StoredMessage.account_user_id == operation.account_user_id)
-            revision_ids = select(MessageRevision.uuid).where(MessageRevision.message_uuid.in_(message_ids))
-            attachments = select(MessageAttachment).where(MessageAttachment.revision_uuid.in_(revision_ids))
-            # A claimed Bot API download may still be writing outside the DB lock.
-            if await session.scalar(select(exists().where(MessageAttachment.revision_uuid.in_(revision_ids),
-                    MessageAttachment.status == "downloading", MessageAttachment.lease_until > int(time.time())))):
-                return False
-            for item in await session.scalars(attachments):
-                await queue_blob_cleanup(session, item.owner_id, item.blob_key)
-            await session.execute(delete(MessageAttachment).where(MessageAttachment.revision_uuid.in_(revision_ids)))
-            await session.execute(update(MessageReceipt).where(MessageReceipt.message_uuid.in_(message_ids)).values(revision_uuid=None))
-            await session.execute(update(StoredMessage).where(StoredMessage.uuid.in_(message_ids)).values(
-                latest_revision_uuid=None, latest_version_at=None))
-            await session.execute(delete(MessageRevision).where(MessageRevision.message_uuid.in_(message_ids)))
-            # Chat presence/history, account health and message identity metadata survive.
+            # Archive ownership, ciphertext, revisions and media remain untouched.
             await session.execute(delete(Account).where(Account.uuid == operation.account_uuid))
             operation.status = "removing_session"
             operation.updated_at = int(time.time())

@@ -174,9 +174,13 @@ def test_unknown_legacy_schema_is_not_modified(legacy_session):
         assert connection.execute("SELECT number FROM version").fetchone() == (3,)
 
 
-@pytest.mark.parametrize("existing_names", [False, True])
+@pytest.mark.parametrize("existing_names", [False, True, "pyrofork"])
 def test_failed_session_conversion_rolls_back_and_keeps_backup(monkeypatch, legacy_session, existing_names):
-    if existing_names:
+    if existing_names == "pyrofork":
+        with closing(sqlite3.connect(legacy_session)) as connection, connection:
+            connection.execute("CREATE TABLE usernames (id TEXT PRIMARY KEY, peer_id INTEGER NOT NULL, last_update_on INTEGER NOT NULL)")
+            connection.execute("INSERT INTO usernames VALUES ('cached_alias', 11, 1700000000)")
+    elif existing_names:
         with closing(sqlite3.connect(legacy_session)) as connection, connection:
             connection.execute("CREATE TABLE usernames (id INTEGER, username TEXT)")
             connection.execute("INSERT INTO usernames VALUES (11, 'already_cached')")
@@ -199,8 +203,47 @@ def test_failed_session_conversion_rolls_back_and_keeps_backup(monkeypatch, lega
     assert len(list(legacy_session.parent.glob("*.pyrofork-v4.*.bak"))) == 1
     with closing(sqlite3.connect(legacy_session)) as connection:
         assert connection.execute("SELECT number FROM version").fetchone() == (4,)
-        if existing_names:
+        if existing_names == "pyrofork":
+            assert connection.execute("SELECT * FROM usernames").fetchall() == [("cached_alias", 11, 1700000000)]
+            assert connection.execute("SELECT name FROM sqlite_master WHERE name = 'usernames_kurigram_v4'").fetchone() is None
+        elif existing_names:
             assert connection.execute("SELECT id, username FROM usernames").fetchall() == [(11, "already_cached")]
         else:
             assert connection.execute("SELECT name FROM sqlite_master WHERE name = 'usernames'").fetchone() is None
         assert connection.execute("SELECT auth_key FROM sessions").fetchone() == (bytes(range(256)),)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_names", [True, False])
+async def test_pyrofork_username_table_is_converted_without_losing_authorization(legacy_session, legacy_names):
+    # Exact UNAME_SCHEMA from pyrofork v2.3.69, including its update trigger.
+    with closing(sqlite3.connect(legacy_session)) as connection, connection:
+        connection.executescript(
+            "CREATE TABLE usernames (id TEXT PRIMARY KEY, peer_id INTEGER NOT NULL, "
+            "last_update_on INTEGER NOT NULL DEFAULT (CAST(STRFTIME('%s', 'now') AS INTEGER)));"
+            "CREATE TRIGGER trg_usernames_last_update_on AFTER UPDATE ON usernames BEGIN "
+            "UPDATE usernames SET last_update_on = CAST(STRFTIME('%s', 'now') AS INTEGER) WHERE id = NEW.id; END;"
+            "INSERT INTO usernames VALUES ('cached_alias', 11, 1700000000);"
+        )
+        if not legacy_names:
+            connection.execute("ALTER TABLE peers DROP COLUMN username")
+    assert migrate_legacy_sessions(legacy_session.parent) == 1
+    backups = list(legacy_session.parent.glob("*.pyrofork-v4.*.bak"))
+    assert len(backups) == 1
+    with closing(sqlite3.connect(backups[0])) as backup:
+        assert backup.execute("SELECT * FROM usernames").fetchall() == [("cached_alias", 11, 1700000000)]
+    storage = SQLiteStorage("legacy", legacy_session.parent)
+    try:
+        await storage.open()
+        assert await storage.version() == 7
+        assert await storage.auth_key() == bytes(range(256))
+        assert await storage.user_id() == 123456
+        expected = [(11, "cached_alias"), (11, "legacy_user")] if legacy_names else [(11, "cached_alias")]
+        assert storage.conn.execute("SELECT id, username FROM usernames ORDER BY username").fetchall() == expected
+        # The old trigger must not reference the removed timestamp column.
+        storage.conn.execute("UPDATE usernames SET username = 'renamed_alias' WHERE username = 'cached_alias'")
+        assert storage.conn.execute("SELECT pts, qts, seq FROM update_state").fetchone() == (1, 2, 3)
+    finally:
+        await storage.close()
+    assert migrate_legacy_sessions(legacy_session.parent) == 0
+    assert list(legacy_session.parent.glob("*.pyrofork-v4.*.bak")) == backups

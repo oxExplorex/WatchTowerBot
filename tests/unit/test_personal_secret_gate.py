@@ -9,7 +9,7 @@ from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from callbacks.personal_secret import CANCEL_CALLBACK, PersonalSecretCallback, SecretAction
-from keyboards.inline.personal_secret import setup_keyboard
+from keyboards.inline.personal_secret import setup_keyboard, cancel_keyboard
 from middlewares.personal_secret import (PersonalSecretMiddleware, SECRET_CONFIRM, SECRET_INPUT,
                                          SECRET_VERIFY, SETUP_CALLBACK)
 from states.personal_secret import PersonalSecret
@@ -26,13 +26,14 @@ def test_personal_secret_contracts_keep_pre_upgrade_states_and_buttons():
         assert PersonalSecretCallback.unpack(payload).action == action
         assert PersonalSecretCallback(action=action).pack() == payload
     assert setup_keyboard().inline_keyboard[0][0].callback_data == "personal_secret:setup"
+    assert [[button.callback_data for button in row] for row in cancel_keyboard().inline_keyboard] == [[CANCEL_CALLBACK]]
 
 
 def message(text="/start"):
     return SimpleNamespace(text=text, chat=SimpleNamespace(id=123, type="private"),
                            message_id=77, answer=AsyncMock(), delete=AsyncMock(),
                            edit_text=AsyncMock(return_value=SimpleNamespace(message_id=77)),
-                           bot=SimpleNamespace(edit_message_text=AsyncMock()))
+                           bot=SimpleNamespace(edit_message_text=AsyncMock(), delete_message=AsyncMock()))
 
 
 def update(msg=None, call=None, business=None):
@@ -228,3 +229,26 @@ async def test_start_exits_secret_input_and_opens_panel(setup):
     await gate(handler, update(message("/start")), context(state))
     handler.assert_awaited_once()
     assert await state.get_state() is None and await state.get_data() == {}
+
+
+@pytest.mark.asyncio
+async def test_verify_removes_prompt_and_next_add_does_not_ask_again(setup):
+    repository, state, gate = setup
+    repository.get.return_value = SimpleNamespace(public_key="offline")
+    gate.dialog._crypto = AsyncMock(return_value=object())
+    panel = message()
+    panel.answer.return_value = SimpleNamespace(message_id=88)
+    call = SimpleNamespace(data="apps_admin_menu_add", message=panel, answer=AsyncMock())
+    handler = AsyncMock()
+    await gate(handler, update(call=call), context(state))
+    assert (await state.get_data())["secret_prompt_id"] == 88
+    secret = message("Новыйсекрет527")
+    await gate(handler, update(secret), context(state))
+    secret.delete.assert_awaited_once()
+    secret.bot.delete_message.assert_awaited_once_with(123, 88)
+    assert await state.get_state() is None
+    assert (await state.get_data())["personal_verified_until"] > time.time()
+    panel.answer.reset_mock()
+    await gate(handler, update(call=call), context(state))
+    handler.assert_awaited_once()
+    panel.answer.assert_not_awaited()

@@ -160,19 +160,17 @@ def ensure_project_dependencies(*, force: bool = False, progress=None) -> bool:
         progress(completed, total, "Telegram-библиотека подготовлена")
     with tempfile.TemporaryDirectory(prefix="watchtower_requirements_") as directory:
         constraints = Path(directory) / "constraints.txt"
-        # All batches share the full pinned versions, including dependencies
-        # declared in a later batch. pip constraints must not contain extras.
+        # Keep the reviewed Telegram pin in the resolver without reinstalling it.
+        # pip constraints must not contain extras.
         constraints.write_text("\n".join(re.sub(r"\[[^\]]+\]", "", line) for line in lines) + "\n", encoding="utf-8")
-        for offset in range(0, len(remaining), 5):
-            batch = remaining[offset:offset + 5]
+        if remaining:
             batch_file = Path(directory) / "requirements.txt"
-            batch_file.write_text("\n".join(batch) + "\n", encoding="utf-8")
+            batch_file.write_text("\n".join(remaining) + "\n", encoding="utf-8")
             if progress is not None:
-                names = ", ".join(line.split("==", 1)[0] for line in batch)
-                progress(completed, total, f"Подготовка: {names}")
-            _pip("install", "--upgrade", "--upgrade-strategy", "eager", "--index-url", "https://pypi.org/simple",
+                progress(completed, total, "Установка изменённых и недостающих зависимостей")
+            _pip("install", "--index-url", "https://pypi.org/simple",
                  "--constraint", str(constraints), "-r", str(batch_file))
-            completed += len(batch)
+            completed += len(remaining)
             if progress is not None:
                 progress(completed, total)
 
@@ -191,7 +189,7 @@ def ensure_project_dependencies(*, force: bool = False, progress=None) -> bool:
 
 
 def install_project_dependencies() -> None:
-    ensure_project_dependencies(force=True)
+    ensure_project_dependencies(force="--force" in sys.argv[1:])
 
 
 if __name__ == "__main__":

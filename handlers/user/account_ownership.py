@@ -18,7 +18,7 @@ from filters.all_filters import IsAdmin, IsPrivate
 from keyboards.inline.account_ownership import (accounts_keyboard, delete_keyboard,
     detail_keyboard, profiles_keyboard, self_menu_keyboard, status_keyboard)
 from keyboards.inline.personal_secret import setup_keyboard
-from services.account_operations import repository
+from services.account_operations import repository, schedule_deletion
 from utils.others import close_state_pyrogram_client
 from utils.panel import edit_panel
 from keyboards.inline.navigation import navigation_keyboard
@@ -114,7 +114,8 @@ async def own_account_callback(call: CallbackQuery, callback_data: OwnAccount, s
                 account = await session.get(Account, operation.account_uuid)
             if account is not None and account.user_id != actor_id and not await is_admin(actor_id):
                 raise PermissionError("Account management access was revoked")
-            await repository.confirm_delete(operation.uuid, actor_id)
+            operation = await repository.confirm_delete(operation.uuid, actor_id)
+            schedule_deletion(operation)
             parent = "panel:accounts" if operation.owner_id == actor_id else HOME_CALLBACK
             await edit_panel(call.message, text.DELETE_STARTED, navigation_keyboard(parent))
         elif action in {"approve", "reject", "status"}:

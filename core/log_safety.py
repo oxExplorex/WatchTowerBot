@@ -30,3 +30,20 @@ class RedactingFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         return redact_log_text(self.delegate.format(record))
+
+
+class LibraryErrorHandler(logging.Handler):
+    """Route propagated library warnings through the application's safe handlers."""
+
+    def __init__(self, target):
+        super().__init__(logging.WARNING)
+        self.target = target
+
+    def emit(self, record):
+        self.target.handle(record)
+
+
+def route_library_errors(target):
+    root = logging.getLogger()
+    if not any(isinstance(handler, LibraryErrorHandler) and handler.target is target for handler in root.handlers):
+        root.addHandler(LibraryErrorHandler(target))

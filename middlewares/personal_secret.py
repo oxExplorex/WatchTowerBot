@@ -91,6 +91,7 @@ class PersonalSecretMiddleware(BaseMiddleware):
                 await call.answer(texts.CANCEL_UNAVAILABLE)
                 return None
             previous = await state.get_data()
+            await self.dialog.clear_prompt(message, state)
             await state.clear()
             await call.answer(texts.INPUT_CANCELLED)
             await edit_panel(call.message, texts.INPUT_CANCELLED, navigation_keyboard(previous.get("secret_return_to", "panel:settings")))
@@ -101,11 +102,13 @@ class PersonalSecretMiddleware(BaseMiddleware):
                 await self.dialog.delete_input(message)
             return None
         if command == "/start" and current in SECRET_STATES:
+            await self.dialog.clear_prompt(message, state)
             await state.clear()
             current = None
         if current in SECRET_STATES and callback:
             previous = await state.get_data()
             if callback in {"panel:home", "panel:settings", "set:back", previous.get("secret_return_to")}:
+                await self.dialog.clear_prompt(message, state)
                 await state.clear()
                 current = None
         if update.message is not None and current in SECRET_STATES:

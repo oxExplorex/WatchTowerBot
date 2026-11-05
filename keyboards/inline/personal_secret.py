@@ -16,6 +16,6 @@ def setup_keyboard() -> InlineKeyboardMarkup:
 
 
 def cancel_keyboard(back_callback="panel:settings") -> InlineKeyboardMarkup:
-    return with_navigation(InlineKeyboardMarkup(inline_keyboard=[[
+    return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=CANCEL_BUTTON, callback_data=CANCEL_CALLBACK),
-    ]]), back_callback)
+    ]])

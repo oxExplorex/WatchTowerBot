@@ -4,6 +4,7 @@ from collections import OrderedDict
 import time
 
 from aiogram.types import ForceReply
+from aiogram.exceptions import TelegramBadRequest
 from callbacks.account_ownership import OwnAccount
 
 from core.personal_crypto import InvalidSecret, create_key_bundle, normalize_secret, unlock_private_key
@@ -58,6 +59,7 @@ class PersonalSecretDialog:
         from utils.others import close_state_pyrogram_client
 
         await close_state_pyrogram_client(state)
+        await self.clear_prompt(message, state)
         await state.clear()
         if transfer_request is not None:
             back_callback = OwnAccount(action="status", token=str(transfer_request)).pack()
@@ -68,10 +70,28 @@ class PersonalSecretDialog:
             await state.update_data(transfer_request=str(transfer_request))
         await state.set_state(PersonalSecret.transfer if transfer_request is not None else
                               PersonalSecret.verify if verify else PersonalSecret.input)
-        await message.answer(INPUT_PROMPT, protect_content=True, reply_markup=ForceReply(selective=True))
+        await self.send_prompt(message, state, INPUT_PROMPT)
+
+    @staticmethod
+    async def clear_prompt(message, state):
+        data = await state.get_data()
+        prompt_id = data.get("secret_prompt_id")
+        if type(prompt_id) is int:
+            try:
+                await message.bot.delete_message(message.chat.id, prompt_id)
+            except TelegramBadRequest:
+                pass
+            await state.update_data(secret_prompt_id=None)
+
+    async def send_prompt(self, message, state, text):
+        await self.clear_prompt(message, state)
+        prompt = await message.answer(text, protect_content=True, reply_markup=ForceReply(selective=True))
+        if type(getattr(prompt, "message_id", None)) is int:
+            await state.update_data(secret_prompt_id=prompt.message_id)
 
     async def _finish(self, message, state, content, markup=None):
         data = await state.get_data()
+        await self.clear_prompt(message, state)
         await edit_input_panel(message, state, content, markup or navigation_keyboard(data.get("secret_return_to", "panel:settings")))
         await state.clear()
 
@@ -95,7 +115,7 @@ class PersonalSecretDialog:
                 # Persistent FSM contains only a password-encrypted key bundle.
                 await state.update_data(secret_bundle=bundle)
                 await state.set_state(PersonalSecret.confirm)
-                await message.answer(CONFIRM_PROMPT, protect_content=True, reply_markup=ForceReply(selective=True))
+                await self.send_prompt(message, state, CONFIRM_PROMPT)
             else:
                 bundle = data.get("secret_bundle") if current == SECRET_CONFIRM else key
                 if bundle is None:

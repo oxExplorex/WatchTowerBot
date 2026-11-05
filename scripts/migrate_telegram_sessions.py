@@ -46,8 +46,12 @@ def migrate_legacy_session(path: Path) -> bool:
             raise RuntimeError("Unsupported legacy Telegram peer schema; automatic conversion stopped")
         if {row[1] for row in connection.execute("PRAGMA table_info(update_state)")} != {"id", "pts", "qts", "date", "seq"}:
             raise RuntimeError("Unsupported legacy Telegram update schema; automatic conversion stopped")
-        if "usernames" in tables and {row[1] for row in connection.execute("PRAGMA table_info(usernames)")} != {"id", "username"}:
-            raise SessionSchemaError(row[1] for row in connection.execute("PRAGMA table_info(usernames)"))
+        username_columns = {row[1] for row in connection.execute("PRAGMA table_info(usernames)")}
+        legacy_usernames = username_columns == {"id", "peer_id", "last_update_on"}
+        if "usernames" in tables and username_columns != {"id", "username"} and not legacy_usernames:
+            raise SessionSchemaError(username_columns)
+        if legacy_usernames and "usernames_kurigram_v4" in tables:
+            raise RuntimeError("Session conversion staging table already exists; automatic conversion stopped")
 
         backup_path = path.with_name(f"{path.name}.pyrofork-v4.{uuid4().hex}.bak")
         backup = sqlite3.connect(backup_path)
@@ -58,6 +62,13 @@ def migrate_legacy_session(path: Path) -> bool:
 
         with connection:
             connection.execute("BEGIN IMMEDIATE")
+            if legacy_usernames:
+                # Pyrofork v2.3.69: id is the username, peer_id is the Telegram ID.
+                # Rebuild transactionally; the backup retains cache timestamps too.
+                connection.execute("CREATE TABLE usernames_kurigram_v4 (id INTEGER, username TEXT, FOREIGN KEY (id) REFERENCES peers(id))")
+                connection.execute("INSERT INTO usernames_kurigram_v4 (id, username) SELECT peer_id, id FROM usernames")
+                connection.execute("DROP TABLE usernames")
+                connection.execute("ALTER TABLE usernames_kurigram_v4 RENAME TO usernames")
             connection.execute("CREATE TABLE IF NOT EXISTS usernames (id INTEGER, username TEXT, FOREIGN KEY (id) REFERENCES peers(id))")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_usernames_id ON usernames (id)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_usernames_username ON usernames (username)")

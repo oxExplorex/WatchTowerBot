@@ -154,16 +154,31 @@ async def cleanup_blobs(store, *, limit=100):
 
 async def process_deletions():
     for operation in await repository.deleting():
-        number = decrypt_text(operation.session_number) if operation.session_number else None
-        async with account_guard(("session", number)):
+        try:
+            await process_deletion(operation)
+        except Exception as error:
+            bot_logger.warning("Account disconnection deferred: operation=%s error=%s", operation.uuid, type(error).__name__)
+
+
+def schedule_deletion(operation):
+    create_logged_task(process_deletion(operation), name=f"account_delete:{operation.uuid}")
+
+
+async def process_deletion(operation):
+    number = decrypt_text(operation.session_number) if operation.session_number else None
+    async with account_guard(("session", number)):
+        # The periodic worker and the immediate task may see the same request.
+        operation = await repository.get(operation.uuid, operation.actor_id)
+        if operation is None or operation.status not in {"deleting", "removing_session"}:
+            return
+        if number:
+            await stop_and_remove_session(number)
+        async with account_guard(operation.account_user_id):
+            if operation.status == "deleting" and not await repository.remove_connection(operation.uuid):
+                return
             if number:
-                await stop_and_remove_session(number)
-            async with account_guard(operation.account_user_id):
-                if operation.status == "deleting" and not await repository.erase_content(operation.uuid):
-                    continue
-                if number:
-                    await run_blocking(remove_account_session_files, number, strict=True)
-                await repository.finish_delete(operation.uuid)
+                await run_blocking(remove_account_session_files, number, strict=True)
+            await repository.finish_delete(operation.uuid)
 
 
 async def notify_operations(bot):
