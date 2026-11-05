@@ -20,7 +20,10 @@ def parser_mod(monkeypatch, offline_module):
     loader_stub.session_manager = SessionManager()
     loader_stub.bot = types.SimpleNamespace(send_message=_noop_send_message)
     monkeypatch.setitem(sys.modules, "loader", loader_stub)
-    return offline_module("aiotask/telegram_parse_dialogs.py")
+    module = offline_module("aiotask/telegram_parse_dialogs.py")
+    limits = types.SimpleNamespace(blocked_until=AsyncMock(return_value=0), defer=AsyncMock(), observe_heads=AsyncMock())
+    monkeypatch.setattr(module, "HistoryRepository", lambda factory: limits)
+    return module
 
 
 class _FakeClient:
@@ -58,6 +61,18 @@ async def test_safe_call_retries_timeout_error(parser_mod):
 
     assert result == 42
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_shared_floodwait_stops_retries_and_delays_other_background_work(parser_mod):
+    from pyrogram.errors import FloodWait
+
+    deferred = AsyncMock()
+    request = AsyncMock(side_effect=FloodWait(900))
+    with pytest.raises(FloodWait):
+        await parser_mod.safe_call(request, on_flood=deferred)
+    request.assert_awaited_once()
+    deferred.assert_awaited_once_with(900)
 
 
 def _account(**kwargs):

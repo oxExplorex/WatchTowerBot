@@ -6,7 +6,7 @@ import hashlib
 import time
 from uuid import UUID
 
-from sqlalchemy import BigInteger, exists, func, literal, select
+from sqlalchemy import BigInteger, case, exists, func, literal, select
 
 from db.message_models import MessageReceipt, MessageRevision, PendingMessageDeletion, StoredMessage
 from db.models import DumpChatUser, HistoryUser
@@ -43,6 +43,37 @@ class MessagesRepository:
     def __init__(self, session_factory):
         self._session_factory = session_factory
 
+    async def statistics(self, owner_id):
+        from db.media_models import MessageAttachment
+        from db.history_models import HistoryChat
+        from db.models import Account
+
+        scope = (StoredMessage.owner_id == owner_id, StoredMessage.chat_id > 0)
+        async with self._session_factory()() as session:
+            row = (await session.execute(select(
+                func.count().label("messages"),
+                func.coalesce(func.sum(case((StoredMessage.is_edited, 1), else_=0)), 0).label("edited"),
+                func.coalesce(func.sum(case((StoredMessage.is_deleted, 1), else_=0)), 0).label("deleted"),
+                func.coalesce(func.sum(case((StoredMessage.history_missing_at.is_not(None), 1), else_=0)), 0).label("missing")
+            ).select_from(StoredMessage).where(*scope))).one()
+            result = dict(row._mapping)
+            result["revisions"] = await session.scalar(select(func.count()).select_from(MessageRevision)
+                .join(StoredMessage, StoredMessage.uuid == MessageRevision.message_uuid).where(*scope))
+            attachments = (await session.execute(select(MessageAttachment.status, func.count()).join(
+                MessageRevision, MessageRevision.uuid == MessageAttachment.revision_uuid).join(
+                StoredMessage, StoredMessage.uuid == MessageRevision.message_uuid
+            ).where(*scope).group_by(MessageAttachment.status))).all()
+            statuses = dict(attachments)
+            result.update(media_stored=statuses.get("stored", 0),
+                          media_pending=statuses.get("pending", 0) + statuses.get("downloading", 0),
+                          media_failed=statuses.get("failed", 0))
+            total, reached = (await session.execute(select(func.count(), func.coalesce(func.sum(case(
+                (HistoryChat.reached_start, 1), else_=0)), 0)).select_from(HistoryChat).join(
+                Account, Account.uuid == HistoryChat.account_uuid
+            ).where(Account.admin_id == owner_id, Account.is_active == 1, HistoryChat.excluded == False))).one()
+            result.update(history_chats=total, history_reached=reached)
+            return result
+
     @staticmethod
     async def _lock(session, owner_id: int, account_user_id: int, message_id: int) -> None:
         if session.get_bind().dialect.name == "postgresql":
@@ -54,7 +85,8 @@ class MessagesRepository:
                      message_id: int, source: str, event_key: str, kind: str,
                      payload: dict | None = None, sent_at: int | None = None,
                      version_at: int | None = None, sender_id: int | None = None,
-                     channel_namespace: bool = False, require_account: bool = False) -> IngestResult | None:
+                     channel_namespace: bool = False, require_account: bool = False,
+                     historical: bool = False) -> IngestResult | None:
         if kind not in {"new", "edit", "delete"} or message_id <= 0:
             raise ValueError("Unsupported message event")
         if kind != "delete" and payload is None:
@@ -72,6 +104,13 @@ class MessagesRepository:
                     AccountOperation.status.in_({"deleting", "removing_session", "complete"})))):
                 return None
             owner_key = await lock_owner(session, owner_id)
+            if historical:
+                if owner_key is None:
+                    return None
+                if await session.scalar(select(exists().where(
+                        AccountOperation.active_account_id == account_user_id,
+                        AccountOperation.status.in_({"preparing", "activating", "deleting", "removing_session"})))):
+                    return None
             await self._lock(session, owner_id, account_user_id, message_id)
             # Native upsert arbitrates races across sources/processes, not just tasks.
             chat_insert = conflict_insert(session, DumpChatUser).values(admin_id=account_user_id, chat_id=chat_id)
@@ -84,6 +123,10 @@ class MessagesRepository:
             if new_chat:
                 session.add(HistoryUser(admin_id=owner_id, user_id=chat_id, chat_id=chat_id,
                                         account_user_id=account_user_id, action_id=1, date=now // 1_000_000))
+            if payload is not None:
+                # Reappearance is meaningful even when the content event is a replay.
+                row.history_missing_at = None
+                row.is_edited = row.is_edited or kind == "edit"
             receipt = await session.scalar(select(MessageReceipt).where(
                 MessageReceipt.message_uuid == row.uuid, MessageReceipt.source == source,
                 MessageReceipt.event_key == event_key))
@@ -96,28 +139,32 @@ class MessagesRepository:
             new_revision = False
             if kind == "delete":
                 row.is_deleted = True
+                row.history_missing_at = None
                 row.deleted_observed_at = row.deleted_observed_at or now
             else:
+                timestamp = version_at if version_at is not None else sent_at or 0
+                if historical and row.latest_revision_uuid is not None and row.latest_version_at is not None and row.latest_version_at >= timestamp:
+                    return IngestResult(row.uuid, new_chat, owner_id=owner_id)
+                revision_kind = "snapshot" if historical else kind
                 serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                 # File IDs can differ between the Bot API and MTProto sessions.
                 comparable = comparable_payload(payload)
                 fingerprint = personal_fingerprint(owner_id, comparable) if owner_key else message_fingerprint(comparable)
-                timestamp = version_at if version_at is not None else sent_at or 0
                 seen_from_source = exists(select(MessageReceipt.uuid).where(
                     MessageReceipt.revision_uuid == MessageRevision.uuid, MessageReceipt.source == source))
                 revision_query = select(MessageRevision).where(
-                    MessageRevision.message_uuid == row.uuid, MessageRevision.kind == kind,
+                    MessageRevision.message_uuid == row.uuid, MessageRevision.kind.in_({revision_kind, "snapshot"}),
                     MessageRevision.version_at == timestamp, MessageRevision.fingerprint == fingerprint)
                 if kind == "edit":
                     revision_query = revision_query.where(~seen_from_source)
                 revision = await session.scalar(revision_query.order_by(MessageRevision.revision_no).limit(1))
                 if revision is None and row.latest_revision_uuid is not None:
                     latest = await session.get(MessageRevision, row.latest_revision_uuid)
-                    if latest.kind == kind and latest.version_at == timestamp and latest.fingerprint == fingerprint:
+                    if latest.kind in {revision_kind, "snapshot"} and latest.version_at == timestamp and latest.fingerprint == fingerprint:
                         revision = latest
                 if revision is None:
                     last_number = await session.scalar(select(func.max(MessageRevision.revision_no)).where(MessageRevision.message_uuid == row.uuid))
-                    revision = MessageRevision(message_uuid=row.uuid, kind=kind, version_at=timestamp,
+                    revision = MessageRevision(message_uuid=row.uuid, kind=revision_kind, version_at=timestamp,
                                                observed_at=now, payload="", fingerprint=fingerprint,
                                                encryption_version=2 if owner_key else 1,
                                                revision_no=(last_number or 0) + 1)
@@ -126,7 +173,7 @@ class MessagesRepository:
                     session.add(revision)
                     await session.flush()
                     new_revision = True
-                row.original_seen = row.original_seen or kind == "new"
+                row.original_seen = row.original_seen or (kind == "new" and not historical)
                 row.is_edited = row.is_edited or kind == "edit"
                 row.sent_at = row.sent_at if row.sent_at is not None else sent_at
                 row.sender_id = row.sender_id if row.sender_id is not None else sender_id
@@ -182,6 +229,7 @@ class MessagesRepository:
                 pending = await session.scalar(select(PendingMessageDeletion).filter_by(
                     owner_id=owner_id, account_user_id=account_user_id, message_id=message_id))
                 candidates[0].is_deleted = True
+                candidates[0].history_missing_at = None
                 candidates[0].deleted_observed_at = candidates[0].deleted_observed_at or pending.observed_at
                 pending.resolved_message_uuid = candidates[0].uuid
 

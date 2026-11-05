@@ -30,6 +30,9 @@ from utils.datetime_tools import DateTime
 from utils.others import get_user_log_text
 from utils.telegram_helpers import is_bot_or_channel
 from services.notification_topics import send_account_log
+from db.repositories.history_repo import HistoryRepository
+from db.session import get_session_factory
+from utils.message_payload import enum_value
 
 scheduler = AsyncIOScheduler()
 FULL_SCAN_FORCE_INTERVAL_SEC = 60 * 60 * 24
@@ -44,6 +47,7 @@ async def safe_call(
     *args: Any,
     retries: int = 3,
     delay: int = 2,
+    on_flood=None,
     **kwargs: Any,
 ) -> Any:
     last_error: Exception | None = None
@@ -51,6 +55,9 @@ async def safe_call(
         try:
             return await coro_func(*args, **kwargs)
         except FloodWait as exc:
+            if on_flood is not None:
+                await on_flood(exc.value)
+                raise
             last_error = exc
             bot_logger.warning(f"FloodWait: sleeping for {exc.value} seconds")
             await asyncio.sleep(exc.value)
@@ -154,8 +161,12 @@ async def _scan_session(app_session):
             return
 
         user_id = int(account_settings.user_id)
+        history = HistoryRepository(get_session_factory)
+        if await history.blocked_until(user_id) > DateTime().timestamp():
+            return
         now_ts = DateTime().timestamp()
-        total_dialogs = int(await safe_call(app_session.get_dialogs_count) or 0)
+        total_dialogs = int(await safe_call(app_session.get_dialogs_count,
+            on_flood=lambda seconds: history.defer(user_id, int(seconds) + 5)) or 0)
 
         stored_count = getattr(account_settings, "last_dialogs_count", None)
         previous_count = int(stored_count) if stored_count is not None else -1
@@ -196,6 +207,7 @@ async def _scan_session(app_session):
         seen_chat_ids = set()
         new_chats = []
         filtered_out_count = 0
+        history_heads = {}
 
         try:
             scanned_count = 0
@@ -203,10 +215,13 @@ async def _scan_session(app_session):
                 scanned_count += 1
                 if scanned_count % 100 == 0:
                     # Long scans should not monopolize the loop.
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(1)
                 chat = dialog.chat
                 chat_id = chat.id
                 seen_chat_ids.add(chat_id)
+                top = getattr(dialog, "top_message", None)
+                if enum_value(getattr(chat, "type", None)) == "private" and chat_id != getattr(bot, "id", None):
+                    history_heads[chat_id] = int(getattr(top, "id", 0) or 0)
 
                 if not account_settings.alert_bot and is_bot_or_channel(chat):
                     filtered_out_count += 1
@@ -222,12 +237,16 @@ async def _scan_session(app_session):
                     if chat_id not in existing_chat_ids:
                         new_chats.append(chat_id)
         except (RPCError, InternalServerError) as exc:
+            if isinstance(exc, FloodWait):
+                await history.defer(user_id, int(exc.value) + 5)
+                return
             if _is_fatal_session_error(exc):
                 await _drop_dead_session(app_session, exc)
             else:
                 bot_logger.warning(f"get_dialogs error: {exc}")
             return
 
+        await history.observe_heads(account_settings.uuid, history_heads)
         bot_logger.info(
             f"DIALOG SCAN USER: {user_id} | dialogs_count={total_dialogs} | "
             f"parsed_unique={len(current_chat_ids)} | seen_total={len(seen_chat_ids)} | "
@@ -360,6 +379,9 @@ async def _scan_session(app_session):
             for text_chunk in chunk_text(log_del):
                 await _safe_send_parser_message(target_id, text_chunk, context="deleted_chat", account_user_id=user_id)
 
+    except FloodWait as exc:
+        if account_settings is not None:
+            await HistoryRepository(get_session_factory).defer(account_settings.user_id, int(exc.value) + 5)
     except Exception as exc:
         if account_settings is not None:
             await add_account_health_event(

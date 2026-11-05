@@ -22,6 +22,7 @@ class StoredMessage(SQLModel, table=True):
     is_edited: bool = False
     is_deleted: bool = False
     deleted_observed_at: int | None = Field(default=None, sa_type=BigInteger)
+    history_missing_at: int | None = Field(default=None, sa_type=BigInteger)
     latest_revision_uuid: UUID | None = None
     latest_version_at: int | None = Field(default=None, sa_type=BigInteger)
 

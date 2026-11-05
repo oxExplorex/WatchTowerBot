@@ -86,7 +86,7 @@ async def setup_flow(db_main, offline_module, monkeypatch):
     for name in ("get_account_user_id", "get_app_tg_user_id", "get_user_names_by_ids"):
         setattr(accounts, name, getattr(db_main, name))
     settings = offline_module("handlers/admin/settings/setting_menu_handler.py")
-    for name in ("get_accounts_overview", "get_admin_health_events", "get_all_health_events",
+    for name in ("get_accounts_overview", "get_archive_statistics", "get_admin_health_events", "get_all_health_events",
                  "get_latest_admin_health_event", "get_user_auto_update_enabled", "get_user_gemini_proxy_config",
                  "get_user_timezone_offset", "get_version_state_cache", "set_version_state_cache"):
         setattr(settings, name, getattr(db_main, name))

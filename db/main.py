@@ -364,6 +364,10 @@ async def get_accounts_overview(admin_id: int) -> dict[str, int]:
     return await accounts_repository.get_accounts_overview(admin_id=admin_id)
 
 
+async def get_archive_statistics(owner_id: int) -> dict[str, int]:
+    return await messages_repository.statistics(owner_id)
+
+
 async def get_all_health_events(since_ts: int) -> list[AccountHealth]:
     return await accounts_repository.get_all_health_events(since_ts=since_ts)
 

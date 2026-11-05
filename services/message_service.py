@@ -49,12 +49,12 @@ async def _notify_new_chat(bot, context: AccountContext, chat) -> None:
 
 
 async def save_message(bot, context: AccountContext, message, *, source: str, kind: str,
-                       event_key: str | None = None):
+                       event_key: str | None = None, historical: bool = False):
     async with account_guard(context.account_user_id):
-        return await _save_message(bot, context, message, source=source, kind=kind, event_key=event_key)
+        return await _save_message(bot, context, message, source=source, kind=kind, event_key=event_key, historical=historical)
 
 
-async def _save_message(bot, context, message, *, source, kind, event_key):
+async def _save_message(bot, context, message, *, source, kind, event_key, historical):
     message_id = getattr(message, "message_id", None) or getattr(message, "id", None)
     if not message_id or getattr(message, "chat", None) is None:
         return None
@@ -66,13 +66,14 @@ async def _save_message(bot, context, message, *, source, kind, event_key):
     version_at = timestamp(getattr(message, "edit_date", None)) if kind == "edit" else sent_at
     if event_key is None:
         event_key = live_fingerprint(json.dumps([context.owner_id, kind, message_id, version_at, payload], sort_keys=True, ensure_ascii=False))
+    archive_options = {"historical": True} if historical else {}
     result = await messages_repository.record(
         owner_id=context.owner_id, account_user_id=context.account_user_id,
         chat_id=message.chat.id, message_id=message_id, source=source,
         event_key=f"{event_key}:{message_id}", kind=kind, payload=payload,
         sent_at=sent_at, version_at=version_at,
         sender_id=getattr(getattr(message, "from_user", None), "id", None),
-        channel_namespace=channel_namespace(message.chat), require_account=context.require_account)
+        channel_namespace=channel_namespace(message.chat), require_account=context.require_account, **archive_options)
     if result is not None and result.new_chat:
         await _notify_new_chat(bot, replace(context, owner_id=result.owner_id or context.owner_id), message.chat)
     return result

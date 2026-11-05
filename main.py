@@ -58,6 +58,7 @@ from middlewares.auth_session_cleanup import AuthSessionCleanupMiddleware
 from middlewares.personal_secret import PersonalSecretMiddleware, notify_missing_secrets
 from utils.others import send_log_to_active_bot
 from services.media_archive import run_media_archiver
+from services.history_backfill import run_history_backfill
 from services.bot_commands import register_bot_commands
 from services.personal_archive import run_personal_archive_migration
 from services.account_operations import repository as account_operations, run_account_operations
@@ -190,6 +191,7 @@ async def start_polling_bot():
             create_logged_task(_report_clients_start(clients_start_task, runtime_sessions), name="startup_session_status")
             reporter.update("Фоновые службы", "Запуск мониторинга, архива и проверки обновлений")
         create_logged_task(run_media_archiver(bot), name="media_archiver")
+        create_logged_task(run_history_backfill(bot, session_manager), name="history_backfill")
         create_logged_task(run_personal_archive_migration(bot), name="personal_archive_migration")
         create_logged_task(run_account_operations(bot), name="account_operations")
         create_logged_task(run_topic_reminders(bot), name="topic_reminders")

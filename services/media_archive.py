@@ -6,11 +6,19 @@ from core.logging import bot_logger
 from core.media_store import MediaQuotaExceeded, MediaStore, MediaTooLarge
 from core.session_manager import SessionUnavailable
 from core.session_runtime import run_client_operation
+from db.repositories.history_repo import HistoryRepository
+from db.session import get_session_factory
+from pyrogram.errors import FloodWait
 from utils.crypto_store import decrypt_text
 
 
 class SourceUnavailable(RuntimeError):
     pass
+
+
+class TelegramDeferred(RuntimeError):
+    def __init__(self, delay):
+        self.delay = max(1, int(delay))
 
 
 async def resolve_media_client(owner_id, account_user_id):
@@ -26,25 +34,44 @@ async def resolve_media_client(owner_id, account_user_id):
 
 
 async def archive_attachment(bot, repository, store, item, *, resolve_client=resolve_media_client,
-                             run_client=run_client_operation):
+                             run_client=run_client_operation, limits=None):
     try:
+        limits = limits or HistoryRepository(get_session_factory)
+        public_key = await repository.get_public_key(item.owner_id)
+        sources = json.loads(decrypt_text(item.sources))
+        history_only = sources and all(source["source"] == "history" for source in sources)
+        if history_only and public_key is None:
+            raise SourceUnavailable()
         cached = await repository.find_stored(item)
         if cached is not None and store.path(item.owner_id, cached.blob_key).is_file():
-            await repository.finish(item, blob_key=cached.blob_key, stored_size=cached.stored_size,
-                                    encryption_version=store.version(item.owner_id, cached.blob_key))
-            return
+            version = store.version(item.owner_id, cached.blob_key)
+            if not history_only or public_key is None or version == 2:
+                await repository.finish(item, blob_key=cached.blob_key, stored_size=cached.stored_size,
+                                        encryption_version=version)
+                return
+            # The existing migration owns rewrapping and its owner lock. Do not
+            # redownload or publish a legacy blob as a completed personal archive.
+            raise SourceUnavailable()
         if item.expected_size is not None and item.expected_size > store.max_file_bytes:
             raise MediaTooLarge("Media file exceeds archive limit")
         last_error = SourceUnavailable()
         unavailable = False
         deadline = asyncio.get_running_loop().time() + 600
-        public_key = await repository.get_public_key(item.owner_id)
-        for source in reversed(json.loads(decrypt_text(item.sources))):
+        for source in reversed(sources):
             try:
                 if asyncio.get_running_loop().time() >= deadline:
                     raise TimeoutError()
                 client = None
-                if source["source"] == "userbot":
+                if source["source"] in {"userbot", "history"}:
+                    blocked = await limits.blocked_until(source["account_user_id"])
+                    if blocked > int(time.time()):
+                        raise TelegramDeferred(blocked - int(time.time()))
+                    if source["source"] == "history":
+                        if public_key is None:
+                            raise SourceUnavailable()
+                        delay = await limits.media_slot(source["account_user_id"])
+                        if delay:
+                            raise TelegramDeferred(delay)
                     client = await resolve_client(item.owner_id, source["account_user_id"])
                     if client is None:
                         raise SourceUnavailable()
@@ -62,11 +89,18 @@ async def archive_attachment(bot, repository, store, item, *, resolve_client=res
                     ):
                         raise ValueError("Incomplete media download")
                     blob_key, size = writer.finish()
+                if history_only and public_key is not None and store.version(item.owner_id, blob_key) != 2:
+                    raise SourceUnavailable()  # Deduplication found a legacy orphan; migration will rewrap it.
                 await repository.finish(item, blob_key=blob_key, stored_size=size,
                                         encryption_version=store.version(item.owner_id, blob_key))
                 return
             except (MediaTooLarge, MediaQuotaExceeded):
                 raise
+            except TelegramDeferred:
+                raise
+            except FloodWait as exc:
+                await limits.defer(source["account_user_id"], int(exc.value) + 5)
+                raise TelegramDeferred(int(exc.value) + 5) from None
             except Exception as exc:
                 last_error = exc
                 unavailable = unavailable or isinstance(exc, (SourceUnavailable, SessionUnavailable))
@@ -78,7 +112,8 @@ async def archive_attachment(bot, repository, store, item, *, resolve_client=res
         await repository.finish(item, error="Cancelled", delay=1)
         raise
     except Exception as exc:
-        delay = 60 if isinstance(exc, SourceUnavailable) else 3600 if isinstance(exc, MediaQuotaExceeded) else 0
+        delay = (exc.delay if isinstance(exc, TelegramDeferred) else 60 if isinstance(exc, SourceUnavailable)
+                 else 3600 if isinstance(exc, MediaQuotaExceeded) else 0)
         await repository.finish(item, error=type(exc).__name__, delay=delay, permanent=isinstance(exc, MediaTooLarge))
         bot_logger.warning("Attachment download deferred or failed: %s", type(exc).__name__)
 

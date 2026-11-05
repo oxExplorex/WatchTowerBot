@@ -15,6 +15,7 @@ from core.versioning import fetch_remote_version, get_local_version, get_remote_
 from db.main import (
     disable_user_gemini_proxy,
     get_accounts_overview,
+    get_archive_statistics,
     get_admin_health_events,
     get_all_health_events,
     get_latest_admin_health_event,
@@ -95,6 +96,7 @@ async def _get_cached_version_state() -> tuple[str, int, str | None]:
 async def _send_stats(message: Message, admin_only: bool, *, admin_id=None, edit=False) -> None:
     admin_id = message.from_user.id if admin_id is None else admin_id
     overview = await get_accounts_overview(admin_id)
+    archive = await get_archive_statistics(admin_id)
 
     tz_offset = await get_user_timezone_offset(admin_id)
     dt = DateTime(tz_offset)
@@ -127,6 +129,7 @@ async def _send_stats(message: Message, admin_only: bool, *, admin_id=None, edit
             own_total=overview["own_total"],
             all_active=overview["all_active"],
             all_total=overview["all_total"],
+            **{f"archive_{key}": value for key, value in archive.items()},
             success_24h=success_24h,
             fail_24h=fail_24h,
             success_14d=success_14d,
