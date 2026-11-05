@@ -1,5 +1,6 @@
 """Normalize Bot API and Kurigram messages without storing plaintext on disk."""
 from datetime import datetime, timezone
+from enum import Enum
 
 
 def timestamp(value) -> int | None:
@@ -11,7 +12,11 @@ def timestamp(value) -> int | None:
 
 
 def enum_value(value):
-    return getattr(value, "value", value)
+    result = getattr(value, "value", value)
+    # Kurigram entity enum values are raw TL classes; Bot API uses string labels.
+    if isinstance(value, Enum) and isinstance(result, type):
+        return value.name.lower()
+    return result
 
 
 def channel_namespace(chat) -> bool:
