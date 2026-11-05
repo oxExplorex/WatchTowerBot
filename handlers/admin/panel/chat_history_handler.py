@@ -17,6 +17,7 @@ from db.main import (
 )
 from filters.all_filters import IsAdmin, IsPrivate
 from handlers.admin.states import AdminStates
+from keyboards.inline.back_inline import back_inline
 
 from utils.datetime_tools import DateTime
 
@@ -42,13 +43,7 @@ def _action_label(action_id: int) -> str:
 
 
 def _extract_query(message_text: str) -> str:
-    text = (message_text or "").strip()
-    if text.startswith("/chat_history"):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            return ""
-        return parts[1].strip()
-    return text
+    return (message_text or "").strip()
 
 
 async def _resolve_chat_ids(query: str) -> list[int]:
@@ -185,16 +180,7 @@ async def _render_history(message: Message, query: str, admin_id: int) -> None:
 @router.message(IsPrivate(), IsAdmin(), StateFilter("*"), F.text == constant_text.ACCOUNTS_USER_KEYBOARD[1])
 async def open_chat_history_search_handler(message: Message, state: FSMContext):
     await state.set_state(AdminStates.wait_chat_history_search)
-    await message.answer(constant_text.CHAT_HISTORY_SEARCH_PROMPT_TEXT)
-
-
-@router.message(IsPrivate(), IsAdmin(), StateFilter("*"), F.text.startswith("/chat_history"))
-async def chat_history_by_id_handler(message: Message, state: FSMContext):
-    _ = state
-    query = _extract_query(message.text or "")
-    if not query:
-        return await message.answer(constant_text.CHAT_HISTORY_SEARCH_USAGE_TEXT)
-    await _render_history(message, query=query, admin_id=message.from_user.id)
+    await message.answer(constant_text.CHAT_HISTORY_SEARCH_PROMPT_TEXT, reply_markup=back_inline())
 
 
 @router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.wait_chat_history_search))

@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from callbacks.personal_secret import PersonalSecretCallback, SecretAction
+from callbacks.personal_secret import CANCEL_CALLBACK, PersonalSecretCallback, SecretAction
 from keyboards.inline.personal_secret import setup_keyboard
 from middlewares.personal_secret import (PersonalSecretMiddleware, SECRET_CONFIRM, SECRET_INPUT,
                                          SECRET_VERIFY, SETUP_CALLBACK)
@@ -159,7 +159,7 @@ async def test_add_requires_confirmation_while_delete_does_not_and_entry_preserv
 @pytest.mark.asyncio
 async def test_cancel_expiry_rate_limit_and_revocation_do_not_install_key(setup):
     repository, state, gate = setup
-    for content in ("/cancel", "Новыйсекрет527"):
+    for content in ("Новыйсекрет527",):
         await state.set_state(SECRET_INPUT)
         await state.update_data(secret_expires=0)
         msg = message(content)
@@ -174,3 +174,48 @@ async def test_cancel_expiry_rate_limit_and_revocation_do_not_install_key(setup)
     await gate(AsyncMock(), update(message("Новыйсекрет527")), context(state))
     gate.dialog._crypto.assert_not_awaited()
     repository.install.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancel_button_clears_short_dialog_but_stale_button_keeps_other_wizard(setup):
+    repository, state, gate = setup
+    await state.set_state(SECRET_INPUT)
+    await state.update_data(secret_expires=int(time.time()) + 60)
+    msg = message()
+    msg.edit_text = AsyncMock()
+    call = SimpleNamespace(data=CANCEL_CALLBACK, message=msg, answer=AsyncMock())
+    await gate(AsyncMock(), update(call=call), context(state))
+    assert await state.get_state() is None and await state.get_data() == {}
+    msg.edit_text.assert_awaited_once()
+    await state.set_state("AdminStates:apps_add_app_id")
+    await gate(AsyncMock(), update(call=call), context(state))
+    assert await state.get_state() == "AdminStates:apps_add_app_id"
+    repository.install.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["/admins", "/myaccount", "/secret", "/cancel", "/chat_history 123", "/startfoo"])
+async def test_other_commands_do_not_reach_handlers_or_become_secret(setup, content):
+    repository, state, gate = setup
+    repository.get.return_value = SimpleNamespace(public_key="offline")
+    handler = AsyncMock()
+    await gate(handler, update(message(content)), context(state))
+    handler.assert_not_awaited()
+    await state.set_state(SECRET_INPUT)
+    msg = message(content)
+    await gate(handler, update(msg), context(state))
+    msg.delete.assert_awaited_once()
+    assert await state.get_state() == SECRET_INPUT
+    repository.install.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_exits_secret_input_and_opens_panel(setup):
+    repository, state, gate = setup
+    repository.get.return_value = SimpleNamespace(public_key="offline")
+    await state.set_state(SECRET_INPUT)
+    await state.update_data(secret_bundle={"synthetic": True})
+    handler = AsyncMock()
+    await gate(handler, update(message("/start")), context(state))
+    handler.assert_awaited_once()
+    assert await state.get_state() is None and await state.get_data() == {}

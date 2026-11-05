@@ -1,7 +1,15 @@
 """Russian UI copy for personal archive key setup and confirmation."""
 
 SETUP_BUTTON = "🔑 Ввести секрет"
-INPUT_PROMPT = "Введите личный секрет. Сообщение будет удалено после прочтения. /cancel — отмена."
+MENU_BUTTON = "🔐 Личный секрет"
+INPUT_PROMPT = "Введите личный секрет. Сообщение будет удалено после прочтения."
+# Recognize replies sent to old prompts after an update or FSM loss.
+LEGACY_INPUT_PROMPTS = frozenset({
+    "Введите личный секрет. Сообщение будет удалено после прочтения. /cancel — отмена.",
+})
+INPUT_CONTROLS = "Чтобы прекратить ввод секрета, нажмите кнопку ниже."
+CANCEL_BUTTON = "Отмена"
+CANCEL_UNAVAILABLE = "Ввод секрета уже завершён."
 CONFIRM_PROMPT = "Введите секрет ещё раз для подтверждения. Это сообщение тоже будет удалено."
 PROMPT = (
     "<b>Защитите свой архив</b>\n\n"
@@ -30,6 +38,6 @@ SETUP_COMPLETE = (
 VERIFY_COMPLETE = "Секрет подтверждён на 10 минут для добавления профиля или аккаунта. Повторите нужное действие."
 ACTION_FAILED = "Не удалось завершить действие с ключом. Откройте /start и попробуйте ещё раз. Секрет не записывается."
 MENU_UNAVAILABLE = "Сообщение меню недоступно. Откройте /start."
-INPUT_INTERRUPTED = "Диалог ввода был прерван. Начните заново: /secret."
+INPUT_INTERRUPTED = "Диалог ввода был прерван. Начните заново через «Настройки → Личный секрет»."
 SETUP_REQUIRED = "Сначала установите личный секрет."
 VERIFY_REQUIRED = "Для добавления подтвердите личный секрет."

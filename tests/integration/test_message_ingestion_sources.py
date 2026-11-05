@@ -28,7 +28,7 @@ async def test_business_and_userbot_payloads_share_storage_and_one_notification(
     await message_service.save_message(bot, context, api_message, source="business", kind="new", event_key="b:1")
     await message_service.save_message(bot, context, user_message, source="userbot", kind="new", event_key="u:1")
     bot.send_message.assert_awaited_once()
-    assert bot.send_message.await_args.args[0] == 123
+    assert bot.send_message.await_args.kwargs["chat_id"] == 123
     async with db_main.create_unit_of_work() as uow:
         assert len((await uow.session.scalars(select(StoredMessage))).all()) == 1
         assert len((await uow.session.scalars(select(MessageRevision))).all()) == 1

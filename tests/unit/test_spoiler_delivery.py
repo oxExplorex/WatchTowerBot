@@ -9,9 +9,10 @@ import pytest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("use_topics", [False, True])
 @pytest.mark.parametrize("kind", ["photo", "video"])
 @pytest.mark.parametrize("error", [None, RuntimeError("offline send failure"), asyncio.CancelledError()])
-async def test_spoiler_and_ttl_media_are_sent_via_bot_to_creator(monkeypatch, tmp_path, offline_module, kind, error):
+async def test_spoiler_and_ttl_media_are_sent_via_bot_to_creator(monkeypatch, tmp_path, offline_module, kind, error, use_topics):
     from pyrogram import enums
     from pyrogram.types import Chat, Message, Photo, Video
 
@@ -33,11 +34,16 @@ async def test_spoiler_and_ttl_media_are_sent_via_bot_to_creator(monkeypatch, tm
         sent.append((arguments["chat_id"], path, path.read_bytes()))
         if error is not None:
             raise error
+        return types.SimpleNamespace(message_id=900, message_thread_id=arguments.get("message_thread_id"))
 
     loader.bot = types.SimpleNamespace(id=123456, send_message=AsyncMock(return_value=types.SimpleNamespace(delete=AsyncMock())),
                                        send_document=AsyncMock(side_effect=deliver))
     monkeypatch.setitem(sys.modules, "loader", loader)
     module = offline_module("handlers_app/user/file_spoiler.py")
+    from services.notification_topics import TopicDelivery
+    repository = types.SimpleNamespace(get=AsyncMock(return_value=77), save=AsyncMock())
+    loader.bot.get_me = AsyncMock(return_value=types.SimpleNamespace(has_topics_enabled=use_topics))
+    loader.bot._watchtower_topic_delivery = TopicDelivery(loader.bot, repository)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(module, "get_account_by_number", AsyncMock(return_value=types.SimpleNamespace(
         number="456", user_id=456, admin_id=123, is_active=1, alert_spoiler_media=1)))
@@ -57,6 +63,12 @@ async def test_spoiler_and_ttl_media_are_sent_via_bot_to_creator(monkeypatch, tm
     assert sent[0][2] == b"test"
     assert not sent[0][1].exists()
     loader.bot.send_document.assert_awaited_once()
+    assert loader.bot.send_document.call_args.kwargs.get("message_thread_id") == (77 if use_topics else None)
+    if error is None:
+        metadata = loader.bot.send_message.call_args.kwargs
+        assert metadata["reply_parameters"].message_id == 900
+        assert metadata["message_thread_id"] == (77 if use_topics else None)
+        assert "456" in metadata["text"]
 
 
 @pytest.mark.asyncio

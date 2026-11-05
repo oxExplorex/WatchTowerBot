@@ -11,7 +11,7 @@ from data.texts import personal_secret as texts
 from data.texts.personal_secret import CONFIRM_PROMPT, INPUT_PROMPT
 from db.repositories.personal_repo import PersonalKeyRepository
 from db.session import get_session_factory
-from keyboards.inline.personal_secret import setup_keyboard
+from keyboards.inline.personal_secret import cancel_keyboard, setup_keyboard
 from states.personal_secret import PersonalSecret, SECRET_CONFIRM, SECRET_INPUT, SECRET_TRANSFER
 
 
@@ -62,13 +62,10 @@ class PersonalSecretDialog:
         await state.set_state(PersonalSecret.transfer if transfer_request is not None else
                               PersonalSecret.verify if verify else PersonalSecret.input)
         await message.answer(INPUT_PROMPT, protect_content=True, reply_markup=ForceReply(selective=True))
+        await message.answer(texts.INPUT_CONTROLS, reply_markup=cancel_keyboard())
 
     async def handle_input(self, message, state, owner_id, key, current):
         if not await self.delete_input(message):
-            return
-        if message.text == "/cancel":
-            await state.clear()
-            await message.answer(texts.INPUT_CANCELLED)
             return
         data = await state.get_data()
         if data.get("secret_expires", 0) < int(time.time()):

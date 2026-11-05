@@ -10,6 +10,7 @@ from core.account_runtime import account_guard
 from utils.message_payload import channel_namespace, message_payload, timestamp
 from utils.chat_notifications import get_user_log_text
 from utils.telegram_helpers import is_bot_or_channel
+from services.notification_topics import send_account_log
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,8 @@ async def _notify_new_chat(bot, context: AccountContext, chat) -> None:
     if not context.alert_bot and (is_bot_or_channel(chat) or getattr(chat, "is_bot", False)):
         return
     try:
-        await bot.send_message(context.owner_id, get_user_log_text(1, chat_id, username or "-", html.quote(name)))
+        await send_account_log(bot, context.owner_id, context.account_user_id,
+                               get_user_log_text(1, chat_id, username or "-", html.quote(name)))
     except Exception as exc:
         bot_logger.warning("Could not send new chat notification: %s", type(exc).__name__)
 

@@ -58,8 +58,10 @@ from middlewares.auth_session_cleanup import AuthSessionCleanupMiddleware
 from middlewares.personal_secret import PersonalSecretMiddleware, notify_missing_secrets
 from utils.others import send_log_to_active_bot
 from services.media_archive import run_media_archiver
+from services.bot_commands import register_bot_commands
 from services.personal_archive import run_personal_archive_migration
 from services.account_operations import repository as account_operations, run_account_operations
+from aiotask.topic_reminder import run_topic_reminders
 
 
 def _handle_clients_start_result(task: asyncio.Task) -> None:
@@ -190,7 +192,9 @@ async def start_polling_bot():
         create_logged_task(run_media_archiver(bot), name="media_archiver")
         create_logged_task(run_personal_archive_migration(bot), name="personal_archive_migration")
         create_logged_task(run_account_operations(bot), name="account_operations")
+        create_logged_task(run_topic_reminders(bot), name="topic_reminders")
         create_logged_task(notify_missing_secrets(bot), name="secret_setup_notifications")
+        create_logged_task(register_bot_commands(bot), name="bot_commands")
 
         create_logged_task(_start_dialog_monitor(clients_start_task), name="tg_parse_dialogs_handler")
         create_logged_task(start_update_notifier(), name="update_notifier_starter")

@@ -154,7 +154,9 @@ def test_real_loader_and_consumers_share_one_registry():
             main.run_personal_archive_migration = AsyncMock()
             main.account_operations.recover_interrupted = AsyncMock()
             main.run_account_operations = AsyncMock()
+            main.run_topic_reminders = AsyncMock()
             main.notify_missing_secrets = AsyncMock()
+            main.register_bot_commands = AsyncMock()
             original_sleep = asyncio.sleep
             async def poll_once(*args, **kwargs):
                 await original_sleep(0)

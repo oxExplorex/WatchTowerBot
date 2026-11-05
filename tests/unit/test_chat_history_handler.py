@@ -92,7 +92,7 @@ async def test_current_presence_lines_masks_account_ids(monkeypatch, handler_mod
 
 @pytest.mark.asyncio
 async def test_render_history_shows_presence_even_without_events(monkeypatch, handler_mod):
-    message = _FakeMessage(text="/chat_history 777")
+    message = _FakeMessage(text="777")
 
     async def _resolve_chat_ids(query: str):
         _ = query

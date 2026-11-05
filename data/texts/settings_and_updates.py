@@ -52,7 +52,6 @@ SETTINGS_MENU_TITLE = (
     "Gemini-ответы: <b>{gemini_status}</b>\n"
     "HTTP-прокси Gemini: <b>{proxy_status}</b>\n"
     "Текущий HTTP-прокси: <code>{current_proxy}</code>\n\n"
-    "***\n\n"
     "<code>{date}</code>"
 )
 VERSION_STATE_UNKNOWN = "⚪ Неизвестно"

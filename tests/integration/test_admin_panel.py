@@ -119,7 +119,7 @@ async def panel(db_main, offline_module, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_panel_buttons_add_confirm_revoke_and_reject_old_confirmation(panel):
-    await panel.feed(1001, text="/admins")
+    await panel.feed(1001, text=panel.module.text.MENU_BUTTON)
     await panel.feed(1001, callback=panel.button("adm:add"))
     await panel.feed(1001, text="2002")
     confirmation = panel.button("adm:grant:")
@@ -195,7 +195,7 @@ async def test_list_pagination_invalid_id_and_cancel_buttons(panel):
     for value in ("@username", "-1", "0", str(2**63), "१२३"):
         await panel.feed(1001, text=value)
         assert panel.session.calls[-1].text == panel.module.text.INVALID_ID
-    await panel.feed(1001, text="/cancel")
+    await panel.feed(1001, text=panel.module.text.CANCEL_BUTTON)
     state = panel.dispatcher.fsm.get_context(bot=panel.bot, chat_id=1001, user_id=1001)
     assert await state.get_state() is None
     await panel.feed(1001, callback="adm:close")

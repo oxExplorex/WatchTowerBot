@@ -126,7 +126,7 @@ async def start_add_account_handler(call: CallbackQuery, state: FSMContext):
         AdminStates.account_add_code,
         AdminStates.account_add_password,
     ),
-    F.text.in_([constant_text.ACTION_CANCEL_TEXT, constant_text.ACTION_CANCEL_COMMAND]),
+    F.text == constant_text.ACTION_CANCEL_TEXT,
 )
 async def cancel_add_account_handler(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -190,7 +190,7 @@ async def receive_account_number_handler(message: Message, state: FSMContext):
         await app_temp.connect()
         result = await app_temp.send_phone_number_code(phone_number=number)
 
-        prompt_message = await message.answer(constant_text.ACCOUNT_INPUT_CODE_TEXT)
+        prompt_message = await message.answer(constant_text.ACCOUNT_INPUT_CODE_TEXT, reply_markup=back_inline())
         await state.update_data(
             prompt_message=prompt_message,
             app_temp=app_temp,
@@ -254,7 +254,7 @@ async def receive_account_code_handler(message: Message, state: FSMContext):
         await message.answer(constant_text.SUCCESS_ADD_ACCOUNT_TEXT)
         await state.clear()
     except SessionPasswordNeeded:
-        prompt_message = await message.answer(constant_text.ACCOUNT_INPUT_PASSWORD_TEXT)
+        prompt_message = await message.answer(constant_text.ACCOUNT_INPUT_PASSWORD_TEXT, reply_markup=back_inline())
         await state.update_data(prompt_message=prompt_message)
         await state.set_state(AdminStates.account_add_password)
         keep_client = True

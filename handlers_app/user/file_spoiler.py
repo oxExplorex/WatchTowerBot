@@ -77,20 +77,20 @@ def _media_suffix(message: Message) -> str:
     return ".bin"
 
 
-async def _send_document_with_retry(chat_id: int, file_path: str, suffix: str, caption: str) -> None:
+async def _send_document_with_retry(chat_id: int, file_path: str, suffix: str):
     last_error: Exception | None = None
 
     for attempt in range(1, SEND_ATTEMPTS + 1):
         try:
             media = FSInputFile(file_path, filename=f"ttl_media{suffix}")
-            await bot.send_document(
-                chat_id=chat_id,
+            from services.notification_topics import send_spoiler
+            sent = await send_spoiler(
+                bot, bot.send_document, chat_id,
                 document=media,
-                caption=caption,
                 disable_content_type_detection=False,
                 request_timeout=SEND_TIMEOUT_SECONDS,
             )
-            return
+            return sent
         except TelegramRetryAfter as exc:
             last_error = exc
             await asyncio.sleep(max(exc.retry_after, 1))
@@ -148,8 +148,9 @@ async def file_spoiler_handler(client: Client, message: Message):
             sender=sender_line,
             chat=chat_line,
         )
-        status_message = await bot.send_message(
-            chat_id=account.admin_id,
+        from services.notification_topics import send_spoiler
+        status_message = await send_spoiler(
+            bot, bot.send_message, account.admin_id,
             text=status_text,
             disable_web_page_preview=True,
         )
@@ -170,7 +171,16 @@ async def file_spoiler_handler(client: Client, message: Message):
             chat=chat_line,
         )
 
-        await _send_document_with_retry(account.admin_id, downloaded, suffix, caption)
+        sent = await _send_document_with_retry(account.admin_id, downloaded, suffix)
+        from aiogram.types import ReplyParameters
+        try:
+            await bot.send_message(chat_id=account.admin_id, text=caption,
+                message_thread_id=sent.message_thread_id,
+                reply_parameters=ReplyParameters(message_id=sent.message_id),
+                disable_web_page_preview=True)
+        except Exception:
+            # Preserve source information even if a reply cannot be delivered.
+            await bot.edit_message_caption(chat_id=account.admin_id, message_id=sent.message_id, caption=caption)
 
         if status_message:
             try:

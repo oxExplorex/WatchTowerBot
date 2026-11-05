@@ -1,5 +1,5 @@
 from aiogram import F, Router
-from aiogram.filters import StateFilter
+from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -12,7 +12,7 @@ from utils.others import close_state_pyrogram_client, not_warning_delete_message
 router = Router(name=__name__)
 
 
-@router.message(IsPrivate(), IsAdmin(), F.text.startswith("/start"), StateFilter("*"))
+@router.message(IsPrivate(), IsAdmin(), CommandStart(), StateFilter("*"))
 async def start_user_handler(message: Message, state: FSMContext):
     await close_state_pyrogram_client(state)
     await state.clear()
@@ -20,11 +20,18 @@ async def start_user_handler(message: Message, state: FSMContext):
     await message.answer(
         text=constant_text.START_MESSAGE_TEXT,
         reply_markup=static_admin_keyboard(),
+        parse_mode="HTML",
     )
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "noop", StateFilter("*"))
 async def noop_callback_handler(call: CallbackQuery):
+    await call.answer()
+
+
+@router.callback_query(IsPrivate(), IsAdmin(), F.data == "panel:home", StateFilter("*"))
+async def main_menu_handler(call: CallbackQuery, state: FSMContext):
+    await start_user_handler(call.message, state)
     await call.answer()
 
 

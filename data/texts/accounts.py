@@ -1,18 +1,19 @@
 ACCOUNT_COUNT_INFO_TEXT = (
-    "<b>🗂 Профили доступа</b>\n\n"
+    "<b>Аккаунты</b>\n\n"
     "Аккаунты: {_count}\n"
-    "Приложения: {_count_apps}\n\n"
+    "API-профили: {_count_apps}\n\n"
     "<code>{date}</code>"
 )
 
 ACCOUNT_EDIT_INFO_TEXT = (
-    "<b>Профиль [<code>{user_id}</code>]</b>\n\n"
+    "<b>Аккаунт <code>{user_id}</code></b>\n\n"
     "Телефон: {number}\n"
     "Статус: <b>{session_status}</b>\n\n"
     "app_id: {app_id}\n"
     "api_hash: {api_hash}\n\n"
-    "Последний успешный чек: {last_update}\n\n"
-    "48ч (свежее сверху, шаг 1ч):\n{hours_chart}\n\n"
+    "Последняя успешная проверка: {last_update}\n\n"
+    "<b>Мониторинг за 48 часов</b> · свежее сверху\n"
+    "<blockquote expandable>{hours_chart}</blockquote>\n\n"
     "<code>{date}</code>"
 )
 

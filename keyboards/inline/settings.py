@@ -4,6 +4,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import data.text as constant_text
 from data.admin_text import MENU_BUTTON as ADMINS_BUTTON
+from callbacks.personal_secret import SETUP_CALLBACK
+from data.texts.personal_secret import MENU_BUTTON as SECRET_BUTTON
 from utils.settings_formatting import auto_update_label, proxy_status_label, tz_offset_label
 
 
@@ -11,6 +13,7 @@ def settings_keyboard(tz_offset: int, auto_update: int, proxy_cfg: dict, has_upd
     keyboard = InlineKeyboardBuilder()
 
     keyboard.row(InlineKeyboardButton(text=ADMINS_BUTTON, callback_data="adm:list:0"))
+    keyboard.row(InlineKeyboardButton(text=SECRET_BUTTON, callback_data=SETUP_CALLBACK))
 
     keyboard.row(
         InlineKeyboardButton(

@@ -29,6 +29,7 @@ from loader import bot, session_manager
 from utils.datetime_tools import DateTime
 from utils.others import get_user_log_text
 from utils.telegram_helpers import is_bot_or_channel
+from services.notification_topics import send_account_log
 
 scheduler = AsyncIOScheduler()
 FULL_SCAN_FORCE_INTERVAL_SEC = 60 * 60 * 24
@@ -130,9 +131,9 @@ async def _drop_dead_session(app_session: Client, error: Exception) -> None:
         bot_logger.exception(f"Failed to notify admin_id={account.admin_id} about dropped session")
 
 
-async def _safe_send_parser_message(chat_id: int, text: str, *, context: str) -> bool:
+async def _safe_send_parser_message(chat_id: int, text: str, *, context: str, account_user_id: int) -> bool:
     try:
-        await bot.send_message(chat_id, text)
+        await send_account_log(bot, chat_id, account_user_id, text)
         return True
     except Exception:
         bot_logger.exception(f"Failed to send parser notification to chat_id={chat_id} | context={context}")
@@ -352,12 +353,12 @@ async def _scan_session(app_session):
         if account_settings.alert_new_chat:
             target_id = account_settings.admin_id
             for text_chunk in chunk_text(log_new):
-                await _safe_send_parser_message(target_id, text_chunk, context="new_chat")
+                await _safe_send_parser_message(target_id, text_chunk, context="new_chat", account_user_id=user_id)
 
         if account_settings.alert_del_chat:
             target_id = account_settings.admin_id
             for text_chunk in chunk_text(log_del):
-                await _safe_send_parser_message(target_id, text_chunk, context="deleted_chat")
+                await _safe_send_parser_message(target_id, text_chunk, context="deleted_chat", account_user_id=user_id)
 
     except Exception as exc:
         if account_settings is not None:

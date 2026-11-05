@@ -34,11 +34,4 @@ class IsAccountManager(BaseFilter):
         from db.main import get_account_uuid
 
         account = await get_account_uuid((event.data or "").split(":")[-1], event.from_user.id)
-        return account is not None and (account.user_id == event.from_user.id or await is_admin(event.from_user.id))
-
-
-class IsLimitedUser(BaseFilter):
-    async def __call__(self, event):
-        from services.account_access import has_limited_access
-
-        return not await is_admin(event.from_user.id) and await has_limited_access(event.from_user.id)
+        return account is not None and await is_admin(event.from_user.id)

@@ -22,13 +22,17 @@ async def account_tg_admin_inline(account_tg: List[apps_db], page: int, total_pa
             ),
         )
 
-    keyboard.row(
-        InlineKeyboardButton(text=constant_text.ACTION_PAGE_PREV_TEXT, callback_data=f"acc:m:{page - 1}"),
-        InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data=f"acc:m:{page}"),
-        InlineKeyboardButton(text=constant_text.ACTION_PAGE_NEXT_TEXT, callback_data=f"acc:m:{page + 1}"),
-    )
+    if total_pages > 1:
+        navigation = []
+        if page > 1:
+            navigation.append(InlineKeyboardButton(text=constant_text.ACTION_PAGE_PREV_TEXT, callback_data=f"acc:m:{page - 1}"))
+        navigation.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="noop"))
+        if page < total_pages:
+            navigation.append(InlineKeyboardButton(text=constant_text.ACTION_PAGE_NEXT_TEXT, callback_data=f"acc:m:{page + 1}"))
+        keyboard.row(*navigation)
     keyboard.row(
         InlineKeyboardButton(text=constant_text.ACTION_REFRESH_TEXT, callback_data=f"acc:m:{page}"),
+        InlineKeyboardButton(text=constant_text.MAIN_MENU_BUTTON, callback_data="panel:home"),
     )
 
     return keyboard.as_markup()

@@ -12,6 +12,7 @@ from db.main import (
 from filters.all_filters import IsAdmin, IsPrivate
 from handlers.admin.proxy_manager.proxy_checker import check_proxy_now
 from handlers.admin.states import AdminStates
+from keyboards.inline.back_inline import back_inline
 
 from utils.datetime_tools import DateTime
 from utils.proxy_utils import compact_proxy_display, normalize_http_proxy_input
@@ -61,7 +62,7 @@ async def open_proxy_menu_handler(message: Message, state: FSMContext):
     await state.clear()
     cfg = await get_user_gemini_proxy_config(message.from_user.id)
     tz_offset = await get_user_timezone_offset(message.from_user.id)
-    await message.answer(_proxy_menu_text(cfg, tz_offset))
+    await message.answer(_proxy_menu_text(cfg, tz_offset), reply_markup=back_inline())
     await state.set_state(AdminStates.wait_proxy_manager)
 
 
@@ -70,7 +71,7 @@ async def open_proxy_menu_from_settings_handler(call: CallbackQuery, state: FSMC
     await state.clear()
     cfg = await get_user_gemini_proxy_config(call.from_user.id)
     tz_offset = await get_user_timezone_offset(call.from_user.id)
-    await call.message.edit_text(_proxy_menu_text(cfg, tz_offset))
+    await call.message.edit_text(_proxy_menu_text(cfg, tz_offset), reply_markup=back_inline())
     await state.set_state(AdminStates.wait_proxy_manager)
     await call.answer()
 
@@ -79,7 +80,7 @@ async def open_proxy_menu_from_settings_handler(call: CallbackQuery, state: FSMC
 async def save_proxy_handler(message: Message, state: FSMContext):
     text = (message.text or "").strip()
 
-    if text in {"/start", "/cancel", constant_text.ACTION_CANCEL_TEXT, constant_text.SETTINGS_BOT_KEYBOARD[2]}:
+    if text in {constant_text.ACTION_CANCEL_TEXT, constant_text.SETTINGS_BOT_KEYBOARD[2]}:
         await state.clear()
         await message.answer(constant_text.ACTION_CANCELLED_TEXT)
         return

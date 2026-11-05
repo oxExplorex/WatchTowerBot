@@ -2,7 +2,7 @@ from uuid import uuid4
 
 from aiogram import F, Router, html
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -68,7 +68,6 @@ async def _show_list(message, *, page=0, edit=False):
         await message.answer(content, reply_markup=keyboard)
 
 
-@router.message(IsPrivate(), IsAdmin(), Command("admins"), StateFilter("*"))
 @router.message(IsPrivate(), IsAdmin(), F.text == text.MENU_BUTTON, StateFilter("*"))
 async def open_admins_handler(message: Message, state: FSMContext):
     await _clear_flow(state)
@@ -119,7 +118,7 @@ async def add_admin_handler(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-@router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.admin_add_id), F.text.in_(["/cancel", text.CANCEL_BUTTON]))
+@router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.admin_add_id), F.text == text.CANCEL_BUTTON)
 async def cancel_admin_input_handler(message: Message, state: FSMContext):
     await state.clear()
     await _show_list(message)

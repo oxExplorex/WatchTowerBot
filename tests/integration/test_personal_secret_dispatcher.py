@@ -52,7 +52,6 @@ async def setup_flow(db_main, offline_module, monkeypatch):
     profile = offline_module("middlewares/update_user.py")
     writes = AsyncMock(side_effect=db_main.update_user)
     profile.update_user = writes
-    loader.router.message.middleware(profile.UpdateUserMiddleware())
     handled = []
 
     @loader.router.message()
@@ -60,6 +59,7 @@ async def setup_flow(db_main, offline_module, monkeypatch):
         handled.append(message.text)
 
     keys = PersonalKeyRepository(db_main.get_session_factory)
+    menu = offline_module("handlers/admin/admin_menu_handler.py")
     ownership = offline_module("handlers/user/account_ownership.py")
     import filters.all_filters as access_filters
     monkeypatch.setattr(access_filters, "is_admin", repository.is_admin)
@@ -71,12 +71,26 @@ async def setup_flow(db_main, offline_module, monkeypatch):
     apps.create_app_tg = db_main.create_app_tg
     apps.get_app_tg_to_params_all = db_main.get_app_tg_to_params_all
     apps.not_warning_delete_message = AsyncMock()
+    app_menu = offline_module("handlers/admin/apps_manager/apps_menu_handler.py")
+    app_menu.get_app_tg_user_id = db_main.get_app_tg_user_id
+    app_menu.get_account_counts_by_apps = db_main.get_account_counts_by_apps
+    editor = offline_module("handlers/admin/panel/account_edit_handler.py")
+    for name in ("get_account_uuid", "get_app_tg_uuid", "get_user_timezone_offset", "get_account_health_events",
+                 "get_account_user_id", "get_app_tg_user_id", "get_user_names_by_ids", "update_account_uuid"):
+        setattr(editor, name, getattr(db_main, name))
+    editor.is_session_running = AsyncMock(return_value=False)
+    # Account filters resolve this module lazily; use real owner-scoped queries.
+    monkeypatch.setitem(sys.modules, "db.main", db_main)
     dispatcher = Dispatcher(events_isolation=SimpleEventIsolation())
+    dispatcher.message.middleware(profile.UpdateUserMiddleware())
     dispatcher.update.outer_middleware(admission.AdminAccessMiddleware())
     dispatcher.update.outer_middleware(AuthSessionCleanupMiddleware())
     dispatcher.update.outer_middleware(PersonalSecretMiddleware(keys, account_access.can_use_secret))
+    dispatcher.include_router(menu.router)
     dispatcher.include_router(ownership.router)
     dispatcher.include_router(apps.router)
+    dispatcher.include_router(app_menu.router)
+    dispatcher.include_router(editor.router)
     dispatcher.include_router(loader.router)
     session = OfflineSession()
     bot = Bot("123456:offline_test_token", session=session)
@@ -128,14 +142,15 @@ async def test_real_dispatcher_setup_deletes_inputs_before_profile_writes_and_ha
     flow.writes.assert_not_awaited()
     assert flow.handled == []
     await flow.feed(content="/start")
-    assert flow.handled == ["/start"]
+    assert flow.handled == []
+    assert flow.session.calls[-1].reply_markup.keyboard
     flow.writes.assert_awaited_once()
     await flow.feed(callback=SETUP_CALLBACK, inaccessible=True)
     assert isinstance(flow.session.calls[-1], AnswerCallbackQuery)
 
 
 @pytest.mark.asyncio
-async def test_limited_user_can_create_only_own_profile_after_secret_verification(setup_flow):
+async def test_connected_user_needs_admin_grant_to_create_own_profile(setup_flow):
     from core.personal_crypto import create_key_bundle
     import time
 
@@ -145,6 +160,13 @@ async def test_limited_user_can_create_only_own_profile_after_secret_verificatio
     await flow.db.create_account_tg(1001, 2002, app.uuid, "79000000001")
     await flow.keys.install(2002, create_key_bundle(2002, "Личныйсекрет2002"))
     await flow.state(2002).update_data(personal_verified_until=int(time.time()) + 600)
+    for content in ("/start", "Мой аккаунт", "🔑 API-профили"):
+        await flow.feed(2002, content=content)
+    await flow.feed(2002, callback="apps_admin_menu_add")
+    assert not flow.session.calls and not flow.handled
+    assert (await flow.db.get_app_tg_user_id(2002))[1] == 0
+    await flow.admins.grant(1001, 2002)
+    await flow.state(2002).update_data(personal_verified_until=int(time.time()) + 600)
     await flow.feed(2002, callback="apps_admin_menu_add")
     await flow.feed(2002, content="23456")
     await flow.feed(2002, content="own-synthetic-hash")
@@ -153,7 +175,7 @@ async def test_limited_user_can_create_only_own_profile_after_secret_verificatio
     profiles, count = await flow.db.get_app_tg_user_id(2002)
     assert count == 1 and profiles[0].api_hash == "own-synthetic-hash"
     assert (await flow.db.get_app_tg_user_id(1001))[1] == 1
-    assert not await flow.admins.is_admin(2002)
+    assert await flow.admins.is_admin(2002)
     assert "foreign-synthetic-hash" not in str(flow.session.calls)
 
 
@@ -173,11 +195,12 @@ async def test_revocation_during_secret_input_still_deletes_secret_and_clears_fs
 
 
 @pytest.mark.asyncio
-async def test_limited_self_view_hides_foreign_profile_and_deletion_survives_fsm_reset(setup_flow):
+async def test_admin_self_view_hides_foreign_profile_and_deletion_survives_fsm_reset(setup_flow):
     from callbacks.account_ownership import OwnAccount
     from db.repositories.account_operations_repo import AccountOperationsRepository
 
     flow = setup_flow
+    await flow.admins.grant(1001, 2002)
     await flow.db.create_app_tg(1001, 12345, "never-display-foreign-hash", "private app")
     app = (await flow.db.get_app_tg_user_id(1001))[0][0]
     account = await flow.db.create_account_tg(1001, 2002, app.uuid, "79000000001")
@@ -236,3 +259,113 @@ async def test_transfer_approval_deletes_secret_before_starting_task(setup_flow,
     assert await flow.state().get_state() is None
     assert "Личныйсекрет1001" not in str(flow.session.calls)
     assert flow.handled == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("self_is_admin", [False, True])
+async def test_foreign_profile_is_hidden_from_connected_account_even_with_admin_role(setup_flow, self_is_admin):
+    from callbacks.account_ownership import OwnAccount
+    from core.personal_crypto import create_key_bundle
+
+    flow = setup_flow
+    if self_is_admin:
+        await flow.admins.grant(1001, 2002)
+    await flow.db.create_app_tg(1001, 654321, "foreign-api-secret", "foreign-profile")
+    await flow.db.create_app_tg(2002, 765432, "own-api-secret", "own-profile")
+    foreign = (await flow.db.get_app_tg_user_id(1001))[0][0]
+    account = await flow.db.create_account_tg(1001, 2002, foreign.uuid, "79000000001")
+    await flow.keys.install(1001, create_key_bundle(1001, "Секретвладельца714"))
+    await flow.keys.install(2002, create_key_bundle(2002, "Секретаккаунта823"))
+
+    def emitted_since(index):
+        return str([call.model_dump() for call in flow.session.calls[index:]])
+
+    start = len(flow.session.calls)
+    await flow.feed(2002, content=flow.ownership.text.MENU)
+    await flow.feed(2002, callback=OwnAccount(action="detail", token=account.uuid.hex).pack())
+    if not self_is_admin:
+        await flow.feed(2002, callback="apps_admin_menu:1")
+        await flow.feed(2002, callback=OwnAccount(action="profiles").pack())
+        assert len(flow.session.calls) == start
+        assert flow.handled == []
+        return
+    card = next(call for call in reversed(flow.session.calls) if isinstance(call, SendMessage))
+    actions = {OwnAccount.unpack(button.callback_data).action for row in card.reply_markup.inline_keyboard for button in row}
+    assert actions == {"profiles", "delete"}
+    await flow.feed(2002, callback="apps_admin_menu:1")
+    await flow.feed(2002, callback=OwnAccount(action="profiles").pack())
+    assert "765432" in emitted_since(start)  # Own API profile remains selectable.
+    # Stale/forged manager buttons must neither reveal credentials nor alter state.
+    await flow.feed(2002, callback=f"acc:e:{account.uuid}")
+    await flow.feed(2002, callback=f"acc:tn:{account.uuid}")
+    output = emitted_since(start)
+    for value in ("654321", "foreign-api-secret", "foreign-profile", "79000000001", str(foreign.uuid)):
+        assert value not in output
+    assert (await flow.db.get_account_uuid(account.uuid, 1001)).alert_new_chat == account.alert_new_chat
+    if self_is_admin:
+        assert await flow.db.get_app_tg_uuid(foreign.uuid, 2002) is None
+        assert (await flow.db.get_app_tg_user_id(2002))[1] == 1
+    start = len(flow.session.calls)
+    await flow.feed(1001, callback=f"acc:e:{account.uuid}")
+    assert "654321" in emitted_since(start) and "foreign-api-secret" in emitted_since(start)
+
+
+@pytest.mark.asyncio
+async def test_profile_created_in_bot_is_visible_only_to_creator_on_open_and_refresh(setup_flow):
+    from core.personal_crypto import create_key_bundle
+    import data.text as texts
+    import time
+
+    flow = setup_flow
+    await flow.admins.grant(1001, 2002)
+    for user_id in (1001, 2002):
+        await flow.keys.install(user_id, create_key_bundle(user_id, f"Личныйсекрет{user_id}"))
+    await flow.state(2002).update_data(personal_verified_until=int(time.time()) + 600)
+    await flow.feed(2002, callback="apps_admin_menu_add")
+    await flow.feed(2002, content="765432")
+    await flow.feed(2002, content="private-created-through-bot")
+    await flow.feed(2002, content="profile-of-2002")
+    await flow.feed(2002, callback="agree")
+    profiles, total = await flow.db.get_app_tg_user_id(2002)
+    assert total == 1 and profiles[0].user_id == 2002
+    assert (await flow.db.get_app_tg_user_id(1001))[1] == 0
+
+    start = len(flow.session.calls)
+    await flow.feed(1001, content=texts.APP_TG_USER_KEYBOARD[0])
+    await flow.feed(1001, callback="apps_admin_menu:1")
+    responses = [call for call in flow.session.calls[start:] if isinstance(call, (SendMessage, EditMessageText))]
+    assert len(responses) == 2
+    for response in responses:
+        buttons = [button for row in response.reply_markup.inline_keyboard for button in row]
+        assert not any((button.callback_data or "").startswith("account_admin_menu_add:") for button in buttons)
+        assert "765432" not in str(response.model_dump())
+        assert "profile-of-2002" not in str(response.model_dump())
+    start = len(flow.session.calls)
+    await flow.feed(2002, content=texts.APP_TG_USER_KEYBOARD[0])
+    assert "765432" in str([call.model_dump() for call in flow.session.calls[start:]])
+
+
+@pytest.mark.asyncio
+async def test_only_start_opens_panel_and_other_commands_do_not_enter_wizards(setup_flow):
+    from callbacks.personal_secret import CANCEL_CALLBACK
+    from core.personal_crypto import create_key_bundle
+
+    flow = setup_flow
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
+    await flow.feed(content="/start")
+    labels = {button.text for row in flow.session.calls[-1].reply_markup.keyboard for button in row}
+    assert {"👥 Администраторы", "⚙️ Настройки", "🔑 API-профили", "Мой аккаунт"} <= labels
+    assert len(flow.session.calls[-1].reply_markup.keyboard) == 4
+    start = len(flow.session.calls)
+    writes = flow.writes.await_count
+    for command in ("/admins", "/myaccount", "/secret", "/cancel", "/chat_history 123", "/startfoo"):
+        await flow.feed(content=command)
+    assert len(flow.session.calls) == start and flow.writes.await_count == writes
+    assert not flow.handled
+
+    await flow.feed(callback=SETUP_CALLBACK)
+    assert flow.session.calls[-1].reply_markup.inline_keyboard[0][0].callback_data == CANCEL_CALLBACK
+    await flow.feed(callback=CANCEL_CALLBACK)
+    assert await flow.state().get_state() is None
+    await flow.feed(callback="panel:home")
+    assert flow.session.calls[-2].reply_markup.keyboard

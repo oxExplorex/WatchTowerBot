@@ -2,7 +2,7 @@
 from uuid import UUID
 
 from aiogram import F, Router, html
-from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
@@ -14,7 +14,7 @@ from db.models import Account
 from db.repositories.account_locks import AccountAlreadyConnected
 from db.repositories.personal_repo import PersonalKeyRepository
 from db.session import get_session_factory
-from filters.all_filters import IsLimitedUser, IsPrivate
+from filters.all_filters import IsAdmin, IsPrivate
 from keyboards.inline.account_ownership import (accounts_keyboard, delete_keyboard,
     detail_keyboard, profiles_keyboard, self_menu_keyboard, status_keyboard)
 from keyboards.inline.personal_secret import setup_keyboard
@@ -44,10 +44,7 @@ async def _show_home(message, actor_id, state):
                          reply_markup=accounts_keyboard(accounts) if accounts else self_menu_keyboard())
 
 
-@router.message(IsPrivate(), Command("myaccount"), StateFilter("*"))
-@router.message(IsPrivate(), F.text == text.MENU, StateFilter("*"))
-@router.message(IsPrivate(), IsLimitedUser(), CommandStart(), StateFilter("*"))
-@router.message(IsPrivate(), IsLimitedUser(), Command("cancel"), StateFilter("*"))
+@router.message(IsPrivate(), IsAdmin(), F.text == text.MENU, StateFilter("*"))
 async def my_account(message: Message, state: FSMContext):
     await _show_home(message, message.from_user.id, state)
 
@@ -63,7 +60,7 @@ async def request_delete_warning(call, account_id):
                               reply_markup=delete_keyboard(operation), parse_mode="HTML")
 
 
-@router.callback_query(IsPrivate(), OwnAccount.filter(), StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAdmin(), OwnAccount.filter(), StateFilter("*"))
 async def own_account_callback(call: CallbackQuery, callback_data: OwnAccount, state: FSMContext,
                                personal_secret_dialog=None):
     actor_id, action, token = call.from_user.id, callback_data.action, callback_data.token
@@ -138,10 +135,4 @@ async def own_account_callback(call: CallbackQuery, callback_data: OwnAccount, s
     except (PermissionError, ValueError, TypeError):
         await call.answer(text.UNAVAILABLE, show_alert=True)
         return
-    await call.answer()
-
-
-@router.callback_query(IsPrivate(), IsLimitedUser(), F.data == "back_delete", StateFilter("*"))
-async def limited_cancel(call: CallbackQuery, state: FSMContext):
-    await _show_home(call.message, call.from_user.id, state)
     await call.answer()

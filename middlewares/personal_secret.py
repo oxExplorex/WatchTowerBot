@@ -4,7 +4,7 @@ import time
 from aiogram import BaseMiddleware
 from aiogram.types import InaccessibleMessage
 
-from callbacks.personal_secret import SETUP_CALLBACK, VERIFY_CALLBACK
+from callbacks.personal_secret import CANCEL_CALLBACK, SETUP_CALLBACK, VERIFY_CALLBACK
 from data.texts import personal_secret as texts
 from data.texts import account_ownership as ownership_text
 from data.texts.personal_secret import CONFIRM_PROMPT, INPUT_PROMPT, PROMPT
@@ -63,32 +63,42 @@ class PersonalSecretMiddleware(BaseMiddleware):
         if update.message and current not in SECRET_STATES and reply is not None:
             author = getattr(reply, "from_user", None)
             if (getattr(author, "id", None) == getattr(data["bot"], "id", None)
-                    and getattr(reply, "text", None) in {INPUT_PROMPT, CONFIRM_PROMPT}):
+                    and getattr(reply, "text", None) in {INPUT_PROMPT, CONFIRM_PROMPT, *texts.LEGACY_INPUT_PROMPTS}):
                 await self.dialog.delete_input(message)
                 await message.answer(texts.INPUT_INTERRUPTED)
                 return None
         if update.edited_message is not None and current in SECRET_STATES:
             await self.dialog.delete_input(message)
             return None
+        callback = (call.data or "") if call else ""
+        content = (message.text or "").strip() if update.message else ""
+        command = content.split(maxsplit=1)[0].split("@", 1)[0] if content.startswith("/") else ""
+        if callback == CANCEL_CALLBACK:
+            if current not in SECRET_STATES:
+                await call.answer(texts.CANCEL_UNAVAILABLE)
+                return None
+            await state.clear()
+            await call.answer(texts.INPUT_CANCELLED)
+            await call.message.edit_text(texts.INPUT_CANCELLED)
+            return None
+        # Commands must never become wizard input or reach ordinary handlers.
+        if command and command != "/start":
+            if current in SECRET_STATES:
+                await self.dialog.delete_input(message)
+            return None
+        if command == "/start" and current in SECRET_STATES:
+            await state.clear()
+            current = None
         if update.message is not None and current in SECRET_STATES:
             await self.dialog.handle_input(message, state, owner_id, key, current)
             return None
-        callback = call.data if call else ""
-        command = (message.text or "").split("@", 1)[0] if update.message else ""
-        if callback in {SETUP_CALLBACK, VERIFY_CALLBACK} or command == "/secret":
+        if callback in {SETUP_CALLBACK, VERIFY_CALLBACK}:
             if call:
                 await call.answer()
             await self.dialog.begin(message, state, verify=key is not None)
             return None
-        if callback.startswith("own:") or command == "/myaccount" or (message.text or "") == ownership_text.MENU:
+        if callback.startswith("own:") or (message.text or "") == ownership_text.MENU:
             return await handler(update, data)
-        # Limited users must be able to view/remove their own connection before
-        # setting a secret. Profile creation and transfer still require setup.
-        if data.get("limited_account_access"):
-            if (callback.startswith("own:") or callback == "back_delete"
-                    or command in {"/start", "/myaccount", "/cancel"}
-                    or (message.text or "") == ownership_text.MENU):
-                return await handler(update, data)
         if key is None:
             if call:
                 await call.answer(texts.SETUP_REQUIRED)
