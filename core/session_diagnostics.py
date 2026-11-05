@@ -9,7 +9,7 @@ def session_error_code(error):
         text = str(cause).lower()
         for markers, code in (
             (("database is locked", "database table is locked"), "sqlite_locked"),
-            (("no such column", "no such table", "duplicate column name"), "sqlite_schema"),
+            (("no such column", "no such table", "duplicate column name", "already exists"), "sqlite_schema"),
             (("unable to open database",), "sqlite_open"),
             (("readonly", "read-only"), "sqlite_readonly"),
             (("disk is full", "database or disk is full"), "sqlite_full"),

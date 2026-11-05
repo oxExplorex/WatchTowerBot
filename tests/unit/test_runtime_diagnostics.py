@@ -14,6 +14,7 @@ from utils.settings_formatting import build_daily_rows_desc, build_hourly_rows_d
 
 @pytest.mark.parametrize("detail,expected", [
     ("database is locked", "sqlite_locked"), ("no such column: x", "sqlite_schema"),
+    ("table update_state already exists", "sqlite_schema"),
     ("unable to open database file", "sqlite_open"), ("attempt to write a readonly database", "sqlite_readonly"),
     ("database or disk is full", "sqlite_full"), ("database disk image is malformed", "sqlite_corrupt"),
 ])

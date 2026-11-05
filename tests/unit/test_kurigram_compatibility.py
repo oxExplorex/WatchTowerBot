@@ -74,6 +74,73 @@ async def test_direct_pyrofork_session_open_is_incompatible(legacy_session):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_names", [True, False])
+async def test_bridge_recovers_a_partly_migrated_session_with_existing_usernames(legacy_session, legacy_names):
+    with closing(sqlite3.connect(legacy_session)) as connection, connection:
+        connection.execute("CREATE TABLE usernames (id INTEGER, username TEXT)")
+        connection.execute("INSERT INTO usernames VALUES (11, 'already_cached')")
+        if not legacy_names:
+            connection.execute("ALTER TABLE peers DROP COLUMN username")
+    storage = SQLiteStorage("legacy", legacy_session.parent)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="update_state already exists"):
+            await storage.open()
+    finally:
+        await storage.close()
+    assert migrate_legacy_sessions(legacy_session.parent) == 1
+    backups = list(legacy_session.parent.glob("*.pyrofork-v4.*.bak"))
+    assert len(backups) == 1
+    with closing(sqlite3.connect(backups[0])) as backup:
+        assert backup.execute("SELECT number FROM version").fetchone() == (4,)
+        assert backup.execute("SELECT id, username FROM usernames").fetchall() == [(11, "already_cached")]
+    storage = SQLiteStorage("legacy", legacy_session.parent)
+    try:
+        await storage.open()
+        assert await storage.version() == 7
+        assert await storage.auth_key() == bytes(range(256))
+        assert storage.conn.execute("SELECT id, username FROM usernames ORDER BY username").fetchall() == (
+            [(11, "already_cached"), (11, "legacy_user")] if legacy_names else [(11, "already_cached")])
+        assert storage.conn.execute("SELECT pts, qts, seq FROM update_state").fetchone() == (1, 2, 3)
+    finally:
+        await storage.close()
+    assert migrate_legacy_sessions(legacy_session.parent) == 0
+    assert list(legacy_session.parent.glob("*.pyrofork-v4.*.bak")) == backups
+
+
+def test_partial_session_with_unknown_username_schema_is_not_changed(legacy_session):
+    with closing(sqlite3.connect(legacy_session)) as connection, connection:
+        connection.execute("CREATE TABLE usernames (unknown TEXT)")
+    before = legacy_session.read_bytes()
+    with pytest.raises(RuntimeError, match="Unsupported legacy Telegram username"):
+        migrate_legacy_sessions(legacy_session.parent)
+    assert legacy_session.read_bytes() == before
+    assert not list(legacy_session.parent.glob("*.bak"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [4, 5, 6])
+async def test_native_session_uses_kurigram_upgrade_unchanged(legacy_session, version):
+    with closing(sqlite3.connect(legacy_session)) as connection, connection:
+        connection.execute("ALTER TABLE peers DROP COLUMN username")
+        if version == 4:
+            connection.execute("DROP TABLE update_state")
+        connection.execute("CREATE TABLE usernames (id INTEGER, username TEXT)")
+        connection.execute("UPDATE version SET number = ?", (version,))
+        if version == 6:
+            connection.execute("CREATE INDEX idx_usernames_id ON usernames (id)")
+    before = legacy_session.read_bytes()
+    assert migrate_legacy_sessions(legacy_session.parent) == 0
+    assert legacy_session.read_bytes() == before
+    storage = SQLiteStorage("legacy", legacy_session.parent)
+    try:
+        await storage.open()
+        assert await storage.version() == 7
+        assert await storage.auth_key() == bytes(range(256))
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_legacy_session_bridge_preserves_authorization_and_peers(legacy_session):
     assert migrate_legacy_sessions(legacy_session.parent) == 1
     backups = list(legacy_session.parent.glob("*.pyrofork-v4.*.bak"))
@@ -107,7 +174,12 @@ def test_unknown_legacy_schema_is_not_modified(legacy_session):
         assert connection.execute("SELECT number FROM version").fetchone() == (3,)
 
 
-def test_failed_session_conversion_rolls_back_and_keeps_backup(monkeypatch, legacy_session):
+@pytest.mark.parametrize("existing_names", [False, True])
+def test_failed_session_conversion_rolls_back_and_keeps_backup(monkeypatch, legacy_session, existing_names):
+    if existing_names:
+        with closing(sqlite3.connect(legacy_session)) as connection, connection:
+            connection.execute("CREATE TABLE usernames (id INTEGER, username TEXT)")
+            connection.execute("INSERT INTO usernames VALUES (11, 'already_cached')")
     original_connect = sqlite3.connect
 
     class FailingConnection(sqlite3.Connection):
@@ -127,5 +199,8 @@ def test_failed_session_conversion_rolls_back_and_keeps_backup(monkeypatch, lega
     assert len(list(legacy_session.parent.glob("*.pyrofork-v4.*.bak"))) == 1
     with closing(sqlite3.connect(legacy_session)) as connection:
         assert connection.execute("SELECT number FROM version").fetchone() == (4,)
-        assert connection.execute("SELECT name FROM sqlite_master WHERE name = 'usernames'").fetchone() is None
+        if existing_names:
+            assert connection.execute("SELECT id, username FROM usernames").fetchall() == [(11, "already_cached")]
+        else:
+            assert connection.execute("SELECT name FROM sqlite_master WHERE name = 'usernames'").fetchone() is None
         assert connection.execute("SELECT auth_key FROM sessions").fetchone() == (bytes(range(256)),)
