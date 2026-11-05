@@ -54,6 +54,59 @@ async def test_failed_download_never_stops_or_restarts_clients(update_modules, m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("remote", ["2.0.3", "2.0.2", None])
+async def test_settings_check_replaces_button_only_when_update_exists(update_modules, monkeypatch, remote):
+    _, settings, _ = update_modules
+    cached = [settings.constant_text.VERSION_STATE_UNKNOWN, 0, None]
+
+    async def save_cache(*, local_version, remote_version, state):
+        cached[:] = [state, int(settings.time.time()), remote_version]
+        return cached[1]
+
+    monkeypatch.setattr(settings, "get_local_version", Mock(return_value="2.0.2"))
+    monkeypatch.setattr(settings, "_fetch_latest_version", AsyncMock(return_value=remote))
+    monkeypatch.setattr(settings, "get_version_state_cache", AsyncMock(side_effect=lambda **kwargs: tuple(cached)))
+    monkeypatch.setattr(settings, "set_version_state_cache", save_cache)
+    monkeypatch.setattr(settings, "get_user_timezone_offset", AsyncMock(return_value=7))
+    monkeypatch.setattr(settings, "get_user_auto_update_enabled", AsyncMock(return_value=1))
+    monkeypatch.setattr(settings, "get_user_gemini_proxy_config", AsyncMock(return_value={}))
+    monkeypatch.setattr(settings, "get_latest_admin_health_event", AsyncMock(return_value=None))
+    before = await settings._settings_inline(1001)
+    assert "set:update:check" in {button.callback_data for row in before.inline_keyboard for button in row}
+
+    call = types.SimpleNamespace(from_user=types.SimpleNamespace(id=1001), answer=AsyncMock(),
+                                 message=types.SimpleNamespace(edit_text=AsyncMock()))
+    await settings.check_update_now_handler(call, types.SimpleNamespace(clear=AsyncMock()))
+    markup = call.message.edit_text.await_args.kwargs["reply_markup"]
+    callbacks = {button.callback_data for row in markup.inline_keyboard for button in row}
+    assert ("set:update:run" in callbacks) == (remote == "2.0.3")
+    assert ("set:update:check" in callbacks) == (remote != "2.0.3")
+    assert " | L:" not in call.answer.await_args.args[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_proxy", [False, True])
+async def test_settings_summary_distinguishes_unchecked_and_direct_connection(update_modules, monkeypatch, has_proxy):
+    _, settings, _ = update_modules
+    proxy_cfg = {"enabled": 0, "proxy": "http://user:private-pass@proxy.example:8080"} if has_proxy else {}
+    monkeypatch.setattr(settings, "GEMINI_KEY", "offline-test-key")
+    monkeypatch.setattr(settings, "get_local_version", Mock(return_value="2.0.2<test>"))
+    monkeypatch.setattr(settings, "_get_cached_version_state", AsyncMock(return_value=("⚪ Неизвестно", 0, None)))
+    monkeypatch.setattr(settings, "get_user_timezone_offset", AsyncMock(return_value=7))
+    monkeypatch.setattr(settings, "get_user_gemini_proxy_config", AsyncMock(return_value=proxy_cfg))
+    monkeypatch.setattr(settings, "get_latest_admin_health_event", AsyncMock(return_value=None))
+    rendered = await settings._settings_text(1001)
+    assert "ещё не выполнялась" in rendered and "0 мин назад" not in rendered
+    assert "прямое подключение" in rendered and "UTC+7" in rendered
+    assert "2.0.2&lt;test&gt;" in rendered and "private-pass" not in rendered
+    assert ("Сохранённый адрес:" in rendered) == has_proxy
+    keyboard = await settings._settings_inline(1001)
+    callbacks = {button.callback_data for row in keyboard.inline_keyboard for button in row}
+    assert ("set:proxy:disable" in callbacks) == has_proxy
+    assert ("set:proxy:check" in callbacks) == has_proxy
+
+
+@pytest.mark.asyncio
 async def test_failure_sending_start_message_releases_update_lock(update_modules):
     notifier, settings, _ = update_modules
     message = types.SimpleNamespace(edit_text=AsyncMock(side_effect=RuntimeError("offline")))

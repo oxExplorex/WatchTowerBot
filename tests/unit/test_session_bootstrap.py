@@ -51,7 +51,8 @@ def test_real_loader_and_consumers_share_one_registry():
             from aiogram import Bot, Dispatcher
             from aiogram.client.session.base import BaseSession
             from aiogram.exceptions import TelegramBadRequest
-            from aiogram.types import Update
+            from aiogram.types import Message as BotMessage, Update
+            from aiogram.methods import SendMessage
 
             class OfflineSession(BaseSession):
                 def __init__(self):
@@ -67,6 +68,9 @@ def test_real_loader_and_consumers_share_one_registry():
                     self.calls.append(method)
                     if self.fail:
                         raise TelegramBadRequest(method=method, message="synthetic-private-error")
+                    if isinstance(method, SendMessage):
+                        return BotMessage.model_validate({"message_id": 99, "date": 1,
+                            "chat": {"id": int(method.chat_id), "type": "private"}, "text": method.text}).as_(bot)
                     return True
 
             session = OfflineSession()
@@ -77,10 +81,10 @@ def test_real_loader_and_consumers_share_one_registry():
                 "chat": {"id": 1001, "type": "private"}, "text": "/start",
                 "from_user": {"id": 1001, "first_name": "Offline", "is_bot": False}}}
             await real_dispatcher.feed_update(test_bot, Update.model_validate(payload))
-            assert len(session.calls) == 1  # Specialized start precedes catch-all.
+            assert len(session.calls) == 2  # Remove the old reply keyboard, then attach inline controls.
             session.fail = True
             await real_dispatcher.feed_update(test_bot, Update.model_validate(payload | {"update_id": 2}))
-            assert len(session.calls) == 2  # Root error router handles a sibling's error.
+            assert len(session.calls) == 3  # Root error router handles a sibling's error.
             await real_dispatcher.storage.close()
             await test_bot.session.close()
 

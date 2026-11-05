@@ -33,7 +33,7 @@ class OfflineSession(BaseSession):
             "message_id": getattr(method, "message_id", None) or len(self.calls), "date": 1,
             "chat": {"id": int(method.chat_id), "type": "private"}, "text": method.text,
             "reply_markup": method.reply_markup if hasattr(method.reply_markup, "inline_keyboard") else None,
-        })
+        }).as_(bot)
 
 
 @pytest_asyncio.fixture
@@ -199,8 +199,8 @@ async def test_list_pagination_invalid_id_and_cancel_buttons(panel):
     state = panel.dispatcher.fsm.get_context(bot=panel.bot, chat_id=1001, user_id=1001)
     assert await state.get_state() is None
     await panel.feed(1001, callback="adm:close")
-    assert isinstance(panel.session.calls[-2], SendMessage)
-    assert panel.session.calls[-2].reply_markup.keyboard
+    assert isinstance(panel.session.calls[-2], EditMessageText)
+    assert panel.session.calls[-2].reply_markup.inline_keyboard
     calls = len(panel.session.calls)
     await panel.feed(1001, callback="adm:add", inaccessible=True)
     assert len(panel.session.calls) == calls

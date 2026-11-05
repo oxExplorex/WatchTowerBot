@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
-from callbacks.account_ownership import OwnAccount
+from callbacks.account_ownership import HOME_CALLBACK, OwnAccount
 from data.texts import account_ownership as text
 from db.main import get_app_tg_user_id, is_admin
 from db.models import Account
@@ -20,6 +20,8 @@ from keyboards.inline.account_ownership import (accounts_keyboard, delete_keyboa
 from keyboards.inline.personal_secret import setup_keyboard
 from services.account_operations import repository
 from utils.others import close_state_pyrogram_client
+from utils.panel import edit_panel
+from keyboards.inline.navigation import navigation_keyboard
 
 router = Router(name=__name__)
 PAGE_SIZE = 5
@@ -36,12 +38,16 @@ async def _self_account(actor_id, account_id=None):
     return next((row for row in rows if row.uuid == UUID(str(account_id))), None)
 
 
-async def _show_home(message, actor_id, state):
+async def _show_home(message, actor_id, state, *, edit=False):
     await close_state_pyrogram_client(state)
     await state.clear()
     accounts = await repository.self_accounts(actor_id)
-    await message.answer(text.TITLE if accounts else text.EMPTY,
-                         reply_markup=accounts_keyboard(accounts) if accounts else self_menu_keyboard())
+    content = text.TITLE if accounts else text.EMPTY
+    markup = accounts_keyboard(accounts) if accounts else self_menu_keyboard()
+    if edit:
+        await edit_panel(message, content, markup)
+    else:
+        await message.answer(content, reply_markup=markup)
 
 
 @router.message(IsPrivate(), IsAdmin(), F.text == text.MENU, StateFilter("*"))
@@ -56,8 +62,7 @@ async def request_delete_warning(call, account_id):
                               (account.admin_id == call.from_user.id and await is_admin(call.from_user.id))):
         raise PermissionError("Account is not accessible")
     operation = await repository.request_delete(account_id, call.from_user.id)
-    await call.message.answer(text.DELETE_WARNING.format(account_id=operation.account_user_id),
-                              reply_markup=delete_keyboard(operation), parse_mode="HTML")
+    await edit_panel(call.message, text.DELETE_WARNING.format(account_id=operation.account_user_id), delete_keyboard(operation))
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), OwnAccount.filter(), StateFilter("*"))
@@ -66,7 +71,7 @@ async def own_account_callback(call: CallbackQuery, callback_data: OwnAccount, s
     actor_id, action, token = call.from_user.id, callback_data.action, callback_data.token
     try:
         if action == "home":
-            await _show_home(call.message, actor_id, state)
+            await _show_home(call.message, actor_id, state, edit=True)
         elif action == "detail":
             account = await _self_account(actor_id, token)
             if account is None:
@@ -74,9 +79,9 @@ async def own_account_callback(call: CallbackQuery, callback_data: OwnAccount, s
             async with get_session_factory()() as session:
                 from db.account_operation_models import AccountOperation
                 operation = await session.scalar(select(AccountOperation).where(AccountOperation.active_account_id == actor_id))
-            await call.message.answer(text.DETAIL.format(user_id=account.user_id, owner_id=account.admin_id,
+            await edit_panel(call.message, text.DETAIL.format(user_id=account.user_id, owner_id=account.admin_id,
                 access=text.MANAGER if account.admin_id == actor_id else text.LIMITED),
-                reply_markup=detail_keyboard(account, operation), parse_mode="HTML")
+                reply_markup=detail_keyboard(account, operation))
         elif action == "profiles":
             account = await _self_account(actor_id)
             if account.admin_id == actor_id:
@@ -87,15 +92,15 @@ async def own_account_callback(call: CallbackQuery, callback_data: OwnAccount, s
             if page >= total:
                 page = total - 1
                 profiles, count = await get_app_tg_user_id(actor_id, page * PAGE_SIZE)
-            await call.message.edit_text(text.PROFILES if count else text.NO_PROFILES,
-                                        reply_markup=profiles_keyboard(profiles, page, total), parse_mode="HTML")
+            await edit_panel(call.message, text.PROFILES if count else text.NO_PROFILES,
+                             profiles_keyboard(profiles, page, total))
         elif action == "pick":
             account = await _self_account(actor_id)
             if await PersonalKeyRepository(get_session_factory).get(actor_id) is None:
-                await call.message.answer(text.SECRET_REQUIRED, reply_markup=setup_keyboard())
+                await edit_panel(call.message, text.SECRET_REQUIRED, setup_keyboard())
             else:
                 operation = await repository.request_transfer(account.uuid, actor_id, token)
-                await call.message.answer(text.REQUEST_CREATED, reply_markup=status_keyboard(operation, actor_id))
+                await edit_panel(call.message, text.REQUEST_CREATED, status_keyboard(operation, actor_id))
         elif action == "delete":
             await request_delete_warning(call, token)
         elif action == "erase":
@@ -107,7 +112,7 @@ async def own_account_callback(call: CallbackQuery, callback_data: OwnAccount, s
             if account is not None and account.user_id != actor_id and not await is_admin(actor_id):
                 raise PermissionError("Account management access was revoked")
             await repository.confirm_delete(operation.uuid, actor_id)
-            await call.message.edit_text(text.DELETE_STARTED)
+            await edit_panel(call.message, text.DELETE_STARTED, navigation_keyboard(HOME_CALLBACK))
         elif action in {"approve", "reject", "status"}:
             operation = await repository.get(token, actor_id)
             if operation is None:
@@ -117,7 +122,7 @@ async def own_account_callback(call: CallbackQuery, callback_data: OwnAccount, s
                     raise PermissionError("Transfer cannot be approved")
                 if await PersonalKeyRepository(get_session_factory).get(actor_id) is None:
                     from middlewares.personal_secret import prompt_setup
-                    await prompt_setup(call.bot, actor_id)
+                    await prompt_setup(call.bot, actor_id, message=call.message)
                 else:
                     if personal_secret_dialog is None:
                         raise RuntimeError("Personal-secret middleware is required")
@@ -125,13 +130,13 @@ async def own_account_callback(call: CallbackQuery, callback_data: OwnAccount, s
             else:
                 if action == "reject":
                     operation = await repository.reject(operation.uuid, actor_id)
-                await call.message.edit_text(text.STATUS.format(account_id=operation.account_user_id,
+                await edit_panel(call.message, text.STATUS.format(account_id=operation.account_user_id,
                     status=html.quote(text.STATUSES.get(operation.status, operation.status))),
-                    reply_markup=status_keyboard(operation, actor_id), parse_mode="HTML")
+                    reply_markup=status_keyboard(operation, actor_id))
         else:
             raise ValueError("Unknown action")
     except AccountAlreadyConnected:
-        await call.message.answer(text.LEGACY_CONFLICT)
+        await edit_panel(call.message, text.LEGACY_CONFLICT, navigation_keyboard(HOME_CALLBACK))
     except (PermissionError, ValueError, TypeError):
         await call.answer(text.UNAVAILABLE, show_alert=True)
         return

@@ -4,6 +4,7 @@ from collections import OrderedDict
 import time
 
 from aiogram.types import ForceReply
+from callbacks.account_ownership import HOME_CALLBACK
 
 from core.personal_crypto import InvalidSecret, create_key_bundle, normalize_secret, unlock_private_key
 from core.thread_tools import run_blocking
@@ -12,6 +13,8 @@ from data.texts.personal_secret import CONFIRM_PROMPT, INPUT_PROMPT
 from db.repositories.personal_repo import PersonalKeyRepository
 from db.session import get_session_factory
 from keyboards.inline.personal_secret import cancel_keyboard, setup_keyboard
+from keyboards.inline.navigation import navigation_keyboard
+from utils.panel import edit_panel, edit_input_panel, remember_panel
 from states.personal_secret import PersonalSecret, SECRET_CONFIRM, SECRET_INPUT, SECRET_TRANSFER
 
 
@@ -56,31 +59,34 @@ class PersonalSecretDialog:
 
         await close_state_pyrogram_client(state)
         await state.clear()
+        panel = await edit_panel(message, texts.INPUT_CONTROLS, cancel_keyboard())
+        await remember_panel(state, panel or message)
         await state.update_data(secret_expires=int(time.time()) + 600)
         if transfer_request is not None:
             await state.update_data(transfer_request=str(transfer_request))
         await state.set_state(PersonalSecret.transfer if transfer_request is not None else
                               PersonalSecret.verify if verify else PersonalSecret.input)
         await message.answer(INPUT_PROMPT, protect_content=True, reply_markup=ForceReply(selective=True))
-        await message.answer(texts.INPUT_CONTROLS, reply_markup=cancel_keyboard())
+
+    async def _finish(self, message, state, content, markup=None):
+        await edit_input_panel(message, state, content, markup or navigation_keyboard("panel:settings"))
+        await state.clear()
 
     async def handle_input(self, message, state, owner_id, key, current):
         if not await self.delete_input(message):
             return
         data = await state.get_data()
         if data.get("secret_expires", 0) < int(time.time()):
-            await state.clear()
-            await message.answer(texts.INPUT_EXPIRED, reply_markup=setup_keyboard() if key is None else None)
+            await self._finish(message, state, texts.INPUT_EXPIRED, setup_keyboard() if key is None else None)
             return
         if self._blocked(owner_id):
-            await message.answer(texts.TOO_MANY_ATTEMPTS)
+            await edit_input_panel(message, state, texts.TOO_MANY_ATTEMPTS, cancel_keyboard())
             return
         try:
             secret = normalize_secret(message.text or "")
             if current == SECRET_INPUT:
                 if key is not None:
-                    await state.clear()
-                    await message.answer(texts.ALREADY_CONFIGURED)
+                    await self._finish(message, state, texts.ALREADY_CONFIGURED)
                     return
                 bundle = await self._crypto(create_key_bundle, owner_id, secret)
                 # Persistent FSM contains only a password-encrypted key bundle.
@@ -90,8 +96,7 @@ class PersonalSecretDialog:
             else:
                 bundle = data.get("secret_bundle") if current == SECRET_CONFIRM else key
                 if bundle is None:
-                    await state.clear()
-                    await message.answer(texts.RESTART_SETUP, reply_markup=setup_keyboard())
+                    await self._finish(message, state, texts.RESTART_SETUP, setup_keyboard())
                     return
                 private = await self._crypto(unlock_private_key, owner_id, bundle, secret)
                 if self.authorize is None:
@@ -108,25 +113,21 @@ class PersonalSecretDialog:
                     from data.texts import account_ownership
 
                     started = await start_transfer(message.bot, data.get("transfer_request"), owner_id, private)
-                    await state.clear()
-                    await message.answer(account_ownership.STARTED if started else account_ownership.UNAVAILABLE)
+                    await self._finish(message, state, account_ownership.STARTED if started else account_ownership.UNAVAILABLE,
+                                       navigation_keyboard(HOME_CALLBACK))
                 elif current == SECRET_CONFIRM:
                     if not await self.repository.install(owner_id, bundle):
-                        await state.clear()
-                        await message.answer(texts.SETUP_CONFLICT)
+                        await self._finish(message, state, texts.SETUP_CONFLICT)
                         return
-                    await state.clear()
-                    await message.answer(texts.SETUP_COMPLETE)
+                    await self._finish(message, state, texts.SETUP_COMPLETE)
                 else:
-                    await state.clear()
+                    await self._finish(message, state, texts.VERIFY_COMPLETE)
                     await state.update_data(personal_verified_until=int(time.time()) + 600)
-                    await message.answer(texts.VERIFY_COMPLETE)
                 del private
                 self._attempts.pop(owner_id, None)
         except InvalidSecret as exc:
             self._failed(owner_id)
-            await message.answer(str(exc))
+            await edit_input_panel(message, state, str(exc), cancel_keyboard())
         except Exception:
             # No traceback/arguments/repr(Update) may contain a secret here.
-            await state.clear()
-            await message.answer(texts.ACTION_FAILED)
+            await self._finish(message, state, texts.ACTION_FAILED)

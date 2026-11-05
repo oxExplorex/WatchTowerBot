@@ -73,6 +73,7 @@ ACCOUNT_EDIT_BTN_CHECK_NOW = "🧪 Проверить сейчас"
 ACCOUNT_EDIT_BTN_DELETE = "🗑 Удалить"
 
 ACCOUNT_MENU_UNKNOWN_NAME = "Unknown"
+ACCOUNT_MENU_ADD = "➕ Подключить аккаунт"
 ACCOUNT_MENU_ACTIVE_ICON = "🟢"
 ACCOUNT_MENU_INACTIVE_ICON = "⛔"
 ACCOUNT_MENU_TITLE = "{status} {name} [{user_id}]"

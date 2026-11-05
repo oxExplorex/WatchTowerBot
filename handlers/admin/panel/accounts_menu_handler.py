@@ -11,6 +11,7 @@ from filters.all_filters import IsAdmin, IsPrivate
 from keyboards.inline.account_manage.account_menu_inline import account_tg_admin_inline
 
 from utils.datetime_tools import DateTime
+from utils.panel import edit_panel
 
 router = Router(name=__name__)
 
@@ -38,11 +39,6 @@ async def open_accounts_menu_handler(message: Message, state: FSMContext):
 
     user_id = message.from_user.id
     _, apps_count = await get_app_tg_user_id(user_id)
-    if not apps_count:
-        return await message.answer(
-            constant_text.WARNING_NOT_APP_TG.format(APP_TG_BUTTON=constant_text.APP_TG_USER_KEYBOARD[0])
-        )
-
     total, total_pages, keyboard = await _get_accounts_page(user_id, 1)
     await message.answer(
         text=constant_text.ACCOUNT_COUNT_INFO_TEXT.format(
@@ -55,11 +51,12 @@ async def open_accounts_menu_handler(message: Message, state: FSMContext):
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("acc:m:"), StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAdmin(), F.data == "panel:accounts", StateFilter("*"))
 async def paginate_accounts_menu_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
     try:
-        page = int(call.data.split(":")[-1])
+        page = 1 if call.data == "panel:accounts" else int(call.data.split(":")[-1])
     except (TypeError, ValueError, IndexError):
         return await call.answer(constant_text.ERROR_FORMAT_TEXT)
 
@@ -71,7 +68,7 @@ async def paginate_accounts_menu_handler(call: CallbackQuery, state: FSMContext)
 
     _, _, keyboard = await _get_accounts_page(call.from_user.id, page)
 
-    await call.message.edit_text(
+    await edit_panel(call.message,
         text=constant_text.ACCOUNT_COUNT_INFO_TEXT.format(
             _count=total,
             _count_apps=apps_count,
@@ -79,4 +76,5 @@ async def paginate_accounts_menu_handler(call: CallbackQuery, state: FSMContext)
         ),
         reply_markup=keyboard,
     )
+    await call.answer()
 

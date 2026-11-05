@@ -3,6 +3,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import data.text as constant_text
 from db.models import apps_db
+from keyboards.inline.navigation import with_navigation
 
 
 def _state_emoji(value: int) -> str:
@@ -60,8 +61,4 @@ async def account_edit_admin_inline(account: apps_db):
         ),
     )
 
-    keyboard.row(
-        InlineKeyboardButton(text=constant_text.ACTION_BACK_TEXT, callback_data="acc:m:1"),
-    )
-
-    return keyboard.as_markup()
+    return with_navigation(keyboard.as_markup(), "acc:m:1")

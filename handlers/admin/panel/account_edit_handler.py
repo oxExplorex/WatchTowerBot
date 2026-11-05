@@ -30,6 +30,7 @@ from keyboards.inline.account_manage.account_menu_inline import account_tg_admin
 
 from utils.datetime_tools import DateTime
 from utils.settings_formatting import build_hourly_rows_desc
+from utils.panel import edit_panel
 
 router = Router(name=__name__)
 
@@ -80,11 +81,6 @@ async def _remove_session_files(number: str | None) -> None:
 
 async def _show_accounts_or_close(call: CallbackQuery) -> None:
     accounts, count = await get_account_user_id(call.from_user.id, 0)
-    if count <= 0:
-        with suppress(Exception):
-            await call.message.delete()
-        return
-
     tz_offset = await get_user_timezone_offset(call.from_user.id)
     dt = DateTime(tz_offset)
 
@@ -93,7 +89,7 @@ async def _show_accounts_or_close(call: CallbackQuery) -> None:
     names = await get_user_names_by_ids([account.user_id for account in accounts])
     keyboard = await account_tg_admin_inline(accounts, 1, total_pages, names=names)
 
-    await call.message.edit_text(
+    await edit_panel(call.message,
         text=constant_text.ACCOUNT_COUNT_INFO_TEXT.format(
             _count=count,
             _count_apps=apps_count,
@@ -158,7 +154,7 @@ async def _render_account_editor(call: CallbackQuery, account: Account) -> None:
         else constant_text.ACCOUNT_STATUS_DISABLED_TEXT
     )
 
-    await call.message.edit_text(
+    await edit_panel(call.message,
         text=constant_text.ACCOUNT_EDIT_INFO_TEXT.format(
             user_id=account.user_id,
             number=_spoil(account.number),

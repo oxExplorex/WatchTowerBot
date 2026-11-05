@@ -1,8 +1,9 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from callbacks.account_ownership import OwnAccount
+from callbacks.account_ownership import HOME_CALLBACK, OwnAccount
 from data.texts import account_ownership as text
+from keyboards.inline.navigation import navigation_keyboard, with_navigation
 
 
 def button(label, action, token="-", page=0):
@@ -10,14 +11,14 @@ def button(label, action, token="-", page=0):
 
 
 def self_menu_keyboard():
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=text.MENU)]], resize_keyboard=True)
+    return navigation_keyboard()
 
 
 def accounts_keyboard(accounts):
     builder = InlineKeyboardBuilder()
     for account in accounts:
         builder.row(button(str(account.user_id), "detail", account.uuid.hex))
-    return builder.as_markup()
+    return with_navigation(builder.as_markup())
 
 
 def detail_keyboard(account, operation=None):
@@ -29,7 +30,7 @@ def detail_keyboard(account, operation=None):
     if operation:
         builder.row(button(text.BTN_STATUS, "status", operation.uuid.hex))
     builder.row(button(text.BTN_DELETE, "delete", account.uuid.hex))
-    return builder.as_markup()
+    return with_navigation(builder.as_markup(), HOME_CALLBACK)
 
 
 def profiles_keyboard(profiles, page, total_pages):
@@ -46,26 +47,26 @@ def profiles_keyboard(profiles, page, total_pages):
         builder.row(*nav)
     builder.row(InlineKeyboardButton(text=text.BTN_PROFILE, callback_data="apps_admin_menu_add"))
     builder.row(button(text.BTN_BACK, "home"))
-    return builder.as_markup()
+    return with_navigation(builder.as_markup())
 
 
 def approval_keyboard(operation):
     label = text.BTN_RESUME if operation.status == "needs_secret" else text.BTN_CONFIRM
-    return InlineKeyboardMarkup(inline_keyboard=[[
+    return with_navigation(InlineKeyboardMarkup(inline_keyboard=[[
         button(label, "approve", operation.uuid.hex), button(text.BTN_REJECT, "reject", operation.uuid.hex),
-    ]])
+    ]]), HOME_CALLBACK)
 
 
 def delete_keyboard(operation):
-    return InlineKeyboardMarkup(inline_keyboard=[
+    return with_navigation(InlineKeyboardMarkup(inline_keyboard=[
         [button(text.BTN_CONFIRM_DELETE, "erase", operation.uuid.hex)],
         [button(text.BTN_CANCEL, "reject", operation.uuid.hex)],
-    ])
+    ]), HOME_CALLBACK)
 
 
 def status_keyboard(operation, actor_id):
     if operation.kind == "transfer" and operation.status in {"pending", "needs_secret"}:
         if operation.owner_id == actor_id:
             return approval_keyboard(operation)
-        return InlineKeyboardMarkup(inline_keyboard=[[button(text.BTN_CANCEL, "reject", operation.uuid.hex)]])
-    return InlineKeyboardMarkup(inline_keyboard=[[button(text.BTN_STATUS, "status", operation.uuid.hex)]])
+        return with_navigation(InlineKeyboardMarkup(inline_keyboard=[[button(text.BTN_CANCEL, "reject", operation.uuid.hex)]]), HOME_CALLBACK)
+    return with_navigation(InlineKeyboardMarkup(inline_keyboard=[[button(text.BTN_STATUS, "status", operation.uuid.hex)]]), HOME_CALLBACK)

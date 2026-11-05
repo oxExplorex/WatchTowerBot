@@ -11,6 +11,7 @@ from filters.all_filters import IsAdmin, IsPrivate
 from keyboards.inline.apps_manager.apps_menu_inline import apps_tg_admin_inline
 
 from utils.datetime_tools import DateTime
+from utils.panel import edit_panel
 
 router = Router(name=__name__)
 
@@ -47,11 +48,12 @@ async def open_apps_menu_handler(message: Message, state: FSMContext):
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("apps_admin_menu:"), StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAdmin(), F.data == "panel:apps", StateFilter("*"))
 async def paginate_apps_menu_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
     try:
-        page = int(call.data.split(":")[-1])
+        page = 1 if call.data == "panel:apps" else int(call.data.split(":")[-1])
     except (TypeError, ValueError, IndexError):
         return await call.answer(constant_text.ERROR_FORMAT_TEXT)
 
@@ -60,10 +62,11 @@ async def paginate_apps_menu_handler(call: CallbackQuery, state: FSMContext):
         return await call.answer(constant_text.WARNING_PAGE_EDGE)
 
     _, _, keyboard = await _get_apps_page(call.from_user.id, page)
-    await call.message.edit_text(
+    await edit_panel(call.message,
         text=constant_text.APPS_COUNT_INFO_TEXT.format(
             _count=total,
             date=DateTime().time_strftime("%d.%m.%Y %H:%M:%S.%f"),
         ),
         reply_markup=keyboard,
     )
+    await call.answer()

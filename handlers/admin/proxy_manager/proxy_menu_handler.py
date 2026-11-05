@@ -13,6 +13,8 @@ from filters.all_filters import IsAdmin, IsPrivate
 from handlers.admin.proxy_manager.proxy_checker import check_proxy_now
 from handlers.admin.states import AdminStates
 from keyboards.inline.back_inline import back_inline
+from utils.panel import clear_panel_state, edit_panel, edit_input_panel, remember_panel
+from utils.others import not_warning_delete_message
 
 from utils.datetime_tools import DateTime
 from utils.proxy_utils import compact_proxy_display, normalize_http_proxy_input
@@ -62,7 +64,8 @@ async def open_proxy_menu_handler(message: Message, state: FSMContext):
     await state.clear()
     cfg = await get_user_gemini_proxy_config(message.from_user.id)
     tz_offset = await get_user_timezone_offset(message.from_user.id)
-    await message.answer(_proxy_menu_text(cfg, tz_offset), reply_markup=back_inline())
+    panel = await message.answer(_proxy_menu_text(cfg, tz_offset), reply_markup=back_inline("panel:settings"))
+    await remember_panel(state, panel)
     await state.set_state(AdminStates.wait_proxy_manager)
 
 
@@ -71,7 +74,8 @@ async def open_proxy_menu_from_settings_handler(call: CallbackQuery, state: FSMC
     await state.clear()
     cfg = await get_user_gemini_proxy_config(call.from_user.id)
     tz_offset = await get_user_timezone_offset(call.from_user.id)
-    await call.message.edit_text(_proxy_menu_text(cfg, tz_offset), reply_markup=back_inline())
+    panel = await edit_panel(call.message, _proxy_menu_text(cfg, tz_offset), back_inline("panel:settings"))
+    await remember_panel(state, panel or call.message)
     await state.set_state(AdminStates.wait_proxy_manager)
     await call.answer()
 
@@ -79,25 +83,26 @@ async def open_proxy_menu_from_settings_handler(call: CallbackQuery, state: FSMC
 @router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.wait_proxy_manager))
 async def save_proxy_handler(message: Message, state: FSMContext):
     text = (message.text or "").strip()
+    await not_warning_delete_message(message=message)
 
     if text in {constant_text.ACTION_CANCEL_TEXT, constant_text.SETTINGS_BOT_KEYBOARD[2]}:
-        await state.clear()
-        await message.answer(constant_text.ACTION_CANCELLED_TEXT)
+        await clear_panel_state(state)
+        await edit_input_panel(message, state, constant_text.ACTION_CANCELLED_TEXT, back_inline("panel:settings"))
         return
 
     proxy_url = normalize_http_proxy_input(text)
     if not proxy_url:
-        await message.answer(constant_text.PROXY_INVALID_FORMAT_TEXT)
+        await edit_input_panel(message, state, constant_text.PROXY_INVALID_FORMAT_TEXT, back_inline("panel:settings"))
         await state.set_state(AdminStates.wait_proxy_manager)
         return
 
     await set_user_gemini_proxy(message.from_user.id, proxy_url)
-    await state.clear()
+    await clear_panel_state(state)
 
-    probe = await message.answer(constant_text.PROXY_CHECKING_TEXT)
+    await edit_input_panel(message, state, constant_text.PROXY_CHECKING_TEXT, back_inline("panel:settings"))
     ok, reason = await check_proxy_now(message.from_user.id, proxy_url, log_source="proxy_menu_handler")
 
     if ok:
-        await probe.edit_text(constant_text.PROXY_SET_AND_CHECK_OK_TEXT)
+        await edit_input_panel(message, state, constant_text.PROXY_SET_AND_CHECK_OK_TEXT, back_inline("panel:settings"))
     else:
-        await probe.edit_text(constant_text.PROXY_CHECK_FAIL_TEXT.format(reason=html.quote(reason[:160])))
+        await edit_input_panel(message, state, constant_text.PROXY_CHECK_FAIL_TEXT.format(reason=html.quote(reason[:160])), back_inline("panel:settings"))

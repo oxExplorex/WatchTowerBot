@@ -1,7 +1,6 @@
 from uuid import uuid4
 
 from aiogram import F, Router, html
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -17,6 +16,7 @@ from keyboards.inline.admins_inline import (admin_cancel_keyboard, admin_confirm
 from keyboards.main.start_keyboard import static_admin_keyboard
 
 from utils.others import close_state_pyrogram_client
+from utils.panel import edit_panel, edit_input_panel, remember_panel
 
 router = Router(name=__name__)
 
@@ -29,11 +29,7 @@ async def _clear_flow(state):
 
 
 async def _edit(message, content, *, reply_markup=None):
-    try:
-        await message.edit_text(content, reply_markup=reply_markup)
-    except TelegramBadRequest as exc:
-        if "message is not modified" not in exc.message.lower():
-            raise
+    return await edit_panel(message, content, reply_markup)
 
 
 def _target_and_page(data):
@@ -114,7 +110,8 @@ async def view_admin_handler(call: CallbackQuery, state: FSMContext):
 async def add_admin_handler(call: CallbackQuery, state: FSMContext):
     await _clear_flow(state)
     await state.set_state(AdminStates.admin_add_id)
-    await _edit(call.message, text.INPUT_ID, reply_markup=admin_cancel_keyboard())
+    panel = await _edit(call.message, text.INPUT_ID, reply_markup=admin_cancel_keyboard())
+    await remember_panel(state, panel or call.message)
     await call.answer()
 
 
@@ -132,14 +129,14 @@ async def receive_admin_id_handler(message: Message, state: FSMContext):
             raise ValueError
         user_id = telegram_user_id(int(value))
     except ValueError:
-        return await message.answer(text.INVALID_ID, reply_markup=admin_cancel_keyboard())
+        return await edit_input_panel(message, state, text.INVALID_ID, admin_cancel_keyboard())
     if await is_admin(user_id):
-        return await message.answer(text.ALREADY_ALLOWED, reply_markup=admin_cancel_keyboard())
+        return await edit_input_panel(message, state, text.ALREADY_ALLOWED, admin_cancel_keyboard())
     nonce = uuid4().hex
     await state.update_data(admin_target=user_id, admin_nonce=nonce)
     await state.set_state(AdminStates.admin_confirm_add)
-    await message.answer(text.GRANT_CONFIRM.format(user_id=user_id),
-                         reply_markup=admin_confirmation_keyboard("grant", nonce))
+    await edit_input_panel(message, state, text.GRANT_CONFIRM.format(user_id=user_id),
+                           admin_confirmation_keyboard("grant", nonce))
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("adm:grant:"), StateFilter(AdminStates.admin_confirm_add))
@@ -196,8 +193,7 @@ async def confirm_admin_revoke_handler(call: CallbackQuery, state: FSMContext):
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "adm:close", StateFilter("*"))
 async def close_admins_handler(call: CallbackQuery, state: FSMContext):
     await _clear_flow(state)
-    await _edit(call.message, text.PANEL_CLOSED)
-    await call.message.answer(text.MAIN_MENU, reply_markup=static_admin_keyboard())
+    await _edit(call.message, text.MAIN_MENU, reply_markup=static_admin_keyboard())
     await call.answer()
 
 

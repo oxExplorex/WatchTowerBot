@@ -12,13 +12,20 @@ from db.repositories.personal_repo import PersonalKeyRepository
 from db.session import get_session_factory
 from handlers.admin.personal_secret import PersonalSecretDialog
 from keyboards.inline.personal_secret import setup_keyboard
+from keyboards.inline.navigation import navigation_keyboard
+from utils.panel import edit_panel
+from keyboards.main.start_keyboard import static_admin_keyboard
+from data.texts.common import START_MESSAGE_TEXT
 from states.personal_secret import (
     SECRET_CONFIRM, SECRET_INPUT, SECRET_STATES, SECRET_VERIFY,
 )
 
 
-async def prompt_setup(bot, owner_id):
-    await bot.send_message(owner_id, PROMPT, parse_mode="HTML", reply_markup=setup_keyboard())
+async def prompt_setup(bot, owner_id, *, message=None):
+    if message is not None:
+        await edit_panel(message, PROMPT, setup_keyboard())
+    else:
+        await bot.send_message(owner_id, PROMPT, parse_mode="HTML", reply_markup=setup_keyboard())
 
 
 async def notify_missing_secrets(bot):
@@ -45,9 +52,6 @@ class PersonalSecretMiddleware(BaseMiddleware):
         if update.business_message or update.edited_business_message or update.deleted_business_messages:
             return await handler(update, data)
         call = update.callback_query
-        if call and isinstance(call.message, InaccessibleMessage):
-            await call.answer(texts.MENU_UNAVAILABLE)
-            return None
         message = update.message or update.edited_message or (call.message if call else None)
         user = data.get("event_from_user")
         state = data.get("state")
@@ -58,6 +62,15 @@ class PersonalSecretMiddleware(BaseMiddleware):
         owner_id = user.id
         data["personal_secret_dialog"] = self.dialog
         key = await self.repository.get(owner_id)
+        if call and isinstance(call.message, InaccessibleMessage):
+            await state.clear()
+            if key is None:
+                await prompt_setup(data["bot"], owner_id)
+            else:
+                await data["bot"].send_message(owner_id, START_MESSAGE_TEXT, parse_mode="HTML",
+                                              reply_markup=static_admin_keyboard())
+            await call.answer(texts.MENU_UNAVAILABLE)
+            return None
         current = await state.get_state()
         reply = getattr(message, "reply_to_message", None)
         if update.message and current not in SECRET_STATES and reply is not None:
@@ -79,7 +92,7 @@ class PersonalSecretMiddleware(BaseMiddleware):
                 return None
             await state.clear()
             await call.answer(texts.INPUT_CANCELLED)
-            await call.message.edit_text(texts.INPUT_CANCELLED)
+            await edit_panel(call.message, texts.INPUT_CANCELLED, navigation_keyboard("panel:settings"))
             return None
         # Commands must never become wizard input or reach ordinary handlers.
         if command and command != "/start":
@@ -87,6 +100,9 @@ class PersonalSecretMiddleware(BaseMiddleware):
                 await self.dialog.delete_input(message)
             return None
         if command == "/start" and current in SECRET_STATES:
+            await state.clear()
+            current = None
+        if current in SECRET_STATES and callback in {"panel:home", "panel:settings", "set:back"}:
             await state.clear()
             current = None
         if update.message is not None and current in SECRET_STATES:
@@ -104,7 +120,7 @@ class PersonalSecretMiddleware(BaseMiddleware):
                 await call.answer(texts.SETUP_REQUIRED)
             elif update.message and not (message.text or "").startswith("/"):
                 await self.dialog.delete_input(message)
-            await prompt_setup(data["bot"], owner_id)
+            await prompt_setup(data["bot"], owner_id, message=call.message if call else None)
             return None
         # A short-lived confirmation contains no decryption key and grants no
         # access to another owner's objects. Deletion does not require this step.

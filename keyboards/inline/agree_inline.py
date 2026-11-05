@@ -1,5 +1,6 @@
 ﻿from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from keyboards.inline.navigation import with_navigation
 
 import data.text as constant_text
 
@@ -12,10 +13,4 @@ def agree_inline():
             callback_data="agree",
         ),
     )
-    keyboard.row(
-        InlineKeyboardButton(
-            text=constant_text.ACTION_CANCEL_TEXT,
-            callback_data="back_delete",
-        ),
-    )
-    return keyboard.as_markup()
+    return with_navigation(keyboard.as_markup(), "panel:apps")

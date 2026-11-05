@@ -2,6 +2,7 @@ from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from data.texts import admins as text
+from keyboards.inline.navigation import with_navigation
 
 
 def admin_list_keyboard(entries, page, pages):
@@ -16,8 +17,7 @@ def admin_list_keyboard(entries, page, pages):
     if navigation:
         builder.row(*navigation)
     builder.row(InlineKeyboardButton(text=text.ADD_BUTTON, callback_data="adm:add"))
-    builder.row(InlineKeyboardButton(text=text.CLOSE_BUTTON, callback_data="adm:close"))
-    return builder.as_markup()
+    return with_navigation(builder.as_markup(), "panel:settings")
 
 
 def admin_detail_keyboard(user_id, page, *, can_revoke):
@@ -25,17 +25,17 @@ def admin_detail_keyboard(user_id, page, *, can_revoke):
     if can_revoke:
         builder.row(InlineKeyboardButton(text=text.REVOKE_BUTTON, callback_data=f"adm:revoke:{user_id}:{page}"))
     builder.row(InlineKeyboardButton(text=text.BACK_BUTTON, callback_data=f"adm:list:{page}"))
-    return builder.as_markup()
+    return with_navigation(builder.as_markup())
 
 
 def admin_confirmation_keyboard(action, nonce, *, page=0):
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text=text.CONFIRM_BUTTON, callback_data=f"adm:{action}:{nonce}"))
     builder.row(InlineKeyboardButton(text=text.CANCEL_BUTTON, callback_data=f"adm:list:{page}"))
-    return builder.as_markup()
+    return with_navigation(builder.as_markup())
 
 
 def admin_cancel_keyboard():
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text=text.CANCEL_BUTTON, callback_data="adm:list:0"))
-    return builder.as_markup()
+    return with_navigation(builder.as_markup())

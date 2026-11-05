@@ -33,9 +33,9 @@ class OfflineSession(BaseSession):
         if isinstance(method, (AnswerCallbackQuery, DeleteMessage)):
             return True
         assert isinstance(method, (SendMessage, EditMessageText))
-        return Message.model_validate({"message_id": len(self.calls), "date": 1,
+        return Message.model_validate({"message_id": getattr(method, "message_id", None) or len(self.calls), "date": 1,
             "chat": {"id": int(method.chat_id), "type": "private"}, "text": method.text,
-            "from_user": {"id": bot.id, "is_bot": True, "first_name": "Offline bot"}})
+            "from_user": {"id": bot.id, "is_bot": True, "first_name": "Offline bot"}}).as_(bot)
 
 
 @pytest_asyncio.fixture
@@ -44,6 +44,9 @@ async def setup_flow(db_main, offline_module, monkeypatch):
     monkeypatch.setattr(db_main, "admins_repository", repository)
     loader = ModuleType("loader")
     loader.router = Router()
+    from core.session_manager import SessionManager
+    loader.session_manager = SessionManager()
+    loader.bot = AsyncMock()
     monkeypatch.setitem(sys.modules, "loader", loader)
     monkeypatch.setitem(sys.modules, "utils.others", SimpleNamespace(close_state_pyrogram_client=AsyncMock(),
                                                                  not_warning_delete_message=AsyncMock()))
@@ -79,6 +82,23 @@ async def setup_flow(db_main, offline_module, monkeypatch):
                  "get_account_user_id", "get_app_tg_user_id", "get_user_names_by_ids", "update_account_uuid"):
         setattr(editor, name, getattr(db_main, name))
     editor.is_session_running = AsyncMock(return_value=False)
+    accounts = offline_module("handlers/admin/panel/accounts_menu_handler.py")
+    for name in ("get_account_user_id", "get_app_tg_user_id", "get_user_names_by_ids"):
+        setattr(accounts, name, getattr(db_main, name))
+    settings = offline_module("handlers/admin/settings/setting_menu_handler.py")
+    for name in ("get_accounts_overview", "get_admin_health_events", "get_all_health_events",
+                 "get_latest_admin_health_event", "get_user_auto_update_enabled", "get_user_gemini_proxy_config",
+                 "get_user_timezone_offset", "get_version_state_cache", "set_version_state_cache"):
+        setattr(settings, name, getattr(db_main, name))
+    settings._fetch_latest_version = AsyncMock(return_value="2.0.3")
+    admins = offline_module("handlers/admin/admins_handler.py")
+    for name in ("get_admin_grants", "get_admin_ids", "get_configured_admin_ids", "get_user",
+                 "grant_admin", "is_admin", "revoke_admin"):
+        setattr(admins, name, getattr(db_main, name))
+    search = offline_module("handlers/admin/panel/chat_history_handler.py")
+    for name in ("find_user_ids_by_username", "get_account_all", "get_chat_history_events",
+                 "get_chat_history_events_by_chat_ids", "get_dump_chat_user", "get_user", "get_user_timezone_offset"):
+        setattr(search, name, getattr(db_main, name))
     # Account filters resolve this module lazily; use real owner-scoped queries.
     monkeypatch.setitem(sys.modules, "db.main", db_main)
     dispatcher = Dispatcher(events_isolation=SimpleEventIsolation())
@@ -91,18 +111,21 @@ async def setup_flow(db_main, offline_module, monkeypatch):
     dispatcher.include_router(apps.router)
     dispatcher.include_router(app_menu.router)
     dispatcher.include_router(editor.router)
+    dispatcher.include_routers(accounts.router, settings.router, admins.router, search.router)
     dispatcher.include_router(loader.router)
     session = OfflineSession()
     bot = Bot("123456:offline_test_token", session=session)
     serial = 0
 
-    async def feed(user_id=1001, *, content=None, callback=None, inaccessible=False):
+    async def feed(user_id=1001, *, content=None, callback=None, inaccessible=False, panel_id=None):
         nonlocal serial
         serial += 1
         user = {"id": user_id, "is_bot": False, "first_name": "Offline admin"}
         message = {"message_id": serial, "date": 0 if inaccessible else 1,
                    "chat": {"id": user_id, "type": "private"}, "from_user": user, "text": content or "old menu"}
         if callback is not None:
+            message["message_id"] = panel_id if panel_id is not None else serial
+            message["from_user"] = {"id": bot.id, "is_bot": True, "first_name": "Offline bot"}
             if inaccessible:
                 message = {key: message[key] for key in ("message_id", "date", "chat")}
             payload = {"callback_query": {"id": str(serial), "from_user": user, "chat_instance": "offline",
@@ -115,7 +138,7 @@ async def setup_flow(db_main, offline_module, monkeypatch):
     try:
         yield SimpleNamespace(feed=feed, keys=keys, admins=repository, handled=handled, session=session, writes=writes,
                               state=lambda uid=1001: dispatcher.fsm.get_context(bot=bot, chat_id=uid, user_id=uid),
-                              db=db_main, ownership=ownership, bot=bot)
+                              db=db_main, ownership=ownership, search=search, bot=bot)
     finally:
         await dispatcher.storage.close()
         await dispatcher.fsm.events_isolation.close()
@@ -143,10 +166,12 @@ async def test_real_dispatcher_setup_deletes_inputs_before_profile_writes_and_ha
     assert flow.handled == []
     await flow.feed(content="/start")
     assert flow.handled == []
-    assert flow.session.calls[-1].reply_markup.keyboard
+    assert flow.session.calls[-1].reply_markup.inline_keyboard
     flow.writes.assert_awaited_once()
     await flow.feed(callback=SETUP_CALLBACK, inaccessible=True)
     assert isinstance(flow.session.calls[-1], AnswerCallbackQuery)
+    replacement = next(call for call in reversed(flow.session.calls) if isinstance(call, SendMessage))
+    assert replacement.reply_markup.inline_keyboard
 
 
 @pytest.mark.asyncio
@@ -216,7 +241,7 @@ async def test_admin_self_view_hides_foreign_profile_and_deletion_survives_fsm_r
     assert "never-display-foreign-hash" not in str(flow.session.calls)
     assert flow.handled == []  # Secret gate prevents entry into ordinary management.
     await flow.feed(2002, callback=pack("delete", account.uuid.hex))
-    warning = next(call for call in reversed(flow.session.calls) if isinstance(call, SendMessage))
+    warning = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
     confirm = warning.reply_markup.inline_keyboard[0][0].callback_data
     operation_id = OwnAccount.unpack(confirm).token
     await flow.state(2002).clear()  # Simulates loss of short-lived FSM across restart.
@@ -289,9 +314,10 @@ async def test_foreign_profile_is_hidden_from_connected_account_even_with_admin_
         assert len(flow.session.calls) == start
         assert flow.handled == []
         return
-    card = next(call for call in reversed(flow.session.calls) if isinstance(call, SendMessage))
-    actions = {OwnAccount.unpack(button.callback_data).action for row in card.reply_markup.inline_keyboard for button in row}
-    assert actions == {"profiles", "delete"}
+    card = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
+    actions = {OwnAccount.unpack(button.callback_data).action for row in card.reply_markup.inline_keyboard for button in row
+               if button.callback_data.startswith("own:")}
+    assert actions == {"profiles", "delete", "home"}
     await flow.feed(2002, callback="apps_admin_menu:1")
     await flow.feed(2002, callback=OwnAccount(action="profiles").pack())
     assert "765432" in emitted_since(start)  # Own API profile remains selectable.
@@ -353,9 +379,9 @@ async def test_only_start_opens_panel_and_other_commands_do_not_enter_wizards(se
     flow = setup_flow
     await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
     await flow.feed(content="/start")
-    labels = {button.text for row in flow.session.calls[-1].reply_markup.keyboard for button in row}
+    labels = {button.text for row in flow.session.calls[-1].reply_markup.inline_keyboard for button in row}
     assert {"👥 Администраторы", "⚙️ Настройки", "🔑 API-профили", "Мой аккаунт"} <= labels
-    assert len(flow.session.calls[-1].reply_markup.keyboard) == 4
+    assert len(flow.session.calls[-1].reply_markup.inline_keyboard) == 4
     start = len(flow.session.calls)
     writes = flow.writes.await_count
     for command in ("/admins", "/myaccount", "/secret", "/cancel", "/chat_history 123", "/startfoo"):
@@ -364,8 +390,68 @@ async def test_only_start_opens_panel_and_other_commands_do_not_enter_wizards(se
     assert not flow.handled
 
     await flow.feed(callback=SETUP_CALLBACK)
-    assert flow.session.calls[-1].reply_markup.inline_keyboard[0][0].callback_data == CANCEL_CALLBACK
+    controls = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
+    assert controls.reply_markup.inline_keyboard[0][0].callback_data == CANCEL_CALLBACK
     await flow.feed(callback=CANCEL_CALLBACK)
     assert await flow.state().get_state() is None
     await flow.feed(callback="panel:home")
-    assert flow.session.calls[-2].reply_markup.keyboard
+    assert flow.session.calls[-2].reply_markup.inline_keyboard
+
+
+@pytest.mark.asyncio
+async def test_inline_sections_and_text_wizards_edit_same_panel_after_state_reset(setup_flow, monkeypatch):
+    import time
+    from callbacks.account_ownership import HOME_CALLBACK
+    from core.personal_crypto import create_key_bundle
+
+    flow = setup_flow
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
+    await flow.feed(content="/start")
+    panel_id = flow.session.calls[-1].message_id
+    first = len(flow.session.calls)
+    for callback in ("panel:settings", "set:tz:open", "set:back", "panel:home", "panel:accounts",
+                     "panel:apps", "panel:home", HOME_CALLBACK, "panel:home", "adm:list:0",
+                     "panel:home", "panel:stats:own", "panel:stats:all", "panel:home", "panel:search"):
+        await flow.state().clear()  # Navigation survives loss of a short-lived dialog.
+        before = len(flow.session.calls)
+        await flow.feed(callback=callback, panel_id=panel_id)
+        assert any(isinstance(call, EditMessageText) for call in flow.session.calls[before:]), callback
+    await flow.feed(content="777")
+    await flow.feed(callback="panel:home", panel_id=panel_id)
+    await flow.feed(callback="adm:add", panel_id=panel_id)
+    await flow.feed(content="2002")
+    await flow.feed(callback="panel:home", panel_id=panel_id)
+    await flow.state().update_data(personal_verified_until=int(time.time()) + 600)
+    await flow.feed(callback="apps_admin_menu_add", panel_id=panel_id)
+    for content in ("23456", "synthetic-inline-hash", "Мой API-профиль"):
+        await flow.feed(content=content)
+    await flow.feed(callback="agree", panel_id=panel_id)
+    assert (await flow.db.get_app_tg_user_id(1001))[1] == 1
+    await flow.feed(callback="panel:search", panel_id=panel_id)
+    source = SimpleNamespace(bot=flow.bot, chat=SimpleNamespace(id=1001))
+    await flow.search._send_chunked(source, "\n".join(f"Событие {i}" for i in range(100)),
+                                    chunk_size=300, state=flow.state())
+    await flow.feed(callback="history:page:1", panel_id=panel_id)
+    assert "history:page:0" in str(flow.session.calls[-2].reply_markup)
+    await flow.state().clear()
+    await flow.feed(callback="history:page:0", panel_id=panel_id)
+    assert flow.session.calls[-2].text == flow.search.constant_text.CHAT_HISTORY_SEARCH_PROMPT_TEXT
+
+    import core.auth_sessions as auth
+    import middlewares.auth_session_cleanup as cleanup
+    registry = auth.TemporaryClients()
+    monkeypatch.setattr(cleanup, "auth_clients", registry)
+    monkeypatch.setattr(auth, "_remove_files", AsyncMock())
+    client = SimpleNamespace(is_connected=True, is_initialized=False, disconnect=AsyncMock())
+    registry.register(client, "data/session/_auth_1001_79000000001_" + "f" * 32)
+    await flow.state().set_state("AdminStates:account_add_code")
+    await flow.state().update_data(app_temp=client)
+    await flow.feed(callback="panel:home", panel_id=panel_id)
+    client.disconnect.assert_awaited_once()
+    assert not registry.contains(client) and await flow.state().get_state() is None
+    emitted = flow.session.calls[first:]
+    assert not any(isinstance(call, SendMessage) for call in emitted)
+    edits = [call for call in emitted if isinstance(call, EditMessageText)]
+    assert all(call.message_id == panel_id for call in edits)
+    assert all(any(button.callback_data == "panel:home" for row in call.reply_markup.inline_keyboard
+                   for button in row) for call in edits if "<b>WatchTowerBot</b>" not in call.text)

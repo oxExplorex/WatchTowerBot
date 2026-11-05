@@ -2,7 +2,6 @@ import asyncio
 import time
 
 from aiogram import F, Router, html
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -54,6 +53,9 @@ from utils.others import not_warning_delete_message
 from utils.proxy_utils import compact_proxy_display, normalize_http_proxy_input
 
 from keyboards.inline.settings import settings_keyboard, timezone_keyboard, update_notice_close_keyboard
+from keyboards.inline.navigation import navigation_keyboard
+from utils.panel import edit_panel
+from keyboards.main.start_keyboard import static_admin_keyboard
 
 router = Router(name=__name__)
 
@@ -90,8 +92,8 @@ async def _get_cached_version_state() -> tuple[str, int, str | None]:
     return await get_version_state_cache(default_state=constant_text.VERSION_STATE_UNKNOWN)
 
 
-async def _send_stats(message: Message, admin_only: bool) -> None:
-    admin_id = message.from_user.id
+async def _send_stats(message: Message, admin_only: bool, *, admin_id=None, edit=False) -> None:
+    admin_id = message.from_user.id if admin_id is None else admin_id
     overview = await get_accounts_overview(admin_id)
 
     tz_offset = await get_user_timezone_offset(admin_id)
@@ -119,8 +121,7 @@ async def _send_stats(message: Message, admin_only: bool) -> None:
     by_hour_text = "\n".join(build_hourly_rows_desc(events_24h, hours=24, dt=dt))
     by_day_text = "\n".join(build_daily_rows_desc(events_14d, days=14, dt=dt))
 
-    await message.answer(
-        constant_text.STATS_TEXT.format(
+    content = constant_text.STATS_TEXT.format(
             title=title,
             own_active=overview["own_active"],
             own_total=overview["own_total"],
@@ -134,7 +135,10 @@ async def _send_stats(message: Message, admin_only: bool) -> None:
             by_day_text=by_day_text,
             recent_failures=recent_failures(events_14d, dt=dt, limit=5),
         )
-    )
+    if edit:
+        await edit_panel(message, content, navigation_keyboard())
+    else:
+        await message.answer(content, reply_markup=navigation_keyboard())
 
 
 async def _settings_text(admin_id: int) -> str:
@@ -148,17 +152,28 @@ async def _settings_text(admin_id: int) -> str:
     parser_status = parser_runtime_label(last_event, now_ts)
     gemini_status = gemini_runtime_label(proxy_cfg, key_available=bool(GEMINI_KEY))
     proxy_status = proxy_status_label(proxy_cfg)
-    current_proxy = compact_proxy_display(proxy_cfg.get("proxy"))
+    proxy = proxy_cfg.get("proxy")
+    proxy_details = (constant_text.SETTINGS_PROXY_ADDRESS_TEXT.format(
+        proxy=html.quote(compact_proxy_display(proxy)),
+    ) if proxy else "")
+    check_age = minutes_ago(checked_at)
+    if checked_at <= 0:
+        last_check = constant_text.SETTINGS_CHECK_NEVER_TEXT
+    elif check_age == 0:
+        last_check = constant_text.SETTINGS_CHECK_JUST_NOW_TEXT
+    else:
+        last_check = constant_text.SETTINGS_CHECK_AGO_TEXT.format(minutes=check_age)
 
     return constant_text.SETTINGS_MENU_TITLE.format(
-        bot_version=get_local_version(),
-        version_state=version_state,
-        last_check_ago=minutes_ago(checked_at),
+        bot_version=html.quote(get_local_version()),
+        version_state=html.quote(version_state),
+        last_check=last_check,
         parser_status=parser_status,
         gemini_status=gemini_status,
         proxy_status=proxy_status,
-        current_proxy=html.quote(current_proxy),
-        date=DateTime(tz_offset).time_strftime("%d.%m.%Y %H:%M:%S.%f"),
+        proxy_details=proxy_details,
+        date=DateTime(tz_offset).time_strftime("%d.%m.%Y %H:%M"),
+        tz_label=tz_offset_label(tz_offset),
     )
 
 
@@ -174,14 +189,12 @@ async def _settings_inline(admin_id: int):
     return settings_keyboard(tz_offset, auto_update, proxy_cfg, has_update)
 
 
-async def _safe_edit_settings(call: CallbackQuery) -> None:
+async def _safe_edit_settings(call: CallbackQuery, notice=None) -> None:
     text = await _settings_text(call.from_user.id)
+    if notice:
+        text = f"{notice}\n\n{text}"
     markup = await _settings_inline(call.from_user.id)
-    try:
-        await call.message.edit_text(text=text, reply_markup=markup)
-    except TelegramBadRequest as exc:
-        if "message is not modified" not in str(exc).lower():
-            raise
+    await edit_panel(call.message, text=text, reply_markup=markup)
 
 
 async def _run_update_flow(
@@ -248,7 +261,7 @@ async def open_settings_menu_handler(message: Message, state: FSMContext):
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:close", StateFilter("*"))
 async def close_settings_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
-    await not_warning_delete_message(message=call)
+    await edit_panel(call.message, constant_text.START_MESSAGE_TEXT, static_admin_keyboard())
     await call.answer(constant_text.ACTION_CANCELLED_TEXT)
 
 
@@ -264,20 +277,14 @@ async def check_update_now_handler(call: CallbackQuery, state: FSMContext):
         f"url={get_remote_version_url()}"
     )
 
-    debug_text = constant_text.SETTINGS_UPDATE_DEBUG_TOAST.format(
-        local_version=local_version,
-        remote_version=latest_version or "n/a",
-    )
-
     if latest_version and is_newer_version(local_version, latest_version):
         await call.answer(
             constant_text.SETTINGS_UPDATE_AVAILABLE_TOAST.format(latest_version=latest_version)
-            + f" | {debug_text}"
         )
     elif not latest_version:
-        await call.answer(constant_text.SETTINGS_UPDATE_UNKNOWN_TOAST + f" | {debug_text}")
+        await call.answer(constant_text.SETTINGS_UPDATE_UNKNOWN_TOAST)
     else:
-        await call.answer(constant_text.SETTINGS_UPDATE_OK_TOAST + f" | {debug_text}")
+        await call.answer(constant_text.SETTINGS_UPDATE_OK_TOAST)
 
     await _safe_edit_settings(call)
 
@@ -319,24 +326,21 @@ async def check_proxy_from_settings_handler(call: CallbackQuery, state: FSMConte
     enabled = int(cfg.get("enabled", 0) or 0)
 
     if not enabled or not proxy:
-        await call.message.answer(constant_text.PROXY_CHECK_SKIPPED_NO_PROXY_TEXT)
-        await _safe_edit_settings(call)
+        await _safe_edit_settings(call, constant_text.PROXY_CHECK_SKIPPED_NO_PROXY_TEXT)
         return
 
     proxy_url = normalize_http_proxy_input(str(proxy))
     if not proxy_url:
         await set_user_gemini_proxy_health(call.from_user.id, is_ok=False, error="invalid_proxy_format")
-        await call.message.answer(constant_text.PROXY_INVALID_FORMAT_TEXT)
-        await _safe_edit_settings(call)
+        await _safe_edit_settings(call, constant_text.PROXY_INVALID_FORMAT_TEXT)
         return
 
     ok, reason = await check_proxy_now(call.from_user.id, proxy_url, log_source="setting_menu_handler")
     if ok:
-        await call.message.answer(constant_text.PROXY_CHECK_OK_TEXT)
+        notice = constant_text.PROXY_CHECK_OK_TEXT
     else:
-        await call.message.answer(constant_text.PROXY_CHECK_FAIL_TEXT.format(reason=html.quote(reason[:160])))
-
-    await _safe_edit_settings(call)
+        notice = constant_text.PROXY_CHECK_FAIL_TEXT.format(reason=html.quote(reason[:160]))
+    await _safe_edit_settings(call, notice)
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:proxy:disable", StateFilter("*"))
@@ -367,7 +371,7 @@ async def open_timezone_menu_handler(call: CallbackQuery, state: FSMContext):
 
     current_offset = await get_user_timezone_offset(call.from_user.id)
 
-    await call.message.edit_text(
+    await edit_panel(call.message,
         constant_text.TIMEZONE_MENU_TEXT.format(
             tz_label=tz_full_label(current_offset),
             tz_rows=timezone_rows_text(),
@@ -386,7 +390,7 @@ async def set_timezone_handler(call: CallbackQuery, state: FSMContext):
     if call.data == "set:tz:reset":
         saved = await set_user_timezone_offset(call.from_user.id, DEFAULT_TIMEZONE_OFFSET)
         await call.answer(constant_text.TIMEZONE_RESET_TOAST)
-        return await call.message.edit_text(
+        return await edit_panel(call.message,
             constant_text.TIMEZONE_MENU_TEXT.format(
                 tz_label=tz_full_label(saved),
                 tz_rows=timezone_rows_text(),
@@ -405,7 +409,7 @@ async def set_timezone_handler(call: CallbackQuery, state: FSMContext):
     saved = await set_user_timezone_offset(call.from_user.id, offset)
     await call.answer(constant_text.TIMEZONE_SET_TOAST.format(tz_label=tz_full_label(saved)))
 
-    await call.message.edit_text(
+    await edit_panel(call.message,
         constant_text.TIMEZONE_MENU_TEXT.format(
             tz_label=tz_full_label(saved),
             tz_rows=timezone_rows_text(),
@@ -415,9 +419,18 @@ async def set_timezone_handler(call: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:back", StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAdmin(), F.data == "panel:settings", StateFilter("*"))
 async def back_to_settings_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await _safe_edit_settings(call)
+    await call.answer()
+
+
+@router.callback_query(IsPrivate(), IsAdmin(), F.data.in_({"panel:stats:own", "panel:stats:all"}), StateFilter("*"))
+async def open_stats_callback(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await _send_stats(call.message, admin_only=call.data.endswith(":own"), admin_id=call.from_user.id, edit=True)
+    await call.answer()
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:reboot", StateFilter("*"))

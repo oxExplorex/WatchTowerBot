@@ -7,13 +7,18 @@ from data.admin_text import MENU_BUTTON as ADMINS_BUTTON
 from callbacks.personal_secret import SETUP_CALLBACK
 from data.texts.personal_secret import MENU_BUTTON as SECRET_BUTTON
 from utils.settings_formatting import auto_update_label, proxy_status_label, tz_offset_label
+from keyboards.inline.navigation import with_navigation
 
 
 def settings_keyboard(tz_offset: int, auto_update: int, proxy_cfg: dict, has_update: bool) -> InlineKeyboardMarkup:
     keyboard = InlineKeyboardBuilder()
 
-    keyboard.row(InlineKeyboardButton(text=ADMINS_BUTTON, callback_data="adm:list:0"))
-    keyboard.row(InlineKeyboardButton(text=SECRET_BUTTON, callback_data=SETUP_CALLBACK))
+    keyboard.row(
+        InlineKeyboardButton(
+            text=constant_text.SETTINGS_BTN_RUN_UPDATE if has_update else constant_text.SETTINGS_BTN_CHECK_UPDATE,
+            callback_data="set:update:run" if has_update else "set:update:check",
+        )
+    )
 
     keyboard.row(
         InlineKeyboardButton(
@@ -23,19 +28,9 @@ def settings_keyboard(tz_offset: int, auto_update: int, proxy_cfg: dict, has_upd
     )
 
     keyboard.row(
-        InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_CHECK_UPDATE,
-            callback_data="set:update:check",
-        )
+        InlineKeyboardButton(text=ADMINS_BUTTON, callback_data="adm:list:0"),
+        InlineKeyboardButton(text=SECRET_BUTTON, callback_data=SETUP_CALLBACK),
     )
-
-    if has_update:
-        keyboard.row(
-            InlineKeyboardButton(
-                text=constant_text.SETTINGS_BTN_RUN_UPDATE,
-                callback_data="set:update:run",
-            )
-        )
 
     keyboard.row(
         InlineKeyboardButton(
@@ -43,16 +38,17 @@ def settings_keyboard(tz_offset: int, auto_update: int, proxy_cfg: dict, has_upd
             callback_data="set:proxy:open",
         )
     )
-    keyboard.row(
-        InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_PROXY_DISABLE,
-            callback_data="set:proxy:disable",
-        ),
-        InlineKeyboardButton(
-            text=constant_text.SETTINGS_BTN_PROXY_CHECK,
-            callback_data="set:proxy:check",
-        ),
-    )
+    if proxy_cfg.get("proxy"):
+        keyboard.row(
+            InlineKeyboardButton(
+                text=constant_text.SETTINGS_BTN_PROXY_DISABLE,
+                callback_data="set:proxy:disable",
+            ),
+            InlineKeyboardButton(
+                text=constant_text.SETTINGS_BTN_PROXY_CHECK,
+                callback_data="set:proxy:check",
+            ),
+        )
 
     keyboard.row(
         InlineKeyboardButton(
@@ -63,10 +59,7 @@ def settings_keyboard(tz_offset: int, auto_update: int, proxy_cfg: dict, has_upd
     keyboard.row(
         InlineKeyboardButton(text=constant_text.SETTINGS_BTN_RESTART, callback_data="set:reboot"),
     )
-    keyboard.row(
-        InlineKeyboardButton(text=constant_text.SETTINGS_BTN_CLOSE, callback_data="set:close"),
-    )
-    return keyboard.as_markup()
+    return with_navigation(keyboard.as_markup())
 
 
 def timezone_keyboard(current_offset: int):
@@ -82,8 +75,7 @@ def timezone_keyboard(current_offset: int):
         keyboard.row(*buttons)
 
     keyboard.row(InlineKeyboardButton(text=constant_text.TIMEZONE_BTN_RESET, callback_data="set:tz:reset"))
-    keyboard.row(InlineKeyboardButton(text=constant_text.ACTION_BACK_TEXT, callback_data="set:back"))
-    return keyboard.as_markup()
+    return with_navigation(keyboard.as_markup(), "set:back")
 
 def update_notice_close_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[

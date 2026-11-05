@@ -16,8 +16,8 @@ PROXY_DISABLED_TEXT = "✅ Прокси отключен. Gemini попробу�
 PROXY_INVALID_FORMAT_TEXT = "❌ Формат прокси некорректный. Поддерживаются только HTTP: ip:port:user:password, ip:port@user:password или http://user:password@ip:port"
 
 SETTINGS_BTN_PROXY = "🌐 Прокси: {state}"
-SETTINGS_BTN_PROXY_CHECK = "🧪 Проверить"
-SETTINGS_BTN_PROXY_DISABLE = "🗑 Удалить"
+SETTINGS_BTN_PROXY_CHECK = "🔎 Проверить прокси"
+SETTINGS_BTN_PROXY_DISABLE = "🗑 Удалить прокси"
 PROXY_CHECK_OK_TEXT = "✅ Прокси работает"
 PROXY_CHECK_FAIL_TEXT = "❌ Прокси не работает: {reason}"
 PROXY_CHECK_SKIPPED_NO_PROXY_TEXT = "ℹ️ Прокси выключен. Проверять нечего."

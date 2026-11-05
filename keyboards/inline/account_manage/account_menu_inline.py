@@ -9,6 +9,7 @@ from db.models import apps_db
 
 async def account_tg_admin_inline(account_tg: List[apps_db], page: int, total_pages: int, *, names: dict):
     keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text=constant_text.ACCOUNT_MENU_ADD, callback_data="panel:apps"))
 
     for item in account_tg:
         name = names.get(item.user_id) or constant_text.ACCOUNT_MENU_UNKNOWN_NAME

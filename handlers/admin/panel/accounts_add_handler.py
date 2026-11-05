@@ -29,8 +29,13 @@ from keyboards.inline.back_inline import back_inline
 from loader import session_manager
 
 from utils.others import close_state_pyrogram_client, not_warning_delete_message
+from utils.panel import clear_panel_state, edit_panel, edit_input_panel, remember_panel
 
 router = Router(name=__name__)
+
+
+async def _show_auth(message, state, text):
+    return await edit_input_panel(message, state, text, back_inline("panel:apps"))
 
 
 _session_locks: dict[str, asyncio.Lock] = {}
@@ -110,13 +115,15 @@ async def start_add_account_handler(call: CallbackQuery, state: FSMContext):
     except (AttributeError, IndexError, TypeError):
         return await call.answer(constant_text.ERROR_FORMAT_TEXT)
 
-    prompt_message = await call.message.answer(
+    panel = await edit_panel(call.message,
         text=constant_text.ACCOUNT_INPUT_NUMBER_TEXT,
-        reply_markup=back_inline(),
+        reply_markup=back_inline("panel:apps"),
     )
 
-    await state.update_data(prompt_message=prompt_message, uuid_app=uuid_app)
+    await remember_panel(state, panel or call.message)
+    await state.update_data(uuid_app=uuid_app)
     await state.set_state(AdminStates.account_add_number)
+    await call.answer()
 
 @router.message(
     IsPrivate(),
@@ -132,40 +139,35 @@ async def cancel_add_account_handler(message: Message, state: FSMContext):
     data = await state.get_data()
     temp_session_name = data.get("temp_session_name")
     await close_state_pyrogram_client(state)
-    await state.clear()
+    await clear_panel_state(state)
     if temp_session_name:
         await _cleanup_session_files(temp_session_name)
 
-    await not_warning_delete_message(message=data.get("prompt_message"))
     await not_warning_delete_message(message=message)
 
-    await message.answer(
-        text=constant_text.ACTION_CANCELLED_TEXT,
-        reply_markup=static_admin_keyboard(),
-    )
+    await edit_input_panel(message, state, constant_text.ACTION_CANCELLED_TEXT, static_admin_keyboard())
 
 
 @router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.account_add_number))
 async def receive_account_number_handler(message: Message, state: FSMContext):
     data = await state.get_data()
     user_id = message.from_user.id
-    await not_warning_delete_message(message=data.get("prompt_message"))
 
     number = "".join(re.findall(r"\d+", message.text or ""))
     await not_warning_delete_message(message=message)
 
     if not number:
-        return await message.answer(constant_text.ERROR_FORMAT_TEXT)
+        return await _show_auth(message, state, constant_text.ERROR_FORMAT_TEXT)
 
     if await get_account_by_number(number) is not None:
-        await state.clear()
-        return await message.answer(ownership_text.ALREADY_CONNECTED)
+        await clear_panel_state(state)
+        return await _show_auth(message, state, ownership_text.ALREADY_CONNECTED)
 
     app_info = await get_app_tg_uuid(data["uuid_app"], user_id)
     if not app_info:
         await close_state_pyrogram_client(state)
-        await state.clear()
-        return await message.answer(constant_text.ERROR_NOT_FOUND_APP_ID)
+        await clear_panel_state(state)
+        return await _show_auth(message, state, constant_text.ERROR_NOT_FOUND_APP_ID)
 
     temp_session_name = _temp_session_name(user_id, number)
     session_lock = _get_session_lock(number)
@@ -174,7 +176,7 @@ async def receive_account_number_handler(message: Message, state: FSMContext):
             await _cleanup_session_files(temp_session_name)
         except PermissionError:
             await close_state_pyrogram_client(state)
-            return await message.answer(constant_text.ACCOUNT_ADD_SESSION_BUSY_TEXT)
+            return await _show_auth(message, state, constant_text.ACCOUNT_ADD_SESSION_BUSY_TEXT)
 
     bot_logger.debug("Starting account authorization for owner_id=%s", user_id)
 
@@ -190,9 +192,8 @@ async def receive_account_number_handler(message: Message, state: FSMContext):
         await app_temp.connect()
         result = await app_temp.send_phone_number_code(phone_number=number)
 
-        prompt_message = await message.answer(constant_text.ACCOUNT_INPUT_CODE_TEXT, reply_markup=back_inline())
+        await _show_auth(message, state, constant_text.ACCOUNT_INPUT_CODE_TEXT)
         await state.update_data(
-            prompt_message=prompt_message,
             app_temp=app_temp,
             number=number,
             temp_session_name=temp_session_name,
@@ -204,10 +205,10 @@ async def receive_account_number_handler(message: Message, state: FSMContext):
             bot_logger.error(traceback.format_exc())
         await auth_clients.discard(app_temp)
         await _cleanup_session_files(temp_session_name)
-        await state.clear()
+        await clear_panel_state(state)
         if not isinstance(exc, Exception):
             raise
-        return await message.answer(f"{constant_text.ACCOUNT_ADD_ERROR_PREFIX}: {exc}")
+        return await _show_auth(message, state, f"{constant_text.ACCOUNT_ADD_ERROR_PREFIX}: {exc}")
 
 
 @router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.account_add_code))
@@ -216,26 +217,22 @@ async def receive_account_code_handler(message: Message, state: FSMContext):
     auth_clients.track(data["app_temp"])
     user_id = message.from_user.id
     temp_session_name = data.get("temp_session_name")
-    await not_warning_delete_message(message=data.get("prompt_message"))
 
     code = "".join(re.findall(r"\d+", message.text or ""))
     await not_warning_delete_message(message=message)
 
     if not code:
         await close_state_pyrogram_client(state)
-        await state.clear()
+        await clear_panel_state(state)
         if temp_session_name:
             await _cleanup_session_files(temp_session_name)
-        return await message.answer(
-            text=constant_text.ERROR_FORMAT_TEXT,
-            reply_markup=static_admin_keyboard(),
-        )
+        return await _show_auth(message, state, constant_text.ERROR_FORMAT_TEXT)
 
     app_info = await get_app_tg_uuid(data["uuid_app"], user_id)
     if not app_info:
         await close_state_pyrogram_client(state)
-        await state.clear()
-        return await message.answer(constant_text.ERROR_NOT_FOUND_APP_ID)
+        await clear_panel_state(state)
+        return await _show_auth(message, state, constant_text.ERROR_NOT_FOUND_APP_ID)
 
     number = data["number"]
     phone_hash = data["phone_hash"]
@@ -251,25 +248,24 @@ async def receive_account_code_handler(message: Message, state: FSMContext):
         )
         await auth_clients.disconnect(app_temp)
         await _save_authorized_session(data, result, user_id)
-        await message.answer(constant_text.SUCCESS_ADD_ACCOUNT_TEXT)
-        await state.clear()
+        await _show_auth(message, state, constant_text.SUCCESS_ADD_ACCOUNT_TEXT)
+        await clear_panel_state(state)
     except SessionPasswordNeeded:
-        prompt_message = await message.answer(constant_text.ACCOUNT_INPUT_PASSWORD_TEXT, reply_markup=back_inline())
-        await state.update_data(prompt_message=prompt_message)
+        await _show_auth(message, state, constant_text.ACCOUNT_INPUT_PASSWORD_TEXT)
         await state.set_state(AdminStates.account_add_password)
         keep_client = True
         return
     except PhoneCodeExpired:
         await close_state_pyrogram_client(state)
-        await message.answer(constant_text.ACCOUNT_ADD_CODE_EXPIRED_TEXT)
+        await _show_auth(message, state, constant_text.ACCOUNT_ADD_CODE_EXPIRED_TEXT)
         await _cleanup_session_files(temp_session_name)
         await state.set_state(AdminStates.account_add_number)
     except Exception as exc:
         bot_logger.error(traceback.format_exc())
         await close_state_pyrogram_client(state)
-        await message.answer(f"{constant_text.ACCOUNT_ADD_ERROR_PREFIX}: {exc}")
+        await _show_auth(message, state, f"{constant_text.ACCOUNT_ADD_ERROR_PREFIX}: {exc}")
         await _cleanup_session_files(temp_session_name)
-        await state.clear()
+        await clear_panel_state(state)
     finally:
         if not keep_client:
             await auth_clients.discard(app_temp)
@@ -285,23 +281,22 @@ async def receive_account_password_handler(message: Message, state: FSMContext):
     temp_session_name = data["temp_session_name"]
     password = (message.text or "").strip()
 
-    await not_warning_delete_message(message=data.get("prompt_message"))
     await not_warning_delete_message(message=message)
 
     if not password:
-        return await message.answer(constant_text.ERROR_FORMAT_TEXT)
+        return await _show_auth(message, state, constant_text.ERROR_FORMAT_TEXT)
 
     try:
         result = await app_temp.check_password(password)
         await auth_clients.disconnect(app_temp)
         await _save_authorized_session(data, result, user_id, update_profile=True)
 
-        await message.answer(constant_text.SUCCESS_ADD_ACCOUNT_TEXT)
-        await state.clear()
+        await _show_auth(message, state, constant_text.SUCCESS_ADD_ACCOUNT_TEXT)
+        await clear_panel_state(state)
     except Exception as exc:
         await close_state_pyrogram_client(state)
-        await message.answer(f"{constant_text.ACCOUNT_ADD_ERROR_PREFIX}: {exc}")
+        await _show_auth(message, state, f"{constant_text.ACCOUNT_ADD_ERROR_PREFIX}: {exc}")
         await _cleanup_session_files(temp_session_name)
-        await state.clear()
+        await clear_panel_state(state)
     finally:
         await auth_clients.discard(app_temp)

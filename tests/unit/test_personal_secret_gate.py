@@ -30,7 +30,9 @@ def test_personal_secret_contracts_keep_pre_upgrade_states_and_buttons():
 
 def message(text="/start"):
     return SimpleNamespace(text=text, chat=SimpleNamespace(id=123, type="private"),
-                           answer=AsyncMock(), delete=AsyncMock())
+                           message_id=77, answer=AsyncMock(), delete=AsyncMock(),
+                           edit_text=AsyncMock(return_value=SimpleNamespace(message_id=77)),
+                           bot=SimpleNamespace(edit_message_text=AsyncMock()))
 
 
 def update(msg=None, call=None, business=None):

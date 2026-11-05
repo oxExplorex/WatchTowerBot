@@ -3,7 +3,7 @@ import re
 from aiogram import F, Router, html
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import data.text as constant_text
 from db.main import (
@@ -18,6 +18,8 @@ from db.main import (
 from filters.all_filters import IsAdmin, IsPrivate
 from handlers.admin.states import AdminStates
 from keyboards.inline.back_inline import back_inline
+from keyboards.inline.navigation import with_navigation
+from utils.panel import edit_panel, edit_input_panel, remember_panel
 
 from utils.datetime_tools import DateTime
 
@@ -52,21 +54,40 @@ async def _resolve_chat_ids(query: str) -> list[int]:
     return await find_user_ids_by_username(query)
 
 
-async def _send_chunked(message: Message, text: str, chunk_size: int = 3800) -> None:
+async def _send_chunked(message: Message, text: str, chunk_size: int = 3800, *, state=None) -> None:
     lines = text.splitlines()
     buf: list[str] = []
     size = 0
+    pages = []
     for line in lines:
         extra = len(line) + 1
         if buf and (size + extra) > chunk_size:
-            await message.answer("\n".join(buf))
+            pages.append("\n".join(buf))
             buf = []
             size = 0
         buf.append(line)
         size += extra
 
     if buf:
-        await message.answer("\n".join(buf))
+        pages.append("\n".join(buf))
+    if state is None:
+        for page in pages:
+            await message.answer(page)
+    elif pages:
+        await state.set_state(None)
+        await state.update_data(history_pages=pages)
+        await edit_input_panel(message, state, pages[0], _history_keyboard(0, len(pages)))
+
+
+def _history_keyboard(page, total):
+    row = []
+    if page > 0:
+        row.append(InlineKeyboardButton(text="‹", callback_data=f"history:page:{page - 1}"))
+    if total > 1:
+        row.append(InlineKeyboardButton(text=f"{page + 1}/{total}", callback_data="noop"))
+    if page + 1 < total:
+        row.append(InlineKeyboardButton(text="›", callback_data=f"history:page:{page + 1}"))
+    return with_navigation(InlineKeyboardMarkup(inline_keyboard=[row] if row else []), "panel:search")
 
 
 async def _current_presence_lines(admin_id: int, chat_ids: list[int]) -> tuple[list[str], bool]:
@@ -121,10 +142,10 @@ async def _current_presence_lines(admin_id: int, chat_ids: list[int]) -> tuple[l
     return lines, has_present_chat
 
 
-async def _render_history(message: Message, query: str, admin_id: int) -> None:
+async def _render_history(message: Message, query: str, admin_id: int, *, state=None) -> None:
     chat_ids = await _resolve_chat_ids(query)
     if not chat_ids:
-        await message.answer(constant_text.CHAT_HISTORY_SEARCH_EMPTY_TEXT)
+        await _send_chunked(message, constant_text.CHAT_HISTORY_SEARCH_EMPTY_TEXT, state=state)
         return
 
     presence_lines, has_present_chat = await _current_presence_lines(admin_id=admin_id, chat_ids=chat_ids)
@@ -149,7 +170,7 @@ async def _render_history(message: Message, query: str, admin_id: int) -> None:
             lines.append(constant_text.CHAT_HISTORY_EVENTS_EMPTY_WITH_PRESENCE_TEXT)
         else:
             lines.append(constant_text.CHAT_HISTORY_SEARCH_EMPTY_TEXT)
-        await _send_chunked(message, "\n".join(lines))
+        await _send_chunked(message, "\n".join(lines), state=state)
         return
 
     account_cache: dict[int, str] = {}
@@ -174,19 +195,45 @@ async def _render_history(message: Message, query: str, admin_id: int) -> None:
                 account_label=html.quote(account_label),
             )
         )
-    await _send_chunked(message, "\n".join(lines))
+    await _send_chunked(message, "\n".join(lines), state=state)
 
 
 @router.message(IsPrivate(), IsAdmin(), StateFilter("*"), F.text == constant_text.ACCOUNTS_USER_KEYBOARD[1])
 async def open_chat_history_search_handler(message: Message, state: FSMContext):
+    await state.clear()
     await state.set_state(AdminStates.wait_chat_history_search)
-    await message.answer(constant_text.CHAT_HISTORY_SEARCH_PROMPT_TEXT, reply_markup=back_inline())
+    panel = await message.answer(constant_text.CHAT_HISTORY_SEARCH_PROMPT_TEXT, reply_markup=back_inline())
+    await remember_panel(state, panel)
+
+
+@router.callback_query(IsPrivate(), IsAdmin(), F.data == "panel:search", StateFilter("*"))
+async def open_search_callback(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await state.set_state(AdminStates.wait_chat_history_search)
+    panel = await edit_panel(call.message, constant_text.CHAT_HISTORY_SEARCH_PROMPT_TEXT, back_inline())
+    await remember_panel(state, panel or call.message)
+    await call.answer()
+
+
+@router.callback_query(IsPrivate(), IsAdmin(), F.data.startswith("history:page:"), StateFilter("*"))
+async def history_page_callback(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    pages = data.get("history_pages", [])
+    if data.get("panel_message_id") != call.message.message_id or not pages:
+        return await open_search_callback(call, state)
+    try:
+        page = int(call.data.split(":")[-1])
+        if page < 0 or page >= len(pages):
+            raise ValueError
+    except (TypeError, ValueError):
+        return await call.answer(constant_text.WARNING_PAGE_EDGE)
+    await edit_panel(call.message, pages[page], _history_keyboard(page, len(pages)))
+    await call.answer()
 
 
 @router.message(IsPrivate(), IsAdmin(), StateFilter(AdminStates.wait_chat_history_search))
 async def chat_history_search_input_handler(message: Message, state: FSMContext):
     query = _extract_query(message.text or "")
     if not query:
-        return await message.answer(constant_text.CHAT_HISTORY_SEARCH_USAGE_TEXT)
-    await _render_history(message, query=query, admin_id=message.from_user.id)
-    await state.clear()
+        return await edit_input_panel(message, state, constant_text.CHAT_HISTORY_SEARCH_USAGE_TEXT, back_inline())
+    await _render_history(message, query=query, admin_id=message.from_user.id, state=state)

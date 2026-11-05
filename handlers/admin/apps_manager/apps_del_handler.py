@@ -6,6 +6,8 @@ from aiogram.types import CallbackQuery
 import data.text as constant_text
 from db.main import del_app_tg_uuid
 from filters.all_filters import IsAdmin, IsPrivate
+from utils.panel import edit_panel
+from keyboards.inline.navigation import navigation_keyboard
 
 router = Router(name=__name__)
 
@@ -22,6 +24,7 @@ async def delete_app_handler(call: CallbackQuery, state: FSMContext):
     user_id = call.from_user.id
 
     if await del_app_tg_uuid(app_uuid, user_id):
-        return await call.message.answer(constant_text.SUCCESS_DEL_APP_TEXT)
+        await edit_panel(call.message, constant_text.SUCCESS_DEL_APP_TEXT, navigation_keyboard("panel:apps"))
+        return await call.answer()
 
     return await call.answer(constant_text.ERROR_DEL_APP_TEXT)
