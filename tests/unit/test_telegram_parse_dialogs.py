@@ -23,6 +23,8 @@ def parser_mod(monkeypatch, offline_module):
     module = offline_module("aiotask/telegram_parse_dialogs.py")
     limits = types.SimpleNamespace(blocked_until=AsyncMock(return_value=0), defer=AsyncMock(), observe_heads=AsyncMock())
     monkeypatch.setattr(module, "HistoryRepository", lambda factory: limits)
+    monkeypatch.setattr(module, "ChatPolicyRepository", lambda factory: types.SimpleNamespace(
+        observe=AsyncMock(), excluded_ids=AsyncMock(return_value=set())))
     return module
 
 
@@ -147,6 +149,29 @@ async def test_baseline_sync_no_new_chat_spam(monkeypatch, parser_mod):
     assert sorted(created) == [11, 22, 33]
     presence.assert_not_awaited()
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_dialog_scan_stores_only_human_private_chats_even_with_bot_alerts_enabled(monkeypatch, parser_mod):
+    class MixedClient(_FakeClient):
+        async def get_dialogs(self, limit=0):
+            for chat_id, kind in [(11, "private"), (12, "bot"), (-13, "group"),
+                                  (-10014, "supergroup"), (-10015, "channel"), (777000, "private")]:
+                yield types.SimpleNamespace(chat=types.SimpleNamespace(
+                    id=chat_id, type=kind, username=None, full_name="Synthetic", title=None))
+
+    client = MixedClient(list(range(6)))
+    monkeypatch.setattr(parser_mod, "session_number_from_client", lambda _: "offline")
+    monkeypatch.setattr(parser_mod, "get_account_by_number", AsyncMock(return_value=_account(alert_bot=1)))
+    monkeypatch.setattr(parser_mod, "get_dump_chat_admin_all", AsyncMock(return_value=[]))
+    saved, contacts = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(parser_mod, "create_dump_chat_user", saved)
+    monkeypatch.setattr(parser_mod, "update_user", contacts)
+    monkeypatch.setattr(parser_mod, "update_account_uuid", AsyncMock())
+    monkeypatch.setattr(parser_mod, "add_account_health_event", AsyncMock())
+    await parser_mod._scan_session(client)
+    saved.assert_awaited_once_with(9001, 11)
+    contacts.assert_awaited_once_with(11, None, "Synthetic")
 
 
 @pytest.mark.asyncio

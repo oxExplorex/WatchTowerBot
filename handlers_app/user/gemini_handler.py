@@ -19,6 +19,7 @@ from db.main import (
     set_user_gemini_proxy_health,
 )
 from services.gemini import GEMINI_MODEL_NAME as _GEMINI_MODEL_NAME, generate_with_proxy, request_gemini
+from utils.archive_policy import IGNORED_CHAT_IDS
 
 
 def _ai_debug(event: str, **fields) -> None:
@@ -91,6 +92,8 @@ async def _generate_with_gemini(admin_id: int, parts: list[types.Part]) -> str:
 
 @tracked_job
 async def gemini_app_handler(client: Client, message: Message):
+    if getattr(getattr(message, "chat", None), "id", None) in IGNORED_CHAT_IDS:
+        return
     started_at = time.monotonic()
     session_number = session_number_from_client(client)
     account = await get_account_by_number(session_number) if session_number else None

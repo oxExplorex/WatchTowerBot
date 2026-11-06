@@ -15,6 +15,7 @@ STATS_TITLE_OWN = "<b>📉 Моя статистика</b>"
 STATS_TITLE_GLOBAL = "<b>📊 Общая статистика</b>"
 STATS_NO_CHECKS = "нет проверок"
 STATS_CHECK_RESULT = "{percent}% ({count} проверок)"
+STATS_SIZE_UNITS = ("Б", "КиБ", "МиБ", "ГиБ", "ТиБ", "ПиБ", "ЭиБ")
 CHART_LABELS = {
     "bot": "Бот · получение событий Telegram",
     "userbot": "Userbot · подключение включённых аккаунтов",
@@ -35,14 +36,16 @@ STATS_TEXT = (
     "Ваши: включено {own_active}/{own_total}, подключено <b>{own_running}</b>\n"
     "Все: включено {all_active}/{all_total}, подключено <b>{all_running}</b>\n\n"
     "<b>Ваш архив личных переписок</b>\n"
-    "Сообщения: <b>{archive_messages}</b> · с отметкой редактирования: <b>{archive_edited}</b>\n"
-    "Сохранённые версии: <b>{archive_revisions}</b>\n"
-    "Удалены: {archive_deleted} · недоступны при проверке: {archive_missing}\n"
-    "Вложения: {archive_media_stored} сохранено, {archive_media_pending} в очереди, {archive_media_failed} с ошибкой\n"
-    "Начало истории достигнуто: <b>{archive_history_reached}/{archive_history_chats}</b> чатов\n\n"
+    "Чатов: <b>{archive_chats}</b> · с сообщениями: {archive_chats_with_messages}\n"
+    "Сообщения: <b>{archive_messages}</b> · версии: {archive_revisions}\n"
+    "Изменены: {archive_edited} · удалены: {archive_deleted} · недоступны: {archive_missing}\n"
+    "История проверена: {archive_history_checked}/{archive_history_chats} · до начала: {archive_history_reached}\n"
+    "Вложения: {archive_media_stored} сохранено · {archive_media_pending} в очереди · {archive_media_failed} ошибок\n"
+    "Файлов: {archive_media_files} · недоступно: {archive_media_unavailable} · {archive_media_size}\n"
+    "Содержимое: {archive_content_size} · всего ≈ <b>{archive_total_size}</b>\n"
+    "<i>Объём содержимого и файлов, без индексов БД. Файлы считаются без дублей.</i>\n\n"
     "<b>Последние сбои</b>\n"
     "{recent_failures}\n\n"
-    "<i>График: 14 дней по часам. Серый — нет наблюдений. "
-    "Бот — получение событий, userbot — подключение клиентов. Это не процент uptime.</i>"
+    "<i>График: 14 дней по часам. Серый — нет наблюдений; это не процент uptime.</i>"
 )
 

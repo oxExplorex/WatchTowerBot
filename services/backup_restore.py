@@ -22,6 +22,9 @@ from db.models import HistoryUser, User
 from db.personal_models import OwnerArchiveKey
 from db.repositories.messages_repo import comparable_payload, personal_fingerprint
 from db.repositories.personal_repo import lock_owner
+from db.chat_policy_models import ArchiveChatPolicy
+from db.repositories.chat_policy_repo import observe_policies
+from utils.archive_policy import IGNORED_CHAT_IDS
 from utils.crypto_store import blind_index, encrypt_text, message_fingerprint
 
 MODELS = {"messages": StoredMessage, "revisions": MessageRevision, "receipts": MessageReceipt,
@@ -44,6 +47,29 @@ class PreparedBackup:
     summary: dict = field(default_factory=dict)
     avatars: list = field(default_factory=list)
     avatar_history: list = field(default_factory=list)
+
+
+def filter_ignored_content(prepared, blocked_chats=()):
+    blocked_chats = set(blocked_chats)
+    messages = {row.uuid: row for table, row in prepared.rows if table == "messages"
+                and row.chat_id not in IGNORED_CHAT_IDS
+                and (row.account_user_id, row.chat_id) not in blocked_chats}
+    revisions = {row.uuid for table, row in prepared.rows if table == "revisions" and row.message_uuid in messages}
+    prepared.rows = [(table, row) for table, row in prepared.rows if (
+        table == "messages" and row.uuid in messages or
+        table == "revisions" and row.uuid in revisions or
+        table == "attachments" and row.revision_uuid in revisions or
+        table == "receipts" and row.message_uuid in messages or
+        table == "events" and row.chat_id not in IGNORED_CHAT_IDS
+        and (row.account_user_id, row.chat_id) not in blocked_chats)]
+    peers = {(row.account_user_id, peer) for row in messages.values()
+             for peer in (row.chat_id, row.sender_id, row.account_user_id) if peer not in IGNORED_CHAT_IDS}
+    prepared.names = [row for row in prepared.names if row["user_id"] in {peer for _, peer in peers}]
+    prepared.avatars = [row for row in prepared.avatars if (row["account_user_id"], row["user_id"]) in peers]
+    prepared.avatar_history = [row for row in prepared.avatar_history if (row["account_user_id"], row["user_id"]) in peers]
+    blobs = {row.blob_key for table, row in prepared.rows if table == "attachments" and row.status == "stored"}
+    blobs.update(row["blob_key"] for row in [*prepared.avatars, *prepared.avatar_history] if row.get("blob_key"))
+    prepared.blobs = {key: path for key, path in prepared.blobs.items() if key in blobs}
 
 
 def prepare_backup(paths, root, owner_id, secret):
@@ -162,6 +188,7 @@ def prepare_backup(paths, root, owner_id, secret):
                 expected_blobs.add(avatar["blob_key"])
         if expected_blobs != set(result.blobs):
             raise InvalidBackup("Media list does not match archive")
+        filter_ignored_content(result)
         return result
     except InvalidBackup:
         raise
@@ -177,6 +204,9 @@ async def restore_backup(prepared, owner_id, secret, *, session_factory, store, 
     """Existing messages/flags win; missing immutable revisions and files are added."""
     async with session_factory()() as session:
         current = await session.get(OwnerArchiveKey, owner_id)
+        blocked = list(await session.execute(select(ArchiveChatPolicy.account_user_id, ArchiveChatPolicy.chat_id)
+                                            .where(ArchiveChatPolicy.kind != "private")))
+    filter_ignored_content(prepared, blocked)
     if current is None:
         public, private = prepared.bundle["public_key"], prepared.private_key
     else:
@@ -222,6 +252,9 @@ async def restore_backup(prepared, owner_id, secret, *, session_factory, store, 
                                            migration_state="complete", **prepared.bundle))
                 await session.flush()
             message_map, new_messages = {}, {}
+            for account_id in {row.account_user_id for row in incoming_messages.values()}:
+                await observe_policies(session, account_id, [(row.chat_id, "private")
+                    for row in incoming_messages.values() if row.account_user_id == account_id])
             for source_uuid, incoming in incoming_messages.items():
                 identity = {name: getattr(incoming, name) for name in ("owner_id", "account_user_id", "chat_id", "message_id")}
                 existing = await session.scalar(select(StoredMessage).filter_by(**identity))

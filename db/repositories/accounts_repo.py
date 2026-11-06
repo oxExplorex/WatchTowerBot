@@ -1,4 +1,5 @@
 from __future__ import annotations
+from utils.archive_policy import IGNORED_CHAT_IDS
 
 import time
 from collections.abc import Callable
@@ -428,6 +429,8 @@ class AccountsRepository(BaseRepository):
         chat_id: int,
         session: AsyncSession | None = None,
     ) -> bool:
+        if chat_id <= 0 or chat_id in IGNORED_CHAT_IDS:
+            return False
         async with self._session(session) as lease:
             statement = conflict_insert(lease.session, DumpChatUser).values(admin_id=int(admin_id), chat_id=int(chat_id))
             statement = statement.on_conflict_do_nothing(index_elements=["admin_id", "chat_id"]).returning(DumpChatUser.uuid)
@@ -440,6 +443,8 @@ class AccountsRepository(BaseRepository):
         present: bool, date: int | None = None, session: AsyncSession | None = None,
     ) -> bool:
         """Commit presence and its history together; only the winning writer emits an event."""
+        if chat_id <= 0 or chat_id in IGNORED_CHAT_IDS:
+            return False
         async with self._session(session) as lease:
             if present:
                 changed = await self.create_dump_chat_user(account_user_id, chat_id, session=lease.session)
@@ -468,6 +473,8 @@ class AccountsRepository(BaseRepository):
         date: int | None = None,
         session: AsyncSession | None = None,
     ) -> None:
+        if chat_id <= 0 or chat_id in IGNORED_CHAT_IDS:
+            return
         async with self._session(session) as lease:
             await self._save(
                 lease,

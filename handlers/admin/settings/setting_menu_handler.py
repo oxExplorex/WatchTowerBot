@@ -36,6 +36,7 @@ from filters.all_filters import IsAdmin, IsPrivate
 from aiotask.update_notifier import release_update_run, try_acquire_update_run
 from handlers.admin.proxy_manager.proxy_checker import check_proxy_now
 from utils.settings_formatting import (
+    format_archive_bytes,
     gemini_runtime_label,
     minutes_ago,
     parser_runtime_label,
@@ -100,7 +101,9 @@ async def _get_cached_version_state() -> tuple[str, int, str | None]:
 async def _send_stats(message: Message, admin_only: bool, *, admin_id=None, edit=False, state=None) -> None:
     admin_id = message.from_user.id if admin_id is None else admin_id
     overview = await get_accounts_overview(admin_id)
-    archive = await get_archive_statistics(admin_id)
+    archive = {name: 0 for name in ("chats", "chats_with_messages", "history_checked", "media_files", "media_unavailable",
+                                    "media_bytes", "content_bytes", "archive_bytes")}
+    archive.update(await get_archive_statistics(admin_id))
     running = {"own_running": 0, "all_running": 0}
     for account in await get_account_all(active_only=True):
         if await is_session_running(account.number):
@@ -131,11 +134,18 @@ async def _send_stats(message: Message, admin_only: bool, *, admin_id=None, edit
             all_total=overview["all_total"],
             **running,
             **{f"archive_{key}": value for key, value in archive.items()},
+            archive_media_size=format_archive_bytes(archive["media_bytes"]),
+            archive_content_size=format_archive_bytes(archive["content_bytes"]),
+            archive_total_size=format_archive_bytes(archive["archive_bytes"]),
             recent_failures=recent_failures(events_14d, dt=dt, limit=2),
         )
     content = constant_text.STATS_TEXT.format(**values)
     if len(content) > 1024:
         values["recent_failures"] = constant_text.STATS_RECENT_IN_ACCOUNT
+        content = constant_text.STATS_TEXT.format(**values)
+    if len(content) > 1024:
+        values = {key: f"{value:.3g}" if type(value) is int and abs(value) >= 10**9 else value
+                  for key, value in values.items()}
         content = constant_text.STATS_TEXT.format(**values)
     panel = await chart_panel(message, image, content, navigation_keyboard(), edit=edit)
     if state is not None and type(getattr(panel, "message_id", None)) is int:

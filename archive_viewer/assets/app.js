@@ -401,3 +401,18 @@ if (!token) {
 $("close-media").addEventListener("click",()=>$("media-dialog").close());
 $("media-dialog").addEventListener("close",()=>{$("media-content").replaceChildren();$("media-title").textContent="";$("media-download").removeAttribute("href");disposeDetachedAnimations();});
 $("lock").addEventListener("click",()=>$("media-dialog").close());
+
+// A persistent local connection survives hidden-tab timer throttling. The server
+// exits after the last connection closes, with a grace period for page reloads.
+const browserSession = token ? new EventSource("/api/session?token=" + encodeURIComponent(token)) : null;
+for (const button of document.querySelectorAll(".exit-viewer")) button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+        await api("/api/exit", {});
+        browserSession?.close();
+        location.replace("about:blank");
+    } catch (error) {
+        button.disabled = false;
+        toast(error);
+    }
+});

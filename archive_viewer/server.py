@@ -11,22 +11,46 @@ from archive_viewer.archive import Archive
 from archive_viewer.media_types import media_mime, sticker_data
 from archive_viewer import inspection
 from archive_viewer.update_status import UpdateStatus
+from archive_viewer.lifetime import BrowserLifetime
 
 ASSETS = Path(__file__).with_name("assets")
+SESSION_PING_INTERVAL = 3
 
 
 class ViewerServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, path):
+    def __init__(self, path, *, watch_browser=False):
         super().__init__(("127.0.0.1", 0), Handler)
         self.path, self.archive = Path(path), None
         self.token = secrets.token_urlsafe(32)
         self.lock = threading.RLock()
         self.origin = f"http://127.0.0.1:{self.server_port}"
         self.updates = UpdateStatus(self)
+        self.browser_lifetime = BrowserLifetime() if watch_browser else None
+        self.stopping = threading.Event()
+
+    def request_exit(self):
+        if self.stopping.is_set():
+            return
+        self.stopping.set()
+
+        def stop():
+            with self.lock:
+                if self.archive:
+                    self.archive.close()
+                    self.archive = None
+            self.shutdown()
+
+        threading.Thread(target=stop, name="viewer-shutdown", daemon=True).start()
+
+    def service_actions(self):
+        if (self.browser_lifetime is not None and self.browser_lifetime.expired()
+                and self.updates.status()["state"] != "installing"):
+            self.request_exit()
 
     def server_close(self):
+        self.stopping.set()
         with self.lock:
             if self.archive:
                 self.archive.close()
@@ -82,6 +106,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._auth():
             self._json({"error": "Доступ запрещён"}, 403)
+            return
+        if url.path == "/api/session":
+            self._browser_session()
             return
         if url.path == "/api/application":
             self._json(self.server.updates.status())
@@ -153,6 +180,27 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 self._json({"error": "Не удалось прочитать данные. Проверьте параметры запроса и целостность архива."}, 400)
 
+    def _browser_session(self):
+        lifetime = self.server.browser_lifetime
+        if lifetime is not None:
+            lifetime.connected()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            while not self.server.stopping.is_set():
+                self.wfile.write(b": connected\n\n")
+                self.wfile.flush()
+                if self.server.stopping.wait(SESSION_PING_INTERVAL):
+                    break
+        except (OSError, ValueError):
+            pass  # Closing a tab or browser normally closes this connection.
+        finally:
+            if lifetime is not None:
+                lifetime.disconnected()
+
     def do_POST(self):
         if not self._auth() or self.headers.get("Origin", self.server.origin) != self.server.origin:
             self._json({"error": "Доступ запрещён"}, 403)
@@ -176,7 +224,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not 0 <= length <= 4096:
                     raise ValueError()
                 value = json.loads(self.rfile.read(length) or b"{}")
-                if self.path == "/api/unlock":
+                if self.path == "/api/exit":
+                    if self.server.archive:
+                        self.server.archive.close()
+                        self.server.archive = None
+                    self._json({"ok": True})
+                    self.server.request_exit()
+                elif self.path == "/api/unlock":
                     if self.server.archive:
                         self.server.archive.close()
                         self.server.archive = None

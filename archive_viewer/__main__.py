@@ -36,9 +36,9 @@ def main():
         return
     if not Path(path).is_file():
         parser.error("Файл не найден")
-    with ViewerServer(path) as server:
+    with ViewerServer(path, watch_browser=True) as server:
         url = server.origin + "/#" + server.token
-        print("Просмотрщик работает только на этом ПК. Для завершения нажмите Ctrl+C.")
+        print("Просмотрщик работает только на этом ПК. Для завершения нажмите «Выйти» или закройте вкладки просмотрщика.")
         print(url)
         webbrowser.open(url)
         try:

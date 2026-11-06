@@ -12,10 +12,11 @@ from db.repositories.history_repo import HISTORY_CHAT_LIMIT, HISTORY_PAGE_SIZE, 
 from services.history_windows import plan_window
 from services.message_service import AccountContext, save_message
 from utils.message_payload import enum_value, timestamp
+from utils.archive_policy import IGNORED_CHAT_IDS
 
 
 async def fetch_history_page(client, chat_id, window):
-    if not isinstance(chat_id, int) or chat_id <= 0:
+    if not isinstance(chat_id, int) or chat_id <= 0 or chat_id in IGNORED_CHAT_IDS:
         return None
     observed_ids, messages = [], []
     # Kurigram's public bounds are inclusive; pagination and parsing belong to the SDK.
@@ -38,6 +39,9 @@ async def backfill_account(bot, client, account, repository, *, fetch_page=fetch
     account = await repository.claim(account.uuid)
     if account is None:
         return
+    from services.archive_cleanup import classify_legacy_chats
+
+    await classify_legacy_chats(client, account, repository)
     await repository.seed(account, bot.id)
     context = AccountContext.from_account(account)
     if context is None:

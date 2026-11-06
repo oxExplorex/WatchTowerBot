@@ -28,11 +28,12 @@ from db.main import (
 from loader import bot, session_manager
 from utils.datetime_tools import DateTime
 from utils.others import get_user_log_text
-from utils.telegram_helpers import is_bot_or_channel
 from services.notification_topics import send_account_log
 from db.repositories.history_repo import HistoryRepository
 from db.session import get_session_factory
 from utils.message_payload import enum_value
+from utils.archive_policy import IGNORED_CHAT_IDS, archive_allowed, chat_kind
+from db.repositories.chat_policy_repo import ChatPolicyRepository
 
 scheduler = AsyncIOScheduler()
 FULL_SCAN_FORCE_INTERVAL_SEC = 60 * 60 * 24
@@ -203,13 +204,15 @@ async def _scan_session(app_session):
 
         bot_logger.info(f"FULL SCAN USER: {user_id} | dialogs_count={total_dialogs}")
 
-        existing_chat_ids = {x.chat_id for x in await get_dump_chat_admin_all(user_id)}
+        existing_chat_ids = {x.chat_id for x in await get_dump_chat_admin_all(user_id)
+                             if x.chat_id > 0 and x.chat_id not in IGNORED_CHAT_IDS}
         current_chat_ids = set()
         seen_chat_ids = set()
         new_chats = []
         filtered_out_count = 0
         history_heads = {}
         avatar_peers = []
+        observed_chats = []
 
         try:
             scanned_count = 0
@@ -221,15 +224,18 @@ async def _scan_session(app_session):
                 chat = dialog.chat
                 chat_id = chat.id
                 seen_chat_ids.add(chat_id)
+                if chat_id in IGNORED_CHAT_IDS:
+                    filtered_out_count += 1
+                    continue
+                observed_chats.append(chat)
+                if not archive_allowed(chat_id, chat_kind(chat)):
+                    filtered_out_count += 1
+                    continue
                 top = getattr(dialog, "top_message", None)
                 if enum_value(getattr(chat, "type", None)) == "private" and chat_id != getattr(bot, "id", None):
                     history_heads[chat_id] = int(getattr(top, "id", 0) or 0)
-                if enum_value(getattr(chat, "type", None)) in {"private", "bot"} and chat_id != getattr(bot, "id", None):
+                if enum_value(getattr(chat, "type", None)) == "private" and chat_id != getattr(bot, "id", None):
                     avatar_peers.append(chat)
-
-                if not account_settings.alert_bot and is_bot_or_channel(chat):
-                    filtered_out_count += 1
-                    continue
 
                 username = chat.username
                 chat_name = chat.full_name or chat.title
@@ -250,6 +256,12 @@ async def _scan_session(app_session):
                 bot_logger.warning(f"get_dialogs error: {exc}")
             return
 
+        policies = ChatPolicyRepository(get_session_factory)
+        await policies.observe(user_id, observed_chats)
+        from services.archive_cleanup import classify_legacy_chats
+
+        await classify_legacy_chats(app_session, account_settings, history)
+        existing_chat_ids -= await policies.excluded_ids(user_id)
         await history.observe_heads(account_settings.uuid, history_heads)
         if avatar_peers:
             try:

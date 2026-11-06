@@ -79,7 +79,10 @@ async def test_unknown_delete_and_late_original_do_not_resurrect_message(db_main
 async def test_unlocated_deletion_only_resolves_in_correct_namespace(db_main):
     store = db_main.messages_repository
     await store.record_unlocated_deletion(owner_id=123, account_user_id=456, message_id=12)
-    await store.record(**event(message_id=12, chat_id=-100111, channel_namespace=True))
+    # A legacy channel row may still exist before automatic cleanup runs.
+    async with db_main.get_session_factory()() as session, session.begin():
+        session.add(StoredMessage(owner_id=123, account_user_id=456, chat_id=-100111,
+            message_id=12, channel_namespace=True, first_seen_at=1))
     await store.record(**event(message_id=12, chat_id=789, event_key="private"))
     records = await rows(db_main, StoredMessage)
     assert next(row for row in records if row.chat_id == 789).is_deleted

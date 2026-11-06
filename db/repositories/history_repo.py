@@ -10,6 +10,8 @@ from db.personal_models import OwnerArchiveKey
 from db.repositories.account_locks import lock_account, unique_account
 from db.repositories.base import conflict_insert
 from services.history_windows import merge_ranges
+from utils.archive_policy import IGNORED_CHAT_IDS
+from db.chat_policy_models import ArchiveChatPolicy
 
 HISTORY_INTERVAL = 20 * 60
 HISTORY_CHAT_LIMIT = 10
@@ -86,11 +88,15 @@ class HistoryRepository:
         async with self._session_factory()() as session, session.begin():
             heads = dict((await session.execute(select(StoredMessage.chat_id, func.max(StoredMessage.message_id)).where(
                 StoredMessage.owner_id == account.admin_id, StoredMessage.account_user_id == account.user_id,
-                StoredMessage.chat_id > 0, StoredMessage.chat_id != bot_id
+                StoredMessage.chat_id > 0, StoredMessage.chat_id != bot_id,
+                StoredMessage.chat_id.not_in(IGNORED_CHAT_IDS)
             ).group_by(StoredMessage.chat_id))).all())
             dump_chats = set(await session.scalars(select(DumpChatUser.chat_id).where(
-                DumpChatUser.admin_id == account.user_id, DumpChatUser.chat_id > 0, DumpChatUser.chat_id != bot_id)))
-            chats = dump_chats | heads.keys()
+                DumpChatUser.admin_id == account.user_id, DumpChatUser.chat_id > 0, DumpChatUser.chat_id != bot_id,
+                DumpChatUser.chat_id.not_in(IGNORED_CHAT_IDS))))
+            excluded = set(await session.scalars(select(ArchiveChatPolicy.chat_id).where(
+                ArchiveChatPolicy.account_user_id == account.user_id, ArchiveChatPolicy.kind != "private")))
+            chats = (dump_chats | heads.keys()) - excluded
             bot_logger.debug("History seed: account_uuid=%s owner_id=%s account_user_id=%s dump_admin_id=%s dump_chats=%s stored_chats=%s",
                 account.uuid, account.admin_id, account.user_id, account.user_id, len(dump_chats), len(heads))
             await self._observe(session, account.uuid, {chat: heads.get(chat, 0) for chat in chats}, source="seed")
@@ -99,7 +105,7 @@ class HistoryRepository:
     async def _observe(session, account_uuid, heads, *, source):
         from core.logging import bot_logger
 
-        items = list(heads.items())
+        items = [(chat, top) for chat, top in heads.items() if chat not in IGNORED_CHAT_IDS]
         for offset in range(0, len(items), 100):
             values = [dict(account_uuid=account_uuid, chat_id=chat, known_top_id=top)
                       for chat, top in items[offset:offset + 100]]
@@ -122,7 +128,11 @@ class HistoryRepository:
             # intervals so neither Telegram recency nor numeric IDs select the batch.
             last_attempt_interval = HistoryChat.last_attempt_at // HISTORY_INTERVAL
             return list(await session.scalars(select(HistoryChat).where(
-                HistoryChat.account_uuid == account_uuid, HistoryChat.excluded == False, HistoryChat.retry_at <= now
+                HistoryChat.account_uuid == account_uuid, HistoryChat.excluded == False, HistoryChat.retry_at <= now,
+                HistoryChat.chat_id.not_in(IGNORED_CHAT_IDS), ~exists().where(
+                    ArchiveChatPolicy.account_user_id == select(HistoryRun.account_user_id).where(
+                        HistoryRun.account_uuid == account_uuid).scalar_subquery(),
+                    ArchiveChatPolicy.chat_id == HistoryChat.chat_id, ArchiveChatPolicy.kind != "private")
             ).order_by(last_attempt_interval, func.random()).limit(HISTORY_CHAT_LIMIT)))
 
     async def ranges(self, account_uuid, chat_id):

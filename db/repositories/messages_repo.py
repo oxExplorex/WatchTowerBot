@@ -6,7 +6,7 @@ import hashlib
 import time
 from uuid import UUID
 
-from sqlalchemy import BigInteger, case, exists, func, literal, select
+from sqlalchemy import BigInteger, case, exists, func, literal, or_, select, union
 
 from db.message_models import MessageReceipt, MessageRevision, PendingMessageDeletion, StoredMessage
 from db.models import DumpChatUser, HistoryUser
@@ -16,6 +16,9 @@ from db.repositories.personal_repo import lock_owner
 from db.repositories.account_locks import lock_account, unique_account
 from db.account_operation_models import AccountOperation
 from core.personal_crypto import context, live_fingerprint, open_text, seal_text
+from db.chat_policy_models import ArchiveChatPolicy
+from db.repositories.chat_policy_repo import observe_policies
+from utils.archive_policy import IGNORED_CHAT_IDS, archive_allowed
 from utils.crypto_store import decrypt_text, encrypt_text, message_fingerprint
 
 
@@ -45,7 +48,7 @@ class MessagesRepository:
 
     async def statistics(self, owner_id):
         from db.media_models import MessageAttachment
-        from db.history_models import HistoryChat
+        from db.history_models import HistoryChat, HistoryRange
         from db.models import Account
 
         scope = (StoredMessage.owner_id == owner_id, StoredMessage.chat_id > 0)
@@ -59,20 +62,47 @@ class MessagesRepository:
             result = dict(row._mapping)
             result["revisions"] = await session.scalar(select(func.count()).select_from(MessageRevision)
                 .join(StoredMessage, StoredMessage.uuid == MessageRevision.message_uuid).where(*scope))
+            result["content_bytes"] = await session.scalar(select(func.coalesce(func.sum(func.length(MessageRevision.payload)), 0))
+                .join(StoredMessage, StoredMessage.uuid == MessageRevision.message_uuid).where(*scope))
+            stored_chats = select(StoredMessage.account_user_id, StoredMessage.chat_id).where(*scope).distinct()
+            result["chats_with_messages"] = await session.scalar(select(func.count()).select_from(stored_chats.subquery()))
+            known_chats = union(stored_chats, select(Account.user_id, DumpChatUser.chat_id).join(
+                DumpChatUser, DumpChatUser.admin_id == Account.user_id).where(
+                    Account.admin_id == owner_id, DumpChatUser.chat_id > 0))
+            result["chats"] = await session.scalar(select(func.count()).select_from(known_chats.subquery()))
             attachments = (await session.execute(select(MessageAttachment.status, func.count()).join(
                 MessageRevision, MessageRevision.uuid == MessageAttachment.revision_uuid).join(
                 StoredMessage, StoredMessage.uuid == MessageRevision.message_uuid
             ).where(*scope).group_by(MessageAttachment.status))).all()
             statuses = dict(attachments)
+            result["attachments"] = sum(statuses.values())
+            result["content_bytes"] += await session.scalar(select(func.coalesce(func.sum(func.length(MessageAttachment.sources)), 0))
+                .join(MessageRevision, MessageRevision.uuid == MessageAttachment.revision_uuid)
+                .join(StoredMessage, StoredMessage.uuid == MessageRevision.message_uuid).where(*scope))
             result.update(media_stored=statuses.get("stored", 0),
                           media_pending=statuses.get("pending", 0) + statuses.get("downloading", 0),
                           media_failed=statuses.get("failed", 0))
-            total, reached = (await session.execute(select(func.count(), func.coalesce(func.sum(case(
-                (HistoryChat.reached_start, 1), else_=0)), 0)).select_from(HistoryChat).join(
+            checked = or_(HistoryChat.reached_start, exists().where(
+                HistoryRange.account_uuid == HistoryChat.account_uuid, HistoryRange.chat_id == HistoryChat.chat_id))
+            total, reached, inspected = (await session.execute(select(func.count(), func.coalesce(func.sum(case(
+                (HistoryChat.reached_start, 1), else_=0)), 0), func.coalesce(func.sum(case((checked, 1), else_=0)), 0))
+                .select_from(HistoryChat).join(
                 Account, Account.uuid == HistoryChat.account_uuid
             ).where(Account.admin_id == owner_id, Account.is_active == 1, HistoryChat.excluded == False))).one()
-            result.update(history_chats=total, history_reached=reached)
+            result.update(history_chats=total, history_reached=reached, history_checked=inspected)
             return result
+
+    async def media_references(self, owner_id):
+        from db.avatar_models import ChatAvatar
+        from db.media_models import MessageAttachment
+
+        attachments = select(MessageAttachment.blob_key).join(MessageRevision).join(StoredMessage).where(
+            StoredMessage.owner_id == owner_id, MessageAttachment.owner_id == owner_id,
+            MessageAttachment.status == "stored", MessageAttachment.blob_key.is_not(None))
+        avatars = select(ChatAvatar.blob_key).where(ChatAvatar.owner_id == owner_id,
+            ChatAvatar.status == "stored", ChatAvatar.blob_key.is_not(None))
+        async with self._session_factory()() as session:
+            return list(await session.scalars(union(attachments, avatars)))
 
     @staticmethod
     async def _lock(session, owner_id: int, account_user_id: int, message_id: int) -> None:
@@ -86,7 +116,9 @@ class MessagesRepository:
                      payload: dict | None = None, sent_at: int | None = None,
                      version_at: int | None = None, sender_id: int | None = None,
                      channel_namespace: bool = False, require_account: bool = False,
-                     historical: bool = False) -> IngestResult | None:
+                     historical: bool = False, chat_kind: str | None = None) -> IngestResult | None:
+        if channel_namespace or not archive_allowed(chat_id, chat_kind or "private"):
+            return None
         if kind not in {"new", "edit", "delete"} or message_id <= 0:
             raise ValueError("Unsupported message event")
         if kind != "delete" and payload is None:
@@ -104,6 +136,13 @@ class MessagesRepository:
                     AccountOperation.status.in_({"deleting", "removing_session", "complete"})))):
                 return None
             owner_key = await lock_owner(session, owner_id)
+            if await session.scalar(select(exists().where(ArchiveChatPolicy.chat_id == chat_id,
+                                                           ArchiveChatPolicy.kind == "bot"))):
+                return None
+            await observe_policies(session, account_user_id, [(chat_id, chat_kind or "private")])
+            policy = await session.get(ArchiveChatPolicy, (account_user_id, chat_id))
+            if policy.kind == "bot":
+                return None
             if historical:
                 if owner_key is None:
                     return None
@@ -200,7 +239,8 @@ class MessagesRepository:
                     # MTProto private/basic-group IDs share one account namespace.
                     candidates = (await session.scalars(select(StoredMessage).where(
                         StoredMessage.owner_id == owner_id, StoredMessage.account_user_id == account_user_id,
-                        StoredMessage.message_id == message_id, StoredMessage.channel_namespace == False))).all()
+                        StoredMessage.message_id == message_id, StoredMessage.channel_namespace == False,
+                        StoredMessage.chat_id > 0, StoredMessage.chat_id.not_in(IGNORED_CHAT_IDS)))).all()
                     if len(candidates) == 1:
                         row.is_deleted = True
                         row.deleted_observed_at = row.deleted_observed_at or pending.observed_at
@@ -228,7 +268,11 @@ class MessagesRepository:
             await session.execute(insert.on_conflict_do_nothing(index_elements=["owner_id", "account_user_id", "message_id"]))
             candidates = (await session.scalars(select(StoredMessage).where(
                 StoredMessage.owner_id == owner_id, StoredMessage.account_user_id == account_user_id,
-                StoredMessage.message_id == message_id, StoredMessage.channel_namespace == False).with_for_update())).all()
+                StoredMessage.message_id == message_id, StoredMessage.channel_namespace == False,
+                StoredMessage.chat_id > 0, StoredMessage.chat_id.not_in(IGNORED_CHAT_IDS), ~exists().where(
+                    ArchiveChatPolicy.account_user_id == account_user_id,
+                    ArchiveChatPolicy.chat_id == StoredMessage.chat_id, ArchiveChatPolicy.kind != "private")
+                ).with_for_update())).all()
             if len(candidates) == 1:
                 pending = await session.scalar(select(PendingMessageDeletion).filter_by(
                     owner_id=owner_id, account_user_id=account_user_id, message_id=message_id))

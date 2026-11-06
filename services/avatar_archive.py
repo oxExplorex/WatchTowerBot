@@ -11,6 +11,7 @@ from db.session import get_session_factory
 from pyrogram.errors import FloodWait
 from services.media_archive import resolve_media_client, SourceUnavailable
 from utils.crypto_store import decrypt_text
+from utils.archive_policy import IGNORED_CHAT_IDS, chat_kind
 
 
 async def archive_avatar(bot, repository, store, item, *, resolve_client=resolve_media_client,
@@ -59,7 +60,9 @@ async def archive_avatar(bot, repository, store, item, *, resolve_client=resolve
 
 
 async def collect_chat_avatar(bot, client, account, chat_id, *, repository=None, store=None, limits=None):
-    """One public get_chat request and at most one encrypted photo, within shared limits."""
+    """Refresh the current photo and advance its history within shared limits."""
+    if chat_id in IGNORED_CHAT_IDS:
+        return
     repository = repository or AvatarsRepository(get_session_factory)
     store = store or MediaStore.from_environment()
     limits = limits or HistoryRepository(get_session_factory)
@@ -67,7 +70,11 @@ async def collect_chat_avatar(bot, client, account, chat_id, *, repository=None,
         return
     try:
         chat = await client.get_chat(chat_id)
+        if chat_kind(chat) != "private":
+            return
         await repository.observe(account.admin_id, account.user_id, [chat], require_account=True, authoritative=True)
+        if callable(getattr(client, "get_chat_photos", None)):
+            await collect_avatar_history(client, account, chat, repository, limits)
         item = await repository.claim(account_id=account.user_id, owner_id=account.admin_id)
         if item is not None:
             await archive_avatar(bot, repository, store, item, limits=limits,
@@ -78,6 +85,33 @@ async def collect_chat_avatar(bot, client, account, chat_id, *, repository=None,
     except Exception as error:
         bot_logger.debug("Avatar refresh deferred: account_user_id=%s peer_id=%s error=%s",
                          account.user_id, chat_id, type(error).__name__)
+
+
+async def collect_avatar_history(client, account, chat, repository, limits):
+    progress = await repository.claim_history(account.admin_id, account.user_id, chat)
+    if progress is None:
+        return
+    photos = []
+    try:
+        # The public method has no offset. Repeat only the bounded metadata prefix
+        # after restart; persisted photo identities prevent duplicate occurrences
+        # and the encrypted download queue reuses already stored bytes.
+        async with asyncio.timeout(60):
+            async for photo in client.get_chat_photos(chat.id, limit=progress.next_limit):
+                photos.append(photo)
+                if len(photos) >= progress.next_limit:
+                    break
+        await repository.finish_history(progress, photos, observed_count=len(photos))
+    except asyncio.CancelledError:
+        await repository.finish_history(progress, photos, observed_count=len(photos), delay=30)
+        raise
+    except FloodWait as error:
+        await limits.defer(account.user_id, int(error.value) + 5)
+        await repository.finish_history(progress, photos, observed_count=len(photos), delay=int(error.value) + 5)
+    except Exception as error:
+        await repository.finish_history(progress, photos, observed_count=len(photos), delay=3600)
+        bot_logger.debug("Avatar history deferred: account_user_id=%s peer_id=%s error=%s",
+                         account.user_id, chat.id, type(error).__name__)
 
 
 async def _client(client):

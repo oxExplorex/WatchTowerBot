@@ -9,6 +9,16 @@ from data.texts.runtime_status import SESSION_ERRORS, STARTUP_FAILED
 from utils.datetime_tools import DateTime
 
 
+def format_archive_bytes(value):
+    size = max(0, int(value))
+    units = constant_text.STATS_SIZE_UNITS
+    for unit in units[:-1]:
+        if size < 1024:
+            return f"{size:.0f} {unit}" if unit == units[0] else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} {units[-1]}"
+
+
 def tz_offset_label(offset: int) -> str:
     sign = "+" if int(offset) >= 0 else ""
     return f"{sign}{int(offset)}"

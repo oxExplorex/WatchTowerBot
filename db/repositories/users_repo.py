@@ -13,6 +13,7 @@ from db.admin_models import AdminGrant
 from db.repositories.base import BaseRepository
 from db.repositories.user_records import get_user_for_update
 from utils.crypto_store import blind_index, decrypt_text, encrypt_text, is_encrypted
+from utils.archive_policy import IGNORED_CHAT_IDS
 
 
 class UsersRepository(BaseRepository):
@@ -60,6 +61,8 @@ class UsersRepository(BaseRepository):
         full_name: str | None,
         session: AsyncSession | None = None,
     ) -> None:
+        if user_id <= 0 or user_id in IGNORED_CHAT_IDS:
+            return
         async with self._session(session) as lease:
             user = await get_user_for_update(lease.session, user_id)
             old_username = decrypt_text(user.username)

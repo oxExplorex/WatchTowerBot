@@ -711,6 +711,8 @@ async def test_stats_are_one_chart_panel_and_home_removes_the_old_photo(setup_fl
         chart = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageMedia))
         assert chart.message_id == panel_id
         assert len(chart.media.caption) < 1024 and "0.0%" not in chart.media.caption
+        assert "Чатов:" in chart.media.caption and "Файлов:" in chart.media.caption
+        assert "История проверена:" in chart.media.caption and "всего ≈" in chart.media.caption
         assert chart.media.media.data.startswith(b"\x89PNG")
     await flow.feed(callback="panel:home", panel_id=panel_id)
     replacement = (await flow.state().get_data())["panel_message_id"]

@@ -212,3 +212,47 @@ async def test_history_refresh_downloads_only_current_owners_avatar(db_main, tmp
     async with db_main.get_session_factory()() as session:
         rows = {row.owner_id: row.status for row in await session.scalars(select(ChatAvatar))}
     assert rows == {123: "stored", 999: "pending"}
+
+
+@pytest.mark.asyncio
+async def test_all_available_avatar_metadata_resumes_without_duplicates_or_replacing_current_photo(db_main, offline_module):
+    from db.avatar_models import AvatarHistoryScan
+    module = offline_module("services/avatar_archive.py")
+    await PersonalKeyRepository(db_main.get_session_factory).install(123, create_key_bundle(123, "АватарАрхива123"))
+    await db_main.create_app_tg(123, 12345, "synthetic", "app")
+    app = (await db_main.get_app_tg_user_id(123))[0][0]
+    await db_main.create_account_tg(123, 456, app.uuid, "79000000001")
+    account = SimpleNamespace(user_id=456, admin_id=123)
+    photos = [SimpleNamespace(small_file_id=f"synthetic-photo-{i}", small_photo_unique_id=f"unique-{i}")
+              for i in range(25)]
+    chat = SimpleNamespace(id=789, type="private", photo=photos[0])
+    repository = AvatarsRepository(db_main.get_session_factory)
+    await repository.observe(123, 456, [chat], require_account=True, authoritative=True)
+    calls = []
+    async def get_photos(peer, limit):
+        assert peer == 789
+        calls.append(limit)
+        for photo in photos[:limit]:
+            yield photo
+    client = SimpleNamespace(get_chat_photos=get_photos)
+    limits = SimpleNamespace(defer=AsyncMock())
+    await module.collect_avatar_history(client, account, chat, repository, limits)
+    async with db_main.get_session_factory()() as session, session.begin():
+        assert len(list(await session.scalars(select(ChatAvatar)))) == 20
+        progress = await session.get(AvatarHistoryScan, (123, 456, 789))
+        assert progress.next_limit == 40
+        progress.next_attempt_at = 0
+    # A new repository simulates a restarted worker. Already observed photos are retained.
+    repository = AvatarsRepository(db_main.get_session_factory)
+    await module.collect_avatar_history(client, account, chat, repository, limits)
+    await module.collect_avatar_history(client, account, chat, repository, limits)
+    assert calls == [20, 40]
+    async with db_main.get_session_factory()() as session:
+        rows = list(await session.scalars(select(ChatAvatar)))
+        assert len(rows) == 25
+        current = [row for row in rows if row.ended_at is None]
+        from utils.crypto_store import message_fingerprint
+        assert len(current) == 1 and current[0].photo_key == message_fingerprint("avatar:unique-0")
+        assert all(not row.file_id.startswith("synthetic-photo-") for row in rows)
+    assert await repository.claim_history(999, 456, chat) is None
+    assert await repository.claim_history(123, 456, SimpleNamespace(id=777000, type="private")) is None

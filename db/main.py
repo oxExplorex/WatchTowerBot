@@ -62,6 +62,13 @@ async def connect_database() -> None:
     await run_db_migrations(db_settings=db_settings, configured_admin_ids=admin_id_list)
     await connect_engine(db_settings.connection_string)
     try:
+        from db.repositories.ignored_chats_repo import purge_ignored_chats
+
+        removed = await purge_ignored_chats(get_session_factory)
+        if removed:
+            from core.logging import bot_logger
+
+            bot_logger.info("Ignored chat cleanup: messages_removed=%s", removed)
         if not _ENCRYPTION_BACKFILL_DONE:
             await run_encryption_backfill()
             _ENCRYPTION_BACKFILL_DONE = True
@@ -365,7 +372,9 @@ async def get_accounts_overview(admin_id: int) -> dict[str, int]:
 
 
 async def get_archive_statistics(owner_id: int) -> dict[str, int]:
-    return await messages_repository.statistics(owner_id)
+    from services.archive_statistics import archive_statistics
+
+    return await archive_statistics(messages_repository, owner_id)
 
 
 async def get_runtime_health(owner_id: int, since: int):

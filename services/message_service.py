@@ -11,6 +11,8 @@ from utils.message_payload import channel_namespace, message_payload, timestamp
 from utils.chat_notifications import get_user_log_text
 from utils.telegram_helpers import is_bot_or_channel
 from services.notification_topics import send_account_log
+from services.archive_policy import assess_chat
+from utils.archive_policy import IGNORED_CHAT_IDS
 
 
 @dataclass(frozen=True)
@@ -58,7 +60,8 @@ async def _notify_new_chat(bot, context: AccountContext, chat, *, source="unknow
 async def save_message(bot, context: AccountContext, message, *, source: str, kind: str,
                        event_key: str | None = None, historical: bool = False):
     async with account_guard(context.account_user_id):
-        return await _save_message(bot, context, message, source=source, kind=kind, event_key=event_key, historical=historical)
+        return await _save_message(bot, context, message, source=source, kind=kind, event_key=event_key,
+                                   historical=historical)
 
 
 async def _save_message(bot, context, message, *, source, kind, event_key, historical):
@@ -67,6 +70,10 @@ async def _save_message(bot, context, message, *, source, kind, event_key, histo
         return None
     # Never archive passwords/login codes sent to the control bot itself.
     if message.chat.id == bot.id:
+        return None
+    eligibility = await assess_chat(context.account_user_id, message.chat,
+                                    sender=getattr(message, "from_user", None))
+    if eligibility is None:
         return None
     payload = message_payload(message)
     sent_at = timestamp(getattr(message, "date", None))
@@ -80,7 +87,8 @@ async def _save_message(bot, context, message, *, source, kind, event_key, histo
         event_key=f"{event_key}:{message_id}", kind=kind, payload=payload,
         sent_at=sent_at, version_at=version_at,
         sender_id=getattr(getattr(message, "from_user", None), "id", None),
-        channel_namespace=channel_namespace(message.chat), require_account=context.require_account, **archive_options)
+        channel_namespace=channel_namespace(message.chat), require_account=context.require_account,
+        chat_kind=eligibility, **archive_options)
     if result is not None and result.new_chat:
         await _notify_new_chat(bot, replace(context, owner_id=result.owner_id or context.owner_id), message.chat, source=source)
     if result is not None and message.chat.id > 0 and not channel_namespace(message.chat):
@@ -102,18 +110,22 @@ async def delete_message(bot, context: AccountContext, message_id: int, *, sourc
 
 
 async def _delete_message(bot, context, message_id, *, source, chat, event_key):
-    if chat is not None and chat.id == bot.id:
+    if chat is not None and (chat.id == bot.id or chat.id in IGNORED_CHAT_IDS):
         return None
     if chat is None:
         await messages_repository.record_unlocated_deletion(
             owner_id=context.owner_id, account_user_id=context.account_user_id, message_id=message_id,
             require_account=context.require_account)
         return None
+    eligibility = await assess_chat(context.account_user_id, chat)
+    if eligibility is None:
+        return None
     result = await messages_repository.record(
         owner_id=context.owner_id, account_user_id=context.account_user_id,
         chat_id=chat.id, message_id=message_id, source=source,
         event_key=f"{event_key or 'delete'}:{message_id}", kind="delete",
-        channel_namespace=channel_namespace(chat), require_account=context.require_account)
+        channel_namespace=channel_namespace(chat), require_account=context.require_account,
+        chat_kind=eligibility)
     if result is not None and result.new_chat:
         await _notify_new_chat(bot, replace(context, owner_id=result.owner_id or context.owner_id), chat, source=source)
     return result

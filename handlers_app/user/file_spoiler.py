@@ -15,6 +15,8 @@ from core.logging import bot_logger
 from core.session_runtime import session_number_from_client
 from db.main import get_account_by_number
 from loader import bot
+from utils.archive_policy import IGNORED_CHAT_IDS
+from services.archive_policy import assess_chat
 
 SEND_TIMEOUT_SECONDS = 180
 SEND_ATTEMPTS = 3
@@ -107,7 +109,7 @@ async def _send_media_with_retry(chat_id: int, file_path: str, kind: str, captio
 
 @tracked_job
 async def file_spoiler_handler(client: Client, message: Message):
-    if getattr(getattr(message, "chat", None), "id", None) == bot.id:
+    if getattr(getattr(message, "chat", None), "id", None) in {bot.id, *IGNORED_CHAT_IDS}:
         return
     session_number = session_number_from_client(client)
     if not session_number:
@@ -118,6 +120,9 @@ async def file_spoiler_handler(client: Client, message: Message):
         return
 
     if not int(getattr(account, "alert_spoiler_media", 1) or 0):
+        return
+    if await assess_chat(account.user_id, message.chat,
+                         sender=getattr(message, "from_user", None)) is None:
         return
 
     temp_path = None

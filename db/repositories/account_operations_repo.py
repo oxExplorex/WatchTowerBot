@@ -231,6 +231,11 @@ class AccountOperationsRepository:
                 if not await erase_account_archive(session, operation):
                     return False
             # Ordinary disconnect leaves the archive entirely untouched.
+            from db.avatar_models import AvatarHistoryScan
+
+            await session.execute(delete(AvatarHistoryScan).where(
+                AvatarHistoryScan.owner_id == operation.owner_id,
+                AvatarHistoryScan.account_user_id == operation.account_user_id))
             await session.execute(delete(Account).where(Account.uuid == operation.account_uuid))
             operation.status = "removing_session"
             operation.updated_at = int(time.time())

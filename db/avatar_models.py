@@ -24,3 +24,14 @@ class ChatAvatar(SQLModel, table=True):
     updated_at: int = Field(default=0, sa_type=BigInteger)
     first_seen_at: int = Field(default=0, sa_type=BigInteger)  # Microseconds, observation time.
     ended_at: int | None = Field(default=None, sa_type=BigInteger)
+
+
+class AvatarHistoryScan(SQLModel, table=True):
+    __tablename__ = "avatar_history_scan"
+    owner_id: int = Field(primary_key=True, sa_type=BigInteger)
+    account_user_id: int = Field(primary_key=True, sa_type=BigInteger)
+    user_id: int = Field(primary_key=True, sa_type=BigInteger)
+    head_key: str
+    next_limit: int = 20
+    next_attempt_at: int = Field(default=0, sa_type=BigInteger)
+    lease_token: UUID | None = None
