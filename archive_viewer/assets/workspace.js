@@ -23,16 +23,63 @@ function factList(pairs) {
 function mediaGallery(items) {
     const grid = node("div", "gallery");
     for (const item of items) {
-        const button = node("button", ""); button.title = item.name;
-        if (item.available && (item.preview === "photo" || item.kind === "photo")) {
-            const image = node("img", ""); image.src = mediaURL(item.id); image.loading = "lazy"; image.alt = item.name;
+        const button = node("button", "gallery-tile"); button.title = item.name;
+        const kind = item.preview || item.kind;
+        if(item.available && kind === "photo") {
+            const image=node("img", "");image.src=mediaURL(item.id);image.loading="lazy";image.alt=item.name;
             button.append(image);
-        } else button.append(node("small", "", (item.available ? "▦ " : "◌ ") + item.name));
-        button.addEventListener("click", () => openMedia(item));
-        grid.append(button);
+        } else if(item.available && ["video","video_note","animation"].includes(kind)) {
+            const video=node("video","gallery-video"),badge=node("span","duration-badge",durationLabel(item.duration));
+            video.muted=video.playsInline=true;
+            if(kind==="video_note")video.classList.add("round-video");
+            video.addEventListener("error",()=>{video.replaceWith(node("small","",item.name));},{once:true});
+            button.append(video,badge);prepareVideoPreview(video,item,badge);
+        } else if(item.available && kind === "sticker") {
+            const sticker=node("div","gallery-sticker");button.append(sticker);showSticker(sticker,item);
+        } else button.append(node("small", "", (item.available ? "" : "Не скачано · ") + item.name));
+        button.addEventListener("click", () => openMedia(item));grid.append(button);
     }
     return grid;
 }
+function linkCards(items) {
+    const list=node("div","link-list");let day=null;
+    for(const item of items) {
+        const date=item.time?new Date(item.time*1000).toLocaleDateString():"Дата неизвестна";
+        if(date!==day){list.append(node("h4","link-day",date));day=date;}
+        const card=node("a","link-card"),copy=node("span","link-copy");
+        card.href=item.url;card.target="_blank";card.rel="noreferrer noopener";
+        const initial=node("span","link-avatar",Array.from(item.domain.replace(/^www\./,""))[0]?.toUpperCase()||"↗");
+        copy.append(node("strong","",item.domain),node("span","link-excerpt",item.text),node("span","link-url",item.url));
+        card.append(initial,copy);list.append(card);
+    }
+    if(!items.length)list.append(node("p","","В последних сохранённых сообщениях ссылок нет."));
+    return list;
+}
+async function openAvatarHistory() {
+    const chat=requireChat();if(!chat)return;
+    const content=node("section","avatar-timeline");showWorkspace("История аватарок · "+chat.name,[content]);
+    const requestGeneration=generation;
+    try {
+        const entries=await api("/api/avatars?chat="+encodeURIComponent(chat.key));
+        if(requestGeneration!==generation||!content.isConnected)return;
+        if(!entries.length)content.append(node("p","","В этот дамп аватарки ещё не попали."));
+        for(const item of entries) {
+            const row=node("article","avatar-history-row"),copy=node("div","");
+            if(item.available){
+                const photo=node("a","avatar-history-photo");photo.href="/api/avatar/"+encodeURIComponent(item.id)+"?token="+encodeURIComponent(token);
+                photo.target="_blank";photo.rel="noreferrer noopener";
+                const image=node("img","");image.src=photo.href;image.alt="Сохранённая аватарка";image.loading="lazy";photo.append(image);row.append(photo);
+            }
+            copy.append(node("strong","",item.status==="absent"?"Аватарка не видна":item.current?"Текущая аватарка":"Предыдущая аватарка"));
+            if(item.first_seen_at)copy.append(node("small","","Замечена: "+stamp(item.first_seen_at)));
+            if(item.ended_at)copy.append(node("small","","Сменена или скрыта: "+stamp(item.ended_at)));
+            if(!item.available&&item.status!=="absent")copy.append(node("small","unavailable","Фотография не успела скачаться."));
+            row.append(copy);content.append(row);
+        }
+        content.append(node("p","sample-note","Даты — время наблюдения ботом. Изменения между проверками могли остаться незамеченными."));
+    } catch(error) {if(content.isConnected)content.append(node("p","unavailable",error.message));}
+}
+$("chat-avatars").addEventListener("click",openAvatarHistory);
 window.refreshInspector = async chat => {
     inspectorChat = chat; inspectorData = null;
     $("inspector-content").replaceChildren(node("p", "", "Собираю сведения…"));
@@ -45,16 +92,16 @@ window.refreshInspector = async chat => {
         name.append(node("strong","",chat.name),node("small","","Telegram · ID " + chat.id));
         profile.append(avatarNode(chat.avatar,chat.name),name);
         const parts = [profile,node("h3","","Данные"), factList([["Аккаунт",chat.account],["Сообщения",data.messages],
-            ["Сохранённые версии",data.revisions],["Изменены",data.edited],["Удалены",data.deleted]]),node("h3","","Пересечения архива")];
-        if(!chat.avatar) parts.push(node("small","avatar-note","Аватарка не сохранена в этом дампе."));
+            ["Сохранённые версии",data.revisions],["Изменены",data.edited],["Удалены",data.deleted]])];
+        const avatars=node("button","avatar-history-button","Аватарки · история");avatars.addEventListener("click",openAvatarHistory);parts.push(avatars);
+        parts.push(node("h3","","Пересечения архива"));
         parts.push(node("p","",data.shared.length ? "Этот участник встречается ещё в " + data.shared.length + " сохранённых переписках." : "Других переписок с этим участником не найдено."));
         parts.push(node("small","","Это пересечения сохранённых участников, не список друзей Telegram."));
-        parts.push(node("h3","","Ссылки и частые слова"));
+        const details=node("details","link-details"),summary=node("summary","","Ссылки и частые слова");
         const words=node("div","keyword-list");
-        for(const [word,count] of data.keywords){const b=node("button","",word+" · "+count);b.addEventListener("click",()=>{ $("filter-query").value=word;applyFilters(); });words.append(b);}
-        parts.push(words);
-        for(const url of data.links.slice(0,5)){const link=node("a","",url);link.href=url;link.target="_blank";link.rel="noreferrer noopener";parts.push(link);}
-        parts.push(node("small","","Слова, ссылки и превью: последние " + data.sample_messages + " сообщений."),node("h3","","Медиа и файлы · " + data.media_total),mediaGallery(data.gallery.slice(-12).reverse()));
+        for(const [word,count] of data.keywords){const button=node("button","",word+" · "+count);button.addEventListener("click",()=>{$("filter-query").value=word;applyFilters();});words.append(button);}
+        details.append(summary,words,linkCards(data.links),node("small","sample-note","Слова и ссылки: последние " + data.sample_messages + " сообщений."));parts.push(details);
+        parts.push(node("h3","","Медиа и файлы · " + data.media_total),mediaGallery(data.gallery.slice(-12).reverse()));
         $("inspector-content").replaceChildren(...parts);
     } catch(error) {
         if(requestGeneration === generation && selected === chat.key)

@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from core.backup_format import BackupReader, BLOB_FRAME, JSON_FRAME, MAGIC, MAX_HEADER, InvalidBackup
 from core.backup_parts import MAX_PARTS, PART_SIZE, parse_part_name
 from core.personal_crypto import context, open_text, unwrap_key
+from core.avatar_records import validate_avatar_history
 from archive_viewer.media_types import preview_kind
 
 MAX_METADATA = 256 * 1024 * 1024
@@ -86,6 +87,7 @@ class Archive:
         self._cache = None
         self.by_revision = {}
         self.avatars = {}
+        self.avatar_history = {}
 
     @classmethod
     def open(cls, path, secret):
@@ -105,6 +107,7 @@ class Archive:
         self.by_revision.clear()
         self.blobs.clear()
         self.avatars.clear()
+        self.avatar_history.clear()
         self.chats = {}
         self._cache = None
         self.private_key = None
@@ -173,6 +176,10 @@ class Archive:
                             or not re.fullmatch(r"[0-9a-f]{64}", item.get("blob_key", ""))):
                         raise InvalidBackup("Invalid avatar")
                     self.avatars[f'{item["account_user_id"]}:{item["user_id"]}'] = item["blob_key"]
+                elif tag == "avatar_history":
+                    validate_avatar_history(item)
+                    key = f'{item["account_user_id"]}:{item["user_id"]}'
+                    self.avatar_history.setdefault(key, []).append(item)
                 elif tag == "summary":
                     summary = True
                 elif tag != "coverage":
@@ -185,6 +192,17 @@ class Archive:
             revisions.sort(key=lambda row: (row["version_at"], row["revision_no"]))
         for item in self.attachments.values():
             self.by_revision.setdefault(item["revision_uuid"], []).append(item)
+        for key, records in self.avatar_history.items():
+            if sum(item["ended_at"] is None for item in records) > 1:
+                raise InvalidBackup("Multiple current avatars")
+            self.avatars.pop(key, None)
+            for item in records:
+                if item["blob_key"]:
+                    if item["blob_key"] not in self.blobs:
+                        raise InvalidBackup("Missing avatar bytes")
+                    self.avatars[item["uuid"]] = item["blob_key"]
+                    if item["ended_at"] is None:
+                        self.avatars[key] = item["blob_key"]
         self.chats = {}
         for row in self.messages.values():
             key = f'{row["account_user_id"]}:{row["chat_id"]}'
@@ -212,8 +230,11 @@ class Archive:
                           "preview": preview_kind(description.get("kind", "document"),
                               description.get("mime_type"), description.get("file_name")),
                           "name": description.get("file_name") or "Вложение",
+                          "duration": description.get("duration"),
+                          "width": description.get("width"), "height": description.get("height"),
                           "available": item["status"] == "stored" and item.get("blob_key") in self.blobs})
         return {"text": payload.get("text") or payload.get("caption") or "", "media": media,
+                "entities": payload.get("entities") or payload.get("caption_entities") or [],
                 "time": revision.get("version_at"), "kind": revision.get("kind"),
                 "observed_at": (revision.get("observed_at") or 0) / 1_000_000,
                 "revision_no": revision.get("revision_no")}
@@ -276,6 +297,18 @@ class Archive:
 
     def avatar(self, identity):
         return self._read_blob(self.avatars[identity])
+
+    def avatar_entries(self, key):
+        if key not in self.chats:
+            raise KeyError(key)
+        records = self.avatar_history.get(key, [])
+        if not records and key in self.avatars:
+            return [dict(id=key, available=True, current=True, first_seen_at=0, ended_at=None, status="stored")]
+        return [dict(id=item["uuid"], available=item["blob_key"] in self.blobs,
+                     current=item["ended_at"] is None, first_seen_at=item["first_seen_at"] / 1_000_000,
+                     ended_at=item["ended_at"] / 1_000_000 if item["ended_at"] is not None else None,
+                     status=item["status"])
+                for item in sorted(records, key=lambda item: (item["first_seen_at"], item["uuid"]), reverse=True)]
 
     def _read_blob(self, key):
         if self._cache is not None and self._cache[0] == key:

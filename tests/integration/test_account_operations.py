@@ -68,6 +68,8 @@ async def test_transfer_survives_restart_keeps_originals_and_publishes_account_o
         attachment.state_version += 1
         uow.session.add(ChatAvatar(owner_id=1001, account_user_id=2002, user_id=42,
             photo_key="synthetic-photo", status="stored", blob_key=old_blob))
+        uow.session.add(ChatAvatar(owner_id=1001, account_user_id=2002, user_id=42,
+            photo_key="previous-photo", status="stored", blob_key=old_blob, first_seen_at=1, ended_at=2))
         # A previous owner may retain an empty identity of the same Telegram message.
         uow.session.add(StoredMessage(owner_id=2002, account_user_id=2002, chat_id=42, message_id=1, first_seen_at=1))
     operation = await operations.request_transfer(data["account"].uuid, 2002, data["target_app"].uuid)
@@ -106,7 +108,9 @@ async def test_transfer_survives_restart_keeps_originals_and_publishes_account_o
         attachment = await uow.session.scalar(select(MessageAttachment))
         assert attachment.owner_id == 2002 and attachment.sources_encryption_version == 2
         new_blob = attachment.blob_key
-        avatar = await uow.session.scalar(select(ChatAvatar))
+        avatars = list(await uow.session.scalars(select(ChatAvatar)))
+        assert len(avatars) == 2 and all(avatar.owner_id == 2002 for avatar in avatars)
+        avatar = next(avatar for avatar in avatars if avatar.ended_at is None)
         assert avatar.owner_id == 2002 and avatar.blob_key == new_blob
         assert store.read(2002, avatar.blob_key, private_key=new_private) == b"synthetic encrypted attachment"
     for message in messages:

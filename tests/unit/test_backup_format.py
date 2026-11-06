@@ -30,3 +30,32 @@ def test_parts_cross_frame_boundaries_and_tampering_is_detected(tmp_path, monkey
         list(BackupReader(BytesIO(data), 123, "СекретБекапа123"))
     with pytest.raises(InvalidBackup):
         parse_part_name("../../secret.wtb")
+
+
+def test_new_reader_accepts_old_frames_and_compressed_metadata():
+    import json
+    bundle = SimpleNamespace(**create_key_bundle(123, "СекретБекапа123"))
+    stream = BytesIO()
+    writer = BackupWriter(stream, 123, bundle)
+    writer.write(JSON_FRAME, b'{"legacy":true}')
+    record = {"text": "Сохранённая переписка\n" * 1000}
+    writer.record(record)
+    writer.finish()
+    assert len(stream.getvalue()) < len(json.dumps(record).encode()) // 4
+    stream.seek(0)
+    rows = list(BackupReader(stream, 123, "СекретБекапа123"))
+    assert all(kind == JSON_FRAME for kind, _ in rows)
+    assert [json.loads(data) for _, data in rows] == [{"legacy": True}, record]
+
+
+def test_authenticated_compressed_metadata_cannot_exceed_frame_limit():
+    import zlib
+    from core.backup_format import COMPRESSED_JSON_FRAME, MAX_FRAME
+    bundle = SimpleNamespace(**create_key_bundle(123, "СекретБекапа123"))
+    stream = BytesIO()
+    writer = BackupWriter(stream, 123, bundle)
+    writer.write(COMPRESSED_JSON_FRAME, zlib.compress(b"A" * (MAX_FRAME + 1)))
+    writer.finish()
+    stream.seek(0)
+    with pytest.raises(InvalidBackup):
+        list(BackupReader(stream, 123, "СекретБекапа123"))

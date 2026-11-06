@@ -224,8 +224,8 @@ async def _scan_session(app_session):
                 top = getattr(dialog, "top_message", None)
                 if enum_value(getattr(chat, "type", None)) == "private" and chat_id != getattr(bot, "id", None):
                     history_heads[chat_id] = int(getattr(top, "id", 0) or 0)
-                    if getattr(chat, "photo", None) is not None:
-                        avatar_peers.append(chat)
+                if enum_value(getattr(chat, "type", None)) in {"private", "bot"} and chat_id != getattr(bot, "id", None):
+                    avatar_peers.append(chat)
 
                 if not account_settings.alert_bot and is_bot_or_channel(chat):
                     filtered_out_count += 1
@@ -255,7 +255,9 @@ async def _scan_session(app_session):
             try:
                 from db.repositories.avatars_repo import AvatarsRepository
                 await AvatarsRepository(get_session_factory).observe(account_settings.admin_id,
-                    user_id, avatar_peers, require_account=True)
+                    user_id, avatar_peers, require_account=True, authoritative=True)
+                from services.avatar_archive import collect_queued_avatar
+                await collect_queued_avatar(bot, app_session, account_settings)
             except Exception as error:
                 bot_logger.debug("Dialog avatars deferred: %s", type(error).__name__)
         # A fresh client must populate its peer/access-hash cache before history

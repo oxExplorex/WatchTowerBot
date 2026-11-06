@@ -108,16 +108,23 @@ async def create_backup(owner_id, root, identity, *, session_factory, store, acc
                     "oldest_message_id": progress.oldest_message_id, "known_top_id": progress.known_top_id})
             message_blobs = set(blobs)
             avatars = await session.stream_scalars(select(ChatAvatar).where(ChatAvatar.owner_id == owner_id,
-                ChatAvatar.status == "stored", ChatAvatar.blob_key.is_not(None),
                 exists(select(StoredMessage.uuid).where(*scope,
                     StoredMessage.account_user_id == ChatAvatar.account_user_id,
                     or_(StoredMessage.chat_id == ChatAvatar.user_id, StoredMessage.sender_id == ChatAvatar.user_id,
                         StoredMessage.account_user_id == ChatAvatar.user_id)).correlate(ChatAvatar))))
             async for avatar in avatars:
-                await run_blocking(writer.record, {"type": "avatar", "account_user_id": avatar.account_user_id,
-                    "user_id": avatar.user_id, "blob_key": avatar.blob_key})
-                blobs.add(avatar.blob_key)
-                counts["avatars"] += 1
+                available = avatar.status == "stored" and avatar.blob_key is not None
+                if available and avatar.ended_at is None:
+                    await run_blocking(writer.record, {"type": "avatar", "account_user_id": avatar.account_user_id,
+                        "user_id": avatar.user_id, "blob_key": avatar.blob_key})
+                await run_blocking(writer.record, {"type": "avatar_history", "uuid": str(avatar.uuid),
+                    "account_user_id": avatar.account_user_id, "user_id": avatar.user_id,
+                    "blob_key": avatar.blob_key if available else None, "photo_key": avatar.photo_key,
+                    "status": avatar.status if available or avatar.status == "absent" else "unavailable",
+                    "first_seen_at": avatar.first_seen_at, "ended_at": avatar.ended_at})
+                if available:
+                    blobs.add(avatar.blob_key)
+                    counts["avatars"] += 1
             for blob_key in sorted(blobs):
                 await run_blocking(_blob, writer, store.path(owner_id, blob_key), blob_key)
                 counts["media"] += int(blob_key in message_blobs)

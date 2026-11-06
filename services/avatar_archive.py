@@ -1,5 +1,6 @@
 """Small cached contact photos, using the existing sessions, limits and personal crypto."""
 import asyncio
+import time
 from core.logging import bot_logger
 from core.media_store import MediaStore
 from core.session_runtime import run_client_operation
@@ -27,7 +28,7 @@ async def archive_avatar(bot, repository, store, item, *, resolve_client=resolve
         # A corrupt/oversized profile photo must not use the normal 100 MiB allowance.
         avatar_store = MediaStore(store.root, max_file_bytes=min(store.max_file_bytes, 2 * 1024**2),
                                   max_total_bytes=store.max_total_bytes)
-        with avatar_store.writer(item.owner_id, public_key=public) as writer:
+        with avatar_store.writer(item.owner_id, compress="auto", public_key=public) as writer:
             async with asyncio.timeout(60):
                 if item.source == "business":
                     await bot.download(decrypt_text(item.file_id), destination=writer, seek=False, timeout=60)
@@ -43,6 +44,8 @@ async def archive_avatar(bot, repository, store, item, *, resolve_client=resolve
                 raise ValueError("Empty avatar")
             blob_key, _ = writer.finish()
         await repository.finish(item, blob_key=blob_key)
+        bot_logger.debug("Avatar stored: account_user_id=%s peer_id=%s occurrence=%s",
+                         item.account_user_id, item.user_id, item.uuid)
     except asyncio.CancelledError:
         await repository.finish(item, delay=30)
         raise
@@ -53,6 +56,42 @@ async def archive_avatar(bot, repository, store, item, *, resolve_client=resolve
         await repository.finish(item, delay=3600)
         bot_logger.debug("Avatar download deferred: account_user_id=%s peer_id=%s error=%s",
                          item.account_user_id, item.user_id, type(error).__name__)
+
+
+async def collect_chat_avatar(bot, client, account, chat_id, *, repository=None, store=None, limits=None):
+    """One public get_chat request and at most one encrypted photo, within shared limits."""
+    repository = repository or AvatarsRepository(get_session_factory)
+    store = store or MediaStore.from_environment()
+    limits = limits or HistoryRepository(get_session_factory)
+    if await limits.blocked_until(account.user_id) > time.time():
+        return
+    try:
+        chat = await client.get_chat(chat_id)
+        await repository.observe(account.admin_id, account.user_id, [chat], require_account=True, authoritative=True)
+        item = await repository.claim(account_id=account.user_id, owner_id=account.admin_id)
+        if item is not None:
+            await archive_avatar(bot, repository, store, item, limits=limits,
+                                 resolve_client=lambda owner, number: _client(client),
+                                 run_client=lambda active, operation: operation())
+    except FloodWait as error:
+        await limits.defer(account.user_id, int(error.value) + 5)
+    except Exception as error:
+        bot_logger.debug("Avatar refresh deferred: account_user_id=%s peer_id=%s error=%s",
+                         account.user_id, chat_id, type(error).__name__)
+
+
+async def _client(client):
+    return client
+
+
+async def collect_queued_avatar(bot, client, account):
+    """The dialog scan has already supplied photo locators; no profile requests."""
+    repository = AvatarsRepository(get_session_factory)
+    item = await repository.claim(account_id=account.user_id, owner_id=account.admin_id)
+    if item is not None:
+        await archive_avatar(bot, repository, MediaStore.from_environment(), item,
+                             resolve_client=lambda owner, number: _client(client),
+                             run_client=lambda active, operation: operation())
 
 
 async def run_avatar_archiver(bot):

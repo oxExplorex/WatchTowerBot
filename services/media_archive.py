@@ -75,7 +75,7 @@ async def archive_attachment(bot, repository, store, item, *, resolve_client=res
                     client = await resolve_client(item.owner_id, source["account_user_id"])
                     if client is None:
                         raise SourceUnavailable()
-                with store.writer(item.owner_id, compress=source["kind"] == "document", public_key=public_key) as writer:
+                with store.writer(item.owner_id, compress="auto", public_key=public_key) as writer:
                     async with asyncio.timeout_at(deadline):
                         if client is None:
                             await bot.download(source["file_id"], destination=writer, seek=False, timeout=600)

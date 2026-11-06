@@ -72,6 +72,8 @@ class Handler(BaseHTTPRequestHandler):
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                   "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),
                   "/calendar.js": ("calendar.js", "text/javascript; charset=utf-8"),
+                  "/watchtower-logo.png": ("watchtower-logo.png", "image/png"),
+                  "/favicon.ico": ("watchtower.ico", "image/x-icon"),
                   "/lottie_light_canvas.min.js": ("lottie_light_canvas.min.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8")}
         if url.path in static:
@@ -97,6 +99,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(inspection.inspect_chat(archive, query["chat"][0]))
                 elif url.path == "/api/gallery":
                     self._json(inspection.gallery(archive, query["chat"][0], query.get("before", [None])[0]))
+                elif url.path == "/api/avatars":
+                    self._json(archive.avatar_entries(query["chat"][0]))
                 elif url.path == "/api/search":
                     self._json(inspection.search(archive, query.get("chat", [""])[0],
                         query=query.get("q", [""])[0][:512], start=query.get("start", [""])[0],

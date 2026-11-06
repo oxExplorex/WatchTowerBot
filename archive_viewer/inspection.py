@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 import re
 from html import escape
+from urllib.parse import urlsplit
 
 
 def messages(archive, key, limit=None):
@@ -37,13 +38,23 @@ def search(archive, key, *, query="", start="", end="", media=False, before=None
 def inspect_chat(archive, key):
     rows = archive.chats[key]
     participants = Counter(str(row.get("sender_id")) for row in rows if row.get("sender_id"))
-    gallery, links, words = [], set(), Counter()
+    gallery, links, words = [], [], Counter()
     missing_media = 0
     for message in messages(archive, key, limit=500):
         for media in message["media"]:
             gallery.append(media | {"message_id": message["id"], "time": message["time"]})
             missing_media += int(not media["available"])
-        links.update(re.findall(r"https?://[^\s<>]+", message["text"]))
+        urls = set(re.findall(r"https?://[^\s<>]+", message["text"]))
+        urls.update(entity["url"] for entity in message.get("entities", [])
+                    if isinstance(entity, dict) and isinstance(entity.get("url"), str))
+        for url in sorted(urls):
+            try:
+                parsed = urlsplit(url)
+            except ValueError:
+                continue
+            if parsed.scheme in {"http", "https"} and parsed.hostname:
+                links.append(dict(url=url, domain=parsed.hostname, time=message.get("time"),
+                                  text=message["text"][:240], message_id=message["id"]))
         words.update(word.casefold() for word in re.findall(r"[^\W\d_]{5,}", message["text"], re.UNICODE))
     account = rows[0]["account_user_id"]
     others = []
@@ -66,7 +77,7 @@ def inspect_chat(archive, key):
         participants=[dict(id=identity, name=archive.names.get(identity, {}).get("full_name") or identity, count=count)
                       for identity, count in participants.most_common()],
         gallery=gallery[-120:], media_total=sum(len(archive.by_revision.get(row.get("latest_revision_uuid"), [])) for row in rows),
-        sample_messages=min(500, len(rows)), links=sorted(links)[:30],
+        sample_messages=min(500, len(rows)), links=sorted(links, key=lambda item: item["time"] or 0, reverse=True)[:30],
         keywords=words.most_common(12), shared=others[:20],
         graph=[dict(source=source, target=target, count=count) for (source, target), count in graph.items()])
 

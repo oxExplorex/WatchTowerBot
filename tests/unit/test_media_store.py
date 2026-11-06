@@ -76,3 +76,31 @@ def test_invalid_personal_key_cleans_up_before_context_manager_entry(tmp_path, m
     with pytest.raises(ValueError):
         MediaStore(tmp_path).writer(123, public_key="invalid-base64-key")
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("compressible", [True, False])
+def test_adaptive_compression_streams_losslessly_and_skips_high_entropy_data(tmp_path, monkeypatch, compressible):
+    import os
+    monkeypatch.setenv("DB_ENCRYPTION_KEY", "synthetic-key")
+    store = MediaStore(tmp_path)
+    original = ("Сжатие без потери данных\n" * 10000).encode() if compressible else os.urandom(200000)
+    with store.writer(123, compress="auto") as writer:
+        for offset in range(0, len(original), 17000):
+            writer.write(original[offset:offset + 17000])
+        key, size = writer.finish()
+    raw = store.path(123, key).read_bytes()
+    assert raw[4] == int(compressible)
+    assert size == len(original) and store.read(123, key) == original
+    assert not list(tmp_path.glob("*.part"))
+    if compressible:
+        assert len(raw) < len(original) // 10
+    else:
+        assert len(raw) == len(original) + 33
+
+
+def test_adaptive_sampling_is_not_written_as_plaintext_and_cancellation_cleans_up(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_ENCRYPTION_KEY", "synthetic-key")
+    with MediaStore(tmp_path).writer(123, compress="auto") as writer:
+        writer.write(b"private short sample")
+        assert not list(tmp_path.rglob("*.part"))
+    assert not list(tmp_path.rglob("*.wtm"))

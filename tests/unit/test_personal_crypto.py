@@ -46,3 +46,34 @@ def test_normalization_and_live_comparisons(monkeypatch):
     monkeypatch.setenv("DB_ENCRYPTION_KEY", "copied-key")
     assert live_fingerprint("Private") == first
     assert live_fingerprint("private") != first
+
+
+def test_compressed_text_is_lossless_and_binds_its_compression_mode(archive_bundle):
+    from core.personal_crypto import COMPRESSED_PREFIX, PREFIX
+
+    aad = context(123, "revision:compressed")
+    original = "Переписка без потери качества\n" * 1000
+    sealed = seal_text(archive_bundle["public_key"], original, aad)
+    assert sealed.startswith(COMPRESSED_PREFIX)
+    assert len(sealed) < len(original.encode()) // 4
+    private = unlock_private_key(123, archive_bundle, "Рыжий кот 527")
+    assert open_text(private, sealed, aad) == original
+    with pytest.raises(ValueError):
+        open_text(private, PREFIX + sealed[len(COMPRESSED_PREFIX):], aad)
+
+
+def test_authenticated_compressed_text_has_a_decompression_limit(archive_bundle):
+    import os
+    import zlib
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from core.personal_crypto import COMPRESSED_PREFIX, MAX_TEXT_BYTES, wrap_key
+
+    aad = context(123, "revision:oversize")
+    key, nonce = os.urandom(32), os.urandom(12)
+    bound = aad + b"\0zlib"
+    packed = zlib.compress(b"A" * (MAX_TEXT_BYTES + 1))
+    raw = wrap_key(archive_bundle["public_key"], key, bound) + nonce + AESGCM(key).encrypt(nonce, packed, bound)
+    sealed = COMPRESSED_PREFIX + base64.b64encode(raw).decode()
+    private = unlock_private_key(123, archive_bundle, "Рыжий кот 527")
+    with pytest.raises(ValueError):
+        open_text(private, sealed, aad)

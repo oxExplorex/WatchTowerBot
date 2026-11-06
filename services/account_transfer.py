@@ -192,11 +192,12 @@ async def publish(session_factory, operation_id, run_token):
                 ChatAvatar.account_user_id == operation.account_user_id))).all():
             staged = await session.get(TransferAttachment, (operation.uuid, avatar.uuid))
             destination = await session.scalar(select(ChatAvatar).where(ChatAvatar.owner_id == operation.actor_id,
-                ChatAvatar.account_user_id == avatar.account_user_id, ChatAvatar.user_id == avatar.user_id))
+                ChatAvatar.account_user_id == avatar.account_user_id, ChatAvatar.user_id == avatar.user_id,
+                ChatAvatar.ended_at.is_(None))) if avatar.ended_at is None else None
             await queue_blob_cleanup(session, operation.owner_id, avatar.blob_key)
             if destination is not None:
-                await queue_blob_cleanup(session, operation.actor_id, destination.blob_key)
-                await session.delete(destination)
+                destination.ended_at = max(time.time_ns() // 1000, destination.first_seen_at)
+                destination.state_version += 1
                 await session.flush()
             avatar.owner_id, avatar.blob_key = operation.actor_id, staged.blob_key
             avatar.lease_token, avatar.lease_until = None, 0

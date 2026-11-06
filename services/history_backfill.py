@@ -76,6 +76,9 @@ async def backfill_account(bot, client, account, repository, *, fetch_page=fetch
             stage = "checkpoint"
             await repository.checkpoint(progress, window, raw_ids, saved_ids, started_at)
             processed += len(saved_ids)
+            if callable(getattr(client, "get_chat", None)):
+                from services.avatar_archive import collect_chat_avatar
+                await collect_chat_avatar(bot, client, account, progress.chat_id, limits=repository)
         except FloodWait as exc:
             failed += 1
             await repository.defer(account.user_id, int(exc.value) + 5)

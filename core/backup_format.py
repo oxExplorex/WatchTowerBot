@@ -14,9 +14,11 @@ import struct
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from core.personal_crypto import context, public_key, unlock_private_key, unwrap_key, wrap_key
+from core.compression import compress_if_smaller, decompress_limited
 
 MAGIC = b"WTB1"
 JSON_FRAME, BLOB_FRAME, END_FRAME = 1, 2, 255
+COMPRESSED_JSON_FRAME = 3
 MAX_FRAME = 1024 * 1024
 MAX_HEADER = 16 * 1024
 KDF = {"name": "argon2id", "memory_kib": 65536, "iterations": 3, "parallelism": 1, "length": 32}
@@ -59,7 +61,7 @@ class BackupWriter:
         self.cipher = AESGCM(key)
 
     def write(self, kind, content=b""):
-        if self.finished or kind not in {JSON_FRAME, BLOB_FRAME, END_FRAME} or len(content) + 1 > MAX_FRAME:
+        if self.finished or kind not in {JSON_FRAME, BLOB_FRAME, COMPRESSED_JSON_FRAME, END_FRAME} or len(content) + 1 > MAX_FRAME:
             raise InvalidBackup("Invalid backup frame")
         counter = self.counter.to_bytes(8, "big")
         ciphertext = self.cipher.encrypt(self.prefix + counter, bytes([kind]) + content, self.aad + counter)
@@ -68,7 +70,12 @@ class BackupWriter:
         self.finished = kind == END_FRAME
 
     def record(self, value):
-        self.write(JSON_FRAME, encode_json(value))
+        raw = encode_json(value)
+        if len(raw) + 1 > MAX_FRAME:
+            raise InvalidBackup("Backup record exceeds frame limit")
+        packed = compress_if_smaller(raw)
+        self.write(COMPRESSED_JSON_FRAME if packed is not None else JSON_FRAME,
+                   packed if packed is not None else raw)
 
     def finish(self):
         self.write(END_FRAME)
@@ -115,6 +122,12 @@ class BackupReader:
                 raise InvalidBackup("Backup authentication failed") from None
             self.counter += 1
             kind, content = plain[0], plain[1:]
+            if kind == COMPRESSED_JSON_FRAME:
+                try:
+                    content = decompress_limited(content, MAX_FRAME - 1)
+                except ValueError:
+                    raise InvalidBackup("Invalid compressed metadata frame") from None
+                kind = JSON_FRAME
             if kind == END_FRAME:
                 if content or self.stream.read(1):
                     raise InvalidBackup("Data after backup end")

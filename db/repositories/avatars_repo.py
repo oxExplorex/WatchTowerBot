@@ -13,7 +13,7 @@ class AvatarsRepository:
     def __init__(self, session_factory):
         self._session_factory = session_factory
 
-    async def observe(self, owner_id, account_id, peers, *, source="userbot", require_account=False):
+    async def observe(self, owner_id, account_id, peers, *, source="userbot", require_account=False, authoritative=False):
         """Use photos already present in updates/dialogs; never fetch profiles here."""
         photos = {}
         for peer in peers:
@@ -22,6 +22,8 @@ class AvatarsRepository:
             unique = getattr(photo, "small_photo_unique_id", None) or getattr(photo, "small_file_unique_id", None)
             if type(user_id) is int and user_id > 0 and isinstance(file_id, str):
                 photos[user_id] = (file_id, message_fingerprint(f"avatar:{unique or file_id}"))
+            elif authoritative and type(user_id) is int and user_id > 0 and photo is None:
+                photos[user_id] = (None, "absent")
         if not photos:
             return
         async with self._session_factory()() as session, session.begin():
@@ -37,32 +39,48 @@ class AvatarsRepository:
                 return
             existing = {row.user_id: row for row in await session.scalars(select(ChatAvatar).where(
                 ChatAvatar.owner_id == owner_id, ChatAvatar.account_user_id == account_id,
-                ChatAvatar.user_id.in_(photos)))}
+                ChatAvatar.user_id.in_(photos), ChatAvatar.ended_at.is_(None)))}
             for user_id, (file_id, photo_key) in photos.items():
                 row = existing.get(user_id)
-                if row is None:
-                    row = ChatAvatar(owner_id=owner_id, account_user_id=account_id, user_id=user_id, photo_key=photo_key)
-                    session.add(row)
-                elif row.photo_key == photo_key and row.status == "stored":
+                now = time.time_ns() // 1000
+                if row is not None and row.photo_key == photo_key and row.status in {"stored", "absent"}:
                     continue
-                elif row.photo_key != photo_key:
-                    from db.repositories.account_operations_repo import queue_blob_cleanup
-                    await queue_blob_cleanup(session, owner_id, row.blob_key)
-                    row.blob_key, row.status = None, "pending"
-                    row.lease_token, row.lease_until = None, 0
-                    row.next_attempt_at = 0
+                if row is not None and row.photo_key != photo_key:
+                    row.ended_at = max(now, row.first_seen_at)
                     row.state_version += 1
-                row.photo_key, row.source, row.file_id = photo_key, source, encrypt_text(file_id)
+                    await session.flush()  # Free the single-current-occurrence index before inserting.
+                    row = None
+                if row is None:
+                    row = ChatAvatar(owner_id=owner_id, account_user_id=account_id, user_id=user_id,
+                                     photo_key=photo_key, first_seen_at=now)
+                    session.add(row)
+                    # Reusing bytes is safe; the occurrence remains a separate record.
+                    cached = await session.scalar(select(ChatAvatar).where(ChatAvatar.owner_id == owner_id,
+                        ChatAvatar.photo_key == photo_key, ChatAvatar.status == "stored").limit(1)) if file_id else None
+                    if cached is not None:
+                        row.blob_key, row.status = cached.blob_key, "stored"
+                row.source = source
+                if file_id and row.status == "unavailable":
+                    row.status, row.next_attempt_at = "pending", 0
+                    row.state_version += 1
+                row.file_id = encrypt_text(file_id) if file_id and row.status != "stored" else None
+                if file_id is None:
+                    row.status = "absent"
                 row.updated_at = int(time.time())
 
-    async def claim(self):
+    async def claim(self, *, account_id=None, owner_id=None):
         now = int(time.time())
         available = or_(and_(ChatAvatar.status == "pending", ChatAvatar.next_attempt_at <= now),
                         and_(ChatAvatar.status == "downloading", ChatAvatar.lease_until <= now))
         changing = exists().where(AccountOperation.active_account_id == ChatAvatar.account_user_id,
             AccountOperation.status.in_({"preparing", "activating", "deleting", "removing_session"}))
         async with self._session_factory()() as session, session.begin():
-            item = await session.scalar(select(ChatAvatar).where(available, ~changing).order_by(
+            query = select(ChatAvatar).where(available, ~changing)
+            if account_id is not None:
+                query = query.where(ChatAvatar.account_user_id == account_id)
+            if owner_id is not None:
+                query = query.where(ChatAvatar.owner_id == owner_id)
+            item = await session.scalar(query.order_by(
                 ChatAvatar.next_attempt_at, ChatAvatar.uuid).limit(1))
             if item is None or await lock_owner(session, item.owner_id) is None:
                 return None

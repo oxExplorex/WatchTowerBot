@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from utils.crypto_store import media_encryption_key
-from core.personal_crypto import context, unwrap_key, wrap_key
+from core.personal_crypto import context, public_key as parse_public_key, unwrap_key, wrap_key
 
 MAGIC = b"WTM1"
 PERSONAL_MAGIC = b"WTM2"
@@ -48,7 +48,16 @@ class MediaStore:
         return self.root / str(owner_id) / blob_key[:2] / f"{blob_key}.wtm"
 
     def writer(self, owner_id, *, compress=False, public_key=None, replace_legacy=False):
+        if compress == "auto":
+            return AdaptiveMediaWriter(self, owner_id, public_key=public_key, replace_legacy=replace_legacy)
         return EncryptedMediaWriter(self, owner_id, compress=compress, public_key=public_key, replace_legacy=replace_legacy)
+
+    def write_budget(self, replace_legacy=False):
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        used = sum(path.stat().st_size for path in self.root.rglob("*") if path.is_file())
+        replacement_credit = int(replace_legacy) + (384 if replace_legacy else 0)
+        available = max(0, self.max_total_bytes - used) if replace_legacy else self.max_total_bytes - used
+        return min(available + replacement_credit, shutil.disk_usage(self.root).free - 128 * 1024**2)
 
     def version(self, owner_id, blob_key):
         with self.path(owner_id, blob_key).open("rb") as stream:
@@ -142,21 +151,78 @@ class MediaStore:
         path.unlink(missing_ok=True)
 
 
+class AdaptiveMediaWriter:
+    """Choose from a 64 KiB RAM sample; stream the rest without re-encoding media."""
+    SAMPLE_SIZE = 64 * 1024
+
+    def __init__(self, store, owner_id, *, public_key=None, replace_legacy=False):
+        media_encryption_key(owner_id)
+        store.path(owner_id, "0" * 64)
+        if public_key is not None:
+            parse_public_key(public_key)
+        self.store, self.owner_id, self.public_key = store, owner_id, public_key
+        self.replace_legacy = replace_legacy
+        self.budget = store.write_budget(replace_legacy)
+        if self.budget < HEADER_SIZE + 16 + (384 if public_key else 0):
+            raise MediaQuotaExceeded("Media storage quota reached")
+        self.sample, self.inner, self.size = bytearray(), None, 0
+
+    def _start(self):
+        packed = zlib.compress(self.sample, level=6)
+        compress = len(packed) + max(128, len(self.sample) // 10) < len(self.sample)
+        self.inner = EncryptedMediaWriter(self.store, self.owner_id, compress=compress,
+                                         public_key=self.public_key, replace_legacy=self.replace_legacy,
+                                         budget=self.budget)
+        try:
+            self.inner.write(self.sample)
+        finally:
+            self.sample.clear()
+
+    def write(self, data):
+        if self.size + len(data) > self.store.max_file_bytes:
+            raise MediaTooLarge("Media file exceeds archive limit")
+        self.size += len(data)
+        if self.inner is not None:
+            return self.inner.write(data)
+        take = min(len(data), self.SAMPLE_SIZE - len(self.sample))
+        self.sample.extend(data[:take])
+        if len(self.sample) == self.SAMPLE_SIZE:
+            self._start()
+            if take < len(data):
+                self.inner.write(data[take:])
+        return len(data)
+
+    def flush(self):
+        if self.inner is not None:
+            self.inner.flush()
+
+    def finish(self):
+        if self.inner is None:
+            self._start()
+        return self.inner.finish()
+
+    def close(self):
+        self.sample.clear()
+        if self.inner is not None:
+            self.inner.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
 class EncryptedMediaWriter:
-    def __init__(self, store, owner_id, *, compress, public_key=None, replace_legacy=False):
+    def __init__(self, store, owner_id, *, compress, public_key=None, replace_legacy=False, budget=None):
         identity_key = media_encryption_key(owner_id)  # Fail before creating a file.
         key = os.urandom(32) if public_key else identity_key
         self.replace_legacy = replace_legacy
         store.path(owner_id, "0" * 64)
         self.store, self.owner_id = store, owner_id
-        store.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        used = sum(path.stat().st_size for path in store.root.rglob("*") if path.is_file())
         # A replacement consumes temporary disk space, but its old immutable
         # version is no longer counted against the logical archive quota.
-        replacement_credit = int(replace_legacy) + (384 if replace_legacy else 0)
-        available = max(0, store.max_total_bytes - used) if replace_legacy else store.max_total_bytes - used
-        self.budget = min(available + replacement_credit,
-                          shutil.disk_usage(store.root).free - 128 * 1024**2)
+        self.budget = store.write_budget(replace_legacy) if budget is None else budget
         if self.budget < HEADER_SIZE + 16:
             raise MediaQuotaExceeded("Media storage quota reached")
         descriptor, name = tempfile.mkstemp(prefix="download_", suffix=".part", dir=store.root)
@@ -165,7 +231,7 @@ class EncryptedMediaWriter:
         try:
             self.size, self.written = 0, 0
             self.digest = hmac.new(identity_key, b"content\0", hashlib.sha256)
-            self.compressor = zlib.compressobj(level=1) if compress else None
+            self.compressor = zlib.compressobj(level=6) if compress else None
             header = (PERSONAL_MAGIC if public_key else MAGIC) + bytes([int(compress)]) + os.urandom(12)
             if public_key:
                 header += wrap_key(public_key, key, context(owner_id, "media"))

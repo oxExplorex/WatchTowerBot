@@ -199,6 +199,30 @@ def test_date_jump_pages_in_both_directions_without_losing_messages(viewer_backu
         archive.close()
 
 
+def test_video_duration_and_text_link_cards_come_from_encrypted_payload(viewer_backup):
+    import base64
+    from cryptography.hazmat.primitives import serialization
+    from archive_viewer import inspection
+
+    archive = Archive.open(viewer_backup.zip, viewer_backup.secret)
+    try:
+        revision = archive.revisions[viewer_backup.message][-1]
+        public = base64.b64encode(archive.private_key.public_key().public_bytes(serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo)).decode()
+        payload = {"text": "Ссылка на ролик", "entities": [{"type": "text_link", "offset": 0, "length": 6,
+                   "url": "https://example.org/video"}, {"url": "javascript:alert(1)"}],
+                   "media": [{"kind": "video", "file_name": "clip.mp4", "duration": 125, "width": 640, "height": 360}]}
+        revision["payload"] = seal_text(public, json.dumps(payload), context(archive.owner, f'revision:{revision["uuid"]}'))
+        message = archive.page("456:789")["messages"][0]
+        assert message["media"][0]["duration"] == 125
+        assert message["media"][0]["preview"] == "video"
+        links = inspection.inspect_chat(archive, "456:789")["links"]
+        assert len(links) == 1 and links[0]["domain"] == "example.org"
+        assert links[0]["url"] == "https://example.org/video" and links[0]["text"] == "Ссылка на ролик"
+    finally:
+        archive.close()
+
+
 def test_workspace_queries_export_and_pagination_do_not_duplicate_partial_page(viewer_backup):
     from archive_viewer import inspection
     archive = Archive.open(viewer_backup.zip, viewer_backup.secret)

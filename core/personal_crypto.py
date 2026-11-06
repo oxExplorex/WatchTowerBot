@@ -11,8 +11,11 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+from core.compression import compress_if_smaller, decompress_limited
 
 PREFIX = "enc:v2:"
+COMPRESSED_PREFIX = "enc:v2z:"
+MAX_TEXT_BYTES = 1024 * 1024
 _COMPARISON_KEY = os.urandom(32)
 
 
@@ -94,19 +97,33 @@ def unwrap_key(private, wrapped: bytes, aad: bytes) -> bytes:
 
 
 def seal_text(public: str, value: str, aad: bytes) -> str:
+    raw = value.encode("utf-8")
+    if len(raw) > MAX_TEXT_BYTES:
+        raise ValueError("Archive text exceeds storage limit")
+    packed = compress_if_smaller(raw)
+    prefix = PREFIX
+    if packed is not None:
+        raw, prefix, aad = packed, COMPRESSED_PREFIX, aad + b"\0zlib"
     key, nonce = os.urandom(32), os.urandom(12)
     wrapped = wrap_key(public, key, aad)
-    encrypted = AESGCM(key).encrypt(nonce, value.encode("utf-8"), aad)
-    return PREFIX + base64.b64encode(wrapped + nonce + encrypted).decode()
+    encrypted = AESGCM(key).encrypt(nonce, raw, aad)
+    return prefix + base64.b64encode(wrapped + nonce + encrypted).decode()
 
 
 def open_text(private, value: str, aad: bytes) -> str:
-    if not value.startswith(PREFIX):
+    compressed = value.startswith(COMPRESSED_PREFIX)
+    prefix = COMPRESSED_PREFIX if compressed else PREFIX
+    if not value.startswith(prefix):
         raise ValueError("Not a personal archive envelope")
-    content = base64.b64decode(value[len(PREFIX):], validate=True)
+    content = base64.b64decode(value[len(prefix):], validate=True)
+    if compressed:
+        aad += b"\0zlib"
     size = private.key_size // 8
     key = unwrap_key(private, content[:size], aad)
-    return AESGCM(key).decrypt(content[size:size + 12], content[size + 12:], aad).decode("utf-8")
+    raw = AESGCM(key).decrypt(content[size:size + 12], content[size + 12:], aad)
+    if compressed:
+        raw = decompress_limited(raw, MAX_TEXT_BYTES)
+    return raw.decode("utf-8")
 
 
 def live_fingerprint(value: str) -> str:

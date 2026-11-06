@@ -5,8 +5,36 @@ history.replaceState(null, "", location.pathname);
 const $ = id => document.getElementById(id);
 let chats = [], selected = null, before = null, after = null, generation = 0;
 const animations = new Set();
+const pendingVideos = new Set();
+const videoObserver = typeof IntersectionObserver === "function" ? new IntersectionObserver(entries=>{
+    for(const entry of entries) if(entry.isIntersecting) {
+        entry.target.src = entry.target.dataset.previewSource;
+        videoObserver.unobserve(entry.target); pendingVideos.delete(entry.target);
+    }
+}, {rootMargin:"160px"}) : null;
+function durationLabel(value) {
+    const seconds = Number(value);
+    if(!Number.isFinite(seconds) || seconds <= 0) return "";
+    const total=Math.floor(seconds), minutes=Math.floor(total/60), tail=String(total%60).padStart(2,"0");
+    return minutes>=60 ? Math.floor(minutes/60)+":"+String(minutes%60).padStart(2,"0")+":"+tail : minutes+":"+tail;
+}
+function prepareVideoPreview(video, media, badge=null, immediate=false) {
+    video.preload="metadata";
+    if(badge) badge.textContent=durationLabel(media.duration)||"Видео";
+    video.addEventListener("loadedmetadata",()=>{
+        if(badge) badge.textContent=durationLabel(media.duration||video.duration)||"Видео";
+        if(!video.autoplay && Number.isFinite(video.duration) && video.duration>0) {
+            try{video.currentTime=Math.min(.05,video.duration/2);}catch(_){}
+        }
+    }, {once:true});
+    if(videoObserver && !immediate) {
+        video.dataset.previewSource=mediaURL(media.id);
+        pendingVideos.add(video); videoObserver.observe(video);
+    } else video.src=mediaURL(media.id);
+}
 
 function disposeDetachedAnimations() {
+    for(const video of pendingVideos) if(!video.isConnected){videoObserver?.unobserve(video);pendingVideos.delete(video);}
     for (const entry of animations) {
         if (!entry.container.isConnected) {
             entry.player.destroy();
@@ -121,7 +149,11 @@ function appendMedia(box, media, {expanded=false}={}) {
         if (kind === "animation") player.autoplay = player.loop = player.muted = true;
     }
     if (player && kind !== "sticker") {
-        player.src = mediaURL(media.id);
+        if(player.tagName === "VIDEO") {
+            const badge=node("span","duration-badge",durationLabel(media.duration));
+            if(["video","video_note"].includes(kind)) target.append(badge);
+            prepareVideoPreview(player,media,badge,expanded);
+        } else player.src = mediaURL(media.id);
         player.addEventListener("error", () => {
             player.replaceWith(node("small", "unavailable", "Браузер не смог показать вложение. Откройте его и сохраните оригинал."));
         }, {once: true});
@@ -332,7 +364,7 @@ $("unlock-form").addEventListener("submit", async event => {
     } finally {
         secret = "";
         $("open").disabled = false;
-        $("open").textContent = "Открыть архив →";
+        $("open").textContent = "Открыть архив";
     }
 });
 

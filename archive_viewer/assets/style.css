@@ -725,3 +725,58 @@ dialog::backdrop {
     #media-dialog {padding:14px;}
     #media-content .sticker {width:240px;height:240px;}
 }
+
+/* Branded unlock screen */
+#unlock {background:#0b1320;padding:28px;}
+.unlock-card {width:min(100%,470px);padding:36px;border:1px solid #ffffff12;border-radius:18px;background:#111c2b;box-shadow:0 24px 80px #0005;}
+.unlock-brand {display:flex;align-items:center;gap:17px;}
+.unlock-logo {width:82px;height:82px;object-fit:contain;}
+.unlock-brand strong {display:block;font-size:25px;font-weight:650;letter-spacing:-.5px;}
+.unlock-brand span {display:block;font-size:12px;color:var(--muted);margin-top:3px;}
+#unlock-title {font-size:26px;font-weight:650;letter-spacing:-.5px;margin:30px 0 10px;}
+.unlock-description {font-size:13px;line-height:1.75;margin-bottom:25px;}
+.unlock-card #secret {margin-top:8px;padding:12px 14px;background:#0d1725;border-color:#ffffff22;}
+.unlock-card #secret:focus {border-color:var(--accent);outline:none;box-shadow:0 0 0 3px #68d9c615;}
+.unlock-card #open {height:44px;margin-top:14px;background:#f29a5f;border-color:#f29a5f;color:#151e2b;font-weight:650;}
+.unlock-card #open:hover {background:#ffaf77;}
+.unlock-card #error:empty {display:none;}
+.unlock-footer {display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid var(--line);margin-top:28px;padding-top:16px;color:var(--muted);font-size:10px;}
+.brand {display:flex;align-items:center;gap:9px;letter-spacing:.04em;}
+.brand-logo {width:34px;height:34px;object-fit:contain;}
+.toolbar svg {width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
+.toolbar button {display:inline-flex;align-items:center;gap:5px;}
+.gallery-tile {position:relative;}
+.gallery-video {width:100%;height:100%;object-fit:cover;pointer-events:none;}
+.gallery-video.round-video {border-radius:50%;}
+.gallery-sticker {width:100%;height:100%;display:grid;place-items:center;overflow:hidden;}
+.gallery-sticker .sticker {width:100%;height:100%;object-fit:contain;}
+.duration-badge {position:absolute;bottom:7px;right:7px;background:#07121ecc;color:#fff;border-radius:5px;padding:2px 5px;font:10px/1.4 system-ui;pointer-events:none;z-index:1;}
+.link-details {border:1px solid var(--line);border-radius:9px;margin-top:20px;overflow:hidden;}
+.link-details summary {padding:12px;cursor:pointer;font-size:11px;color:#b8d0dd;}
+.link-details[open] summary {border-bottom:1px solid var(--line);}
+.link-details .keyword-list {padding:12px;}
+.link-list {display:grid;gap:8px;padding:0 10px 10px;}
+.link-day {font-size:11px;margin:8px 0 0;color:var(--muted);font-weight:500;}
+.inspector .link-card {display:flex;align-items:flex-start;gap:9px;padding:10px 0;text-decoration:none;border-bottom:1px solid var(--line);}
+.link-avatar {display:grid;place-items:center;width:36px;height:36px;border-radius:7px;background:#2e5874;flex-shrink:0;font-size:18px;color:#d8f1ff;}
+.link-copy {display:grid;gap:4px;min-width:0;}
+.link-copy strong {color:var(--text);font-size:11px;}
+.link-excerpt {color:#b7c8d8;font-size:11px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;}
+.link-url {font-size:10px;color:var(--blue);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.avatar-history-button {margin-top:12px;width:100%;text-align:left;font-size:12px;}
+.avatar-timeline {display:grid;gap:14px;}
+.avatar-history-row {display:flex;gap:16px;align-items:center;border-bottom:1px solid var(--line);padding-bottom:14px;}
+.avatar-history-photo {width:100px;height:100px;flex-shrink:0;}
+.avatar-history-photo img {width:100%;height:100%;object-fit:cover;border-radius:12px;}
+.avatar-history-row strong {display:block;font-size:13px;}
+.avatar-history-row small {display:block;margin-top:4px;}
+.sample-note {font-size:11px;color:var(--muted);}
+@media(max-width:560px) {
+    #unlock {padding:18px;}
+    .unlock-card {padding:26px;}
+    .unlock-logo {width:66px;height:66px;}
+    .unlock-brand strong {font-size:22px;}
+    .unlock-footer {align-items:flex-start;flex-direction:column;gap:5px;}
+    .brand-logo {width:25px;height:25px;}
+    .avatar-history-photo {width:74px;height:74px;}
+}

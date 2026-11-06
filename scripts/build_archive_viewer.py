@@ -34,6 +34,7 @@ def main():
         (build / "build_info.json").write_text(json.dumps(metadata), encoding="utf-8")
         subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile", "--console",
             "--noupx", "--name", Path(EXECUTABLE).stem, "--paths", str(ROOT),
+            "--icon", str(ROOT / "archive_viewer" / "assets" / "watchtower.ico"),
             "--add-data", f"{ROOT / 'archive_viewer' / 'assets'}:archive_viewer/assets",
             "--add-data", f"{build / 'build_info.json'}:archive_viewer",
             "--distpath", str(build / "dist"), "--workpath", str(build / "work"),

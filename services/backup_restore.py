@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 
 from core.backup_format import BackupReader, BLOB_FRAME, InvalidBackup, JSON_FRAME
 from core.backup_media import restore_blob
+from core.avatar_records import validate_avatar_history
 from core.backup_parts import PartsReader
 from core.personal_crypto import context, open_text, seal_text, unlock_private_key
 from core.thread_tools import run_blocking
@@ -42,6 +43,7 @@ class PreparedBackup:
     blobs: dict = field(default_factory=dict)
     summary: dict = field(default_factory=dict)
     avatars: list = field(default_factory=list)
+    avatar_history: list = field(default_factory=list)
 
 
 def prepare_backup(paths, root, owner_id, secret):
@@ -109,6 +111,9 @@ def prepare_backup(paths, root, owner_id, secret):
                         or not re.fullmatch(r"[0-9a-f]{64}", record.get("blob_key", ""))):
                     raise InvalidBackup("Invalid avatar")
                 result.avatars.append(record)
+            elif record_type == "avatar_history":
+                validate_avatar_history(record)
+                result.avatar_history.append(record)
             elif record_type == "blob":
                 key, size = record["key"], record["size"]
                 if (not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", key)
@@ -142,6 +147,19 @@ def prepare_backup(paths, root, owner_id, secret):
                 raise InvalidBackup("Invalid avatar scope")
             avatar_ids.add(identity)
             expected_blobs.add(avatar["blob_key"])
+        history_ids = set()
+        current_peers = set()
+        for avatar in result.avatar_history:
+            peer = (avatar["account_user_id"], avatar["user_id"])
+            if peer not in peers or avatar["uuid"] in history_ids:
+                raise InvalidBackup("Invalid avatar history scope")
+            history_ids.add(avatar["uuid"])
+            if avatar["ended_at"] is None:
+                if peer in current_peers:
+                    raise InvalidBackup("Multiple current avatars")
+                current_peers.add(peer)
+            if avatar["blob_key"]:
+                expected_blobs.add(avatar["blob_key"])
         if expected_blobs != set(result.blobs):
             raise InvalidBackup("Media list does not match archive")
         return result
@@ -295,12 +313,33 @@ async def restore_backup(prepared, owner_id, secret, *, session_factory, store, 
                         full_name=encrypt_text(name["full_name"]) if name["full_name"] else None,
                         username_hash=blind_index(name["username"]) if name["username"] else None))
             for avatar in prepared.avatars:
+                if any((item["account_user_id"], item["user_id"]) ==
+                       (avatar["account_user_id"], avatar["user_id"]) for item in prepared.avatar_history):
+                    continue
                 identity = dict(owner_id=owner_id, account_user_id=avatar["account_user_id"], user_id=avatar["user_id"])
-                existing = await session.scalar(select(ChatAvatar).filter_by(**identity))
+                existing = await session.scalar(select(ChatAvatar).filter_by(**identity).where(ChatAvatar.ended_at.is_(None)))
                 if existing is None:
                     blob_key, _ = blobs[avatar["blob_key"]]
                     session.add(ChatAvatar(**identity, blob_key=blob_key, photo_key=f"restored:{blob_key}",
                                            status="stored", updated_at=int(time.time())))
+            for avatar in sorted(prepared.avatar_history, key=lambda item: (item["first_seen_at"], item["uuid"])):
+                existing = await session.get(ChatAvatar, UUID(avatar["uuid"]))
+                if existing is not None:
+                    if (existing.owner_id, existing.account_user_id, existing.user_id) != (
+                            owner_id, avatar["account_user_id"], avatar["user_id"]):
+                        raise InvalidBackup("Avatar history UUID conflict")
+                    continue
+                ended_at = avatar["ended_at"]
+                if ended_at is None and await session.scalar(select(ChatAvatar.uuid).where(
+                        ChatAvatar.owner_id == owner_id, ChatAvatar.account_user_id == avatar["account_user_id"],
+                        ChatAvatar.user_id == avatar["user_id"], ChatAvatar.ended_at.is_(None))):
+                    ended_at = max(time.time_ns() // 1000, avatar["first_seen_at"])
+                session.add(ChatAvatar(uuid=UUID(avatar["uuid"]), owner_id=owner_id,
+                    account_user_id=avatar["account_user_id"], user_id=avatar["user_id"],
+                    blob_key=blobs[avatar["blob_key"]][0] if avatar["blob_key"] else None,
+                    photo_key=avatar["photo_key"], status=avatar["status"],
+                    first_seen_at=avatar["first_seen_at"], ended_at=ended_at, updated_at=int(time.time())))
+                await session.flush()
             await session.flush()
         return counts
     except BaseException:
