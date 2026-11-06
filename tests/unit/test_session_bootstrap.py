@@ -140,7 +140,7 @@ def test_real_loader_and_consumers_share_one_registry():
             dispatcher = types.SimpleNamespace(include_router=Mock(), start_polling=AsyncMock(),
                                                update=types.SimpleNamespace(outer_middleware=Mock()))
             main.Dispatcher = lambda **kwargs: dispatcher
-            main.send_log_to_active_bot = AsyncMock()
+            main.restore_startup_notifications = AsyncMock()
             main.starting_tg_parse_dialogs_handler = AsyncMock()
             ready = asyncio.get_running_loop().create_future()
             monitoring = asyncio.create_task(main._start_dialog_monitor(ready))
@@ -179,6 +179,7 @@ def test_real_loader_and_consumers_share_one_registry():
             main.run_avatar_archiver.assert_awaited_once_with(loader.bot)
             main.bot.me.assert_awaited_once()
             report.finish.assert_called_once()
+            main.restore_startup_notifications.assert_awaited_once_with(loader.bot, report)
             registered_clients = main._register_pyrogram_handlers.call_args.args[0]
             assert main.start_all_clients.call_args.args[0] is registered_clients
             assert registered_clients == [client]

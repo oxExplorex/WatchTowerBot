@@ -1,6 +1,7 @@
 import gzip
 import hashlib
 import json
+from pathlib import Path
 import zipfile
 
 import pytest
@@ -148,3 +149,82 @@ def test_ui_update_locks_archive_before_starting_installer(monkeypatch):
     monkeypatch.setattr(updater, "maybe_update", install)
     status.install()
     assert stopped.wait(2)
+
+
+def test_downloaded_exe_is_not_renamed_after_self_test_and_each_attempt_is_isolated(tmp_path, monkeypatch, capsys):
+    import io
+    from unittest.mock import Mock
+    from archive_viewer import updater
+
+    current = dict(repository="owner/repo", version="old", built_at=100)
+    packed = io.BytesIO()
+    with zipfile.ZipFile(packed, "w") as archive:
+        archive.writestr(EXECUTABLE, b"MZ-synthetic-new-exe")
+    raw = packed.getvalue()
+    manifest = current | dict(version="new", built_at=200, archive=WINDOWS_ARCHIVE,
+        size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    target = tmp_path / "installed.exe"
+    target.write_bytes(b"MZ-old")
+    build = tmp_path / "build_info.json"
+    build.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(updater, "BUILD_INFO", build)
+    monkeypatch.setattr(updater.sys, "platform", "win32")
+    monkeypatch.setattr(updater.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(updater.sys, "executable", str(target))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(updater, "build_info", lambda: current)
+    monkeypatch.setattr(updater, "fetch_manifest", lambda _: manifest)
+    monkeypatch.setattr(updater, "urlopen", lambda *args, **kwargs: io.BytesIO(raw))
+    check, start = Mock(), Mock()
+    monkeypatch.setattr(updater.subprocess, "run", check)
+    monkeypatch.setattr(updater.subprocess, "Popen", start)
+    rename = Mock(side_effect=PermissionError("Windows still holds the self-tested EXE"))
+    monkeypatch.setattr(updater.os, "replace", rename)
+    assert updater.maybe_update("synthetic-backup.zip")
+    assert updater.maybe_update("synthetic-backup.zip")
+    paths = [call.args[0][0] for call in start.call_args_list]
+    assert len(set(paths)) == 2
+    assert paths == [call.args[0][0] for call in check.call_args_list]
+    assert all(Path(path).read_bytes() == b"MZ-synthetic-new-exe" for path in paths)
+    assert target.read_bytes() == b"MZ-old"
+    rename.assert_not_called()
+    check.side_effect = PermissionError(13, "private-path-never-print")
+    assert not updater.maybe_update()
+    assert start.call_count == 2 and target.read_bytes() == b"MZ-old"
+    output = capsys.readouterr().out
+    assert "самопроверка нового EXE (PermissionError, код 13)" in output
+    assert "private-path-never-print" not in output
+
+
+def test_update_error_names_stage_and_os_code_without_leaking_paths(tmp_path, monkeypatch, capsys):
+    from unittest.mock import Mock
+    from archive_viewer import updater
+
+    build = tmp_path / "build_info.json"
+    build.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(updater, "BUILD_INFO", build)
+    monkeypatch.setattr(updater.sys, "platform", "win32")
+    monkeypatch.setattr(updater.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(updater, "build_info", lambda: dict(repository="owner/repo"))
+    monkeypatch.setattr(updater, "fetch_manifest", Mock(side_effect=PermissionError(13, "private-user-path")))
+    assert not updater.maybe_update()
+    output = capsys.readouterr().out
+    assert "проверка версии" in output and "PermissionError, код 13" in output
+    assert "private-user-path" not in output
+
+
+def test_update_cleanup_preserves_fresh_jobs_and_unmanaged_folders(tmp_path):
+    import os
+    import time
+    from archive_viewer.updater import cleanup_downloads
+
+    old, fresh, unmanaged = [tmp_path / name for name in ("download-old", "download-fresh", "other-folder")]
+    for folder in (old, fresh, unmanaged):
+        folder.mkdir()
+        (folder / "synthetic.exe").write_bytes(b"MZ")
+    expired = time.time() - 8 * 86400
+    os.utime(old, (expired, expired))
+    os.utime(unmanaged, (expired, expired))
+    cleanup_downloads(tmp_path)
+    assert not old.exists()
+    assert fresh.exists() and unmanaged.exists()

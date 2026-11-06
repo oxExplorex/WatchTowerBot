@@ -55,7 +55,7 @@ from middlewares.update_user import UpdateUserMiddleware
 from middlewares.admin_access import AdminAccessMiddleware
 from middlewares.auth_session_cleanup import AuthSessionCleanupMiddleware
 from middlewares.personal_secret import PersonalSecretMiddleware, notify_missing_secrets
-from utils.others import send_log_to_active_bot
+from services.startup_notifications import restore_startup_notifications
 from services.media_archive import run_media_archiver
 from services.avatar_archive import run_avatar_archiver
 from services.history_backfill import run_history_backfill
@@ -209,9 +209,8 @@ async def start_polling_bot():
         if reporter is not None:
             reporter.update("Подключение бота", "Проверка Telegram и запуск обработчиков")
             await bot.me()
-            reporter.finish(detail="Команды и Business-обработчики готовы. Откройте /start.")
-        else:
-            await send_log_to_active_bot(bot)
+            reporter.finish(detail="Команды и Business-обработчики готовы. Меню доступно в чате бота.")
+        create_logged_task(restore_startup_notifications(bot, reporter), name="startup_notifications")
         bot_logger.info("Bot was started")
 
         await dispatcher.start_polling(bot, close_bot_session=False)

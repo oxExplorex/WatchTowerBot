@@ -44,6 +44,66 @@ def fake_bot(enabled):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("topics_enabled", [False, True])
+async def test_restart_restores_existing_menu_when_bootstrap_delivery_failed(
+        db_main, monkeypatch, tmp_path, topics_enabled):
+    from scripts.startup_status import StartupReporter
+    from services import startup_notifications as startup
+    from services.notification_topics import TopicDelivery, prepare_notification_topics
+
+    bot = fake_bot(topics_enabled)
+    bot.edit_message_text = AsyncMock()
+    repository = TopicsRepository(db_main.get_session_factory)
+    bot._watchtower_topic_delivery = TopicDelivery(bot, repository)
+    await repository.save(bot.id, 1001, "menu", 42)
+    monkeypatch.setattr(startup, "get_admin_ids", AsyncMock(return_value=[1001]))
+    monkeypatch.setattr(db_main, "get_admin_ids", AsyncMock(return_value=[1001]))
+    monkeypatch.setattr(db_main, "get_account_all", AsyncMock(return_value=[]))
+    monkeypatch.setattr(db_main, "get_configured_admin_ids", lambda: [])
+    report = StartupReporter(root=tmp_path)
+    report.recipients = [1001, 9999]  # A removed administrator gets no retry.
+    report.message_ids[1001] = 500
+    report.operation = "Обновление"
+    report.finish()
+    await startup.restore_startup_notifications(bot, report)
+    await prepare_notification_topics(bot)
+    menus = [call.kwargs for call in bot.send_message.await_args_list
+             if "reply_markup" in call.kwargs]
+    assert len(menus) == 1
+    assert menus[0]["chat_id"] == 1001
+    assert menus[0].get("message_thread_id") == (42 if topics_enabled else None)
+    assert "panel:accounts" in {button.callback_data for row in
+                               menus[0]["reply_markup"].inline_keyboard for button in row}
+    bot.edit_message_text.assert_awaited_once()
+    assert bot.edit_message_text.await_args.kwargs["message_id"] == 500
+    assert "WatchTowerBot обновлён" in bot.edit_message_text.await_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_startup_result_replacement_uses_logs_when_original_panel_was_deleted(db_main, monkeypatch, tmp_path):
+    from scripts.startup_status import StartupReporter
+    from services import startup_notifications as startup
+    from services.notification_topics import TopicDelivery
+    from aiogram.methods import EditMessageText
+
+    bot = fake_bot(True)
+    bot.edit_message_text = AsyncMock(side_effect=TelegramBadRequest(
+        method=EditMessageText(chat_id=1001, message_id=500, text="test"),
+        message="message to edit not found"))
+    repository = TopicsRepository(db_main.get_session_factory)
+    bot._watchtower_topic_delivery = TopicDelivery(bot, repository)
+    await repository.save(bot.id, 1001, "menu", 42)
+    await repository.save(bot.id, 1001, "logs", 43)
+    monkeypatch.setattr(startup, "get_admin_ids", AsyncMock(return_value=[1001]))
+    report = StartupReporter(root=tmp_path)
+    report.recipients = [1001]
+    report.message_ids[1001] = 500
+    report.finish()
+    await startup.restore_startup_notifications(bot, report)
+    assert [call.kwargs["message_thread_id"] for call in bot.send_message.await_args_list] == [42, 43]
+
+
+@pytest.mark.asyncio
 async def test_startup_prepares_topics_including_server_logs_only_for_configured_admins(db_main, monkeypatch):
     from services.notification_topics import TopicDelivery, prepare_notification_topics
     bot = fake_bot(True)

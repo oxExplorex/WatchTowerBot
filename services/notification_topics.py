@@ -130,6 +130,17 @@ async def send_menu(bot, owner_id):
         text=START_MESSAGE_TEXT, reply_markup=static_admin_keyboard(), parse_mode="HTML")
 
 
+async def send_startup_menu(bot, owner_id):
+    async with account_guard(("startup-menu", bot.id, owner_id)):
+        sent = getattr(bot, "_watchtower_startup_menus", None)
+        if sent is None:
+            sent = bot._watchtower_startup_menus = set()
+        if owner_id not in sent:
+            panel = await send_menu(bot, owner_id)
+            sent.add(owner_id)
+            return panel
+
+
 async def prepare_notification_topics(bot, *, owner_id=None, account_user_id=None):
     """Prepare destinations without holding a user's FSM lock or sending log text."""
     from db.main import get_account_all, get_admin_ids, get_configured_admin_ids
@@ -160,7 +171,7 @@ async def prepare_notification_topics(bot, *, owner_id=None, account_user_id=Non
                         continue
                     thread_id = await service.ensure_thread(owner, key, title)
                     if key == "menu" and thread_id is not None:
-                        await send_menu(bot, owner)
+                        await send_startup_menu(bot, owner)
                     if time.monotonic() < service._topic_retry_until:
                         return
             except Exception as error:

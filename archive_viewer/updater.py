@@ -7,7 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
 import time
 from urllib.request import Request, urlopen
 import zipfile
@@ -74,6 +74,9 @@ def maybe_update(archive_path=None):
     if sys.platform != "win32" or not getattr(sys, "frozen", False) or not BUILD_INFO.is_file():
         return False
     target = Path(sys.executable).resolve()
+    root = None
+    handed_off = False
+    phase = "проверка версии"
     try:
         current = build_info()
         repository = current["repository"]
@@ -84,37 +87,61 @@ def maybe_update(archive_path=None):
         if not validate_manifest(manifest, current):
             return False
         print("Доступно обновление просмотрщика. Скачиваю и проверяю…", flush=True)
+        phase = "подготовка каталога загрузки"
         cache = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".cache") / "WatchTowerViewer" / "updates"
         cache.mkdir(parents=True, exist_ok=True)
-        with TemporaryDirectory(prefix="download-", dir=cache) as directory:
-            root = Path(directory)
-            download = root / WINDOWS_ARCHIVE
-            with urlopen(Request(base + WINDOWS_ARCHIVE + f"?t={manifest['built_at']}", headers={"User-Agent": "WatchTowerViewer", "Cache-Control": "no-cache"}), timeout=30) as response, download.open("xb") as output:
-                size = 0
-                while chunk := response.read(1024 * 1024):
-                    size += len(chunk)
-                    if size > manifest["size"]:
-                        raise ValueError("Oversized update")
-                    output.write(chunk)
-            candidate = root / EXECUTABLE
-            unpack_update(download, candidate, manifest)
-            flags = subprocess.CREATE_NO_WINDOW
-            subprocess.run([str(candidate), "--self-test"], check=True, timeout=60,
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
-            staging = cache / EXECUTABLE
-            if staging.resolve() == target:
-                return False
-            os.replace(candidate, staging)
-        command = [str(staging), "--apply-update", str(target), str(os.getpid())]
+        cleanup_downloads(cache)
+        root = Path(mkdtemp(prefix="download-", dir=cache))
+        download = root / WINDOWS_ARCHIVE
+        phase = "скачивание архива"
+        with urlopen(Request(base + WINDOWS_ARCHIVE + f"?t={manifest['built_at']}", headers={"User-Agent": "WatchTowerViewer", "Cache-Control": "no-cache"}), timeout=30) as response, download.open("xb") as output:
+            size = 0
+            while chunk := response.read(1024 * 1024):
+                size += len(chunk)
+                if size > manifest["size"]:
+                    raise ValueError("Oversized update")
+                output.write(chunk)
+        phase = "проверка и распаковка архива"
+        candidate = root / EXECUTABLE
+        unpack_update(download, candidate, manifest)
+        flags = subprocess.CREATE_NO_WINDOW
+        phase = "самопроверка нового EXE"
+        subprocess.run([str(candidate), "--self-test"], check=True, timeout=60,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+        # Never rename/delete the EXE immediately after its self-test: the Windows
+        # bootloader or antivirus may still hold it. Each attempt has its own path,
+        # so another viewer's installer cannot block publication to a shared EXE.
+        phase = "запуск установщика"
+        command = [str(candidate), "--apply-update", str(target), str(os.getpid())]
         if archive_path:
             command.append(str(Path(archive_path).resolve()))
         subprocess.Popen(command, close_fds=True, creationflags=flags,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        handed_off = True
         return True
     except Exception as error:
         # Update connectivity is optional; never include user paths/secrets in output.
-        print(f"Обновление недоступно ({type(error).__name__}). Открываю установленную версию.")
+        code = getattr(error, "winerror", None) or getattr(error, "errno", None)
+        reason = type(error).__name__ + (f", код {code}" if isinstance(code, int) else "")
+        print(f"Обновление недоступно: {phase} ({reason}). Открываю установленную версию.")
         return False
+    finally:
+        if root is not None and not handed_off:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def cleanup_downloads(cache):
+    """Only stale managed jobs; never touch a current installer or linked folder."""
+    cache = Path(cache).resolve()
+    for path in cache.glob("download-*"):
+        try:
+            if (path.is_symlink() or path.is_junction() or not path.is_dir()
+                    or path.resolve().parent != cache):
+                continue
+            if time.time() - path.stat().st_mtime > 7 * 86400:
+                shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            pass
 
 
 def apply_update(target, parent_pid, archive_path=None):
