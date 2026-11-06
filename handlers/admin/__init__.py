@@ -10,6 +10,7 @@ def build_router() -> Router:
     from .proxy_manager import router as proxy_manager_router
     from .reboot import router as reboot_router
     from .settings import router as settings_router
+    from .backups import router as backups_router
 
     router = Router(name=__name__)
     router.include_routers(
@@ -20,5 +21,6 @@ def build_router() -> Router:
         proxy_manager_router,
         reboot_router,
         settings_router,
+        backups_router,
     )
     return router

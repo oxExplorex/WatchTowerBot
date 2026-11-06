@@ -1,4 +1,5 @@
 import sys
+import asyncio
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -15,6 +16,48 @@ from db.repositories.admins_repo import AdminsRepository
 from db.repositories.personal_repo import PersonalKeyRepository
 from middlewares.auth_session_cleanup import AuthSessionCleanupMiddleware
 from middlewares.personal_secret import PersonalSecretMiddleware, SECRET_CONFIRM, SECRET_INPUT, SETUP_CALLBACK
+
+
+@pytest.mark.asyncio
+async def test_dump_button_accepts_chat_id_and_rejects_foreign_chat(setup_flow, monkeypatch):
+    from core.personal_crypto import create_key_bundle
+    from states.backups import DUMP_CHAT_ID
+    flow = setup_flow
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
+    await flow.db.messages_repository.record(owner_id=1001, account_user_id=456, chat_id=789,
+        message_id=1, kind="new", source="business", event_key="one", payload={"text": "private", "media": []})
+    worker = AsyncMock()
+    monkeypatch.setattr(flow.backups, "_dump", worker)
+    await flow.feed(callback="backup:menu")
+    await flow.feed(callback="backup:dump")
+    assert await flow.state().get_state() == DUMP_CHAT_ID
+    await flow.feed(content="99999")
+    worker.assert_not_awaited()
+    await flow.feed(content="789")
+    await asyncio.sleep(0)
+    worker.assert_awaited_once_with(flow.bot, 1001, 456, 789)
+
+
+@pytest.mark.asyncio
+async def test_backup_import_deletes_secret_before_background_work_and_keeps_it_out_of_fsm(setup_flow, monkeypatch):
+    from states.backups import IMPORT_FILES, IMPORT_SECRET
+    flow = setup_flow
+    identity = "a" * 32
+    monkeypatch.setattr(flow.backups.uploads, "collect_parts", lambda *args: ["synthetic"])
+    await flow.feed(callback="backup:import")  # A fresh installation can restore before setting up a new key.
+    assert await flow.state().get_state() == IMPORT_FILES
+    await flow.state().update_data(backup_identity=identity, backup_total=1)
+    await flow.feed(callback="backup:restore")
+    assert await flow.state().get_state() == IMPORT_SECRET
+    async def restore(*args):
+        assert any(isinstance(call, DeleteMessage) for call in flow.session.calls)
+        assert "СекретБекапа123" not in str(await flow.state().get_data())
+    worker = AsyncMock(side_effect=restore)
+    monkeypatch.setattr(flow.backups, "_restore", worker)
+    await flow.feed(content="СекретБекапа123")
+    await asyncio.sleep(0)
+    worker.assert_awaited_once()
+    assert await flow.state().get_state() is None
 
 
 class OfflineSession(BaseSession):
@@ -113,6 +156,9 @@ async def setup_flow(db_main, offline_module, monkeypatch):
     for name in ("get_account_user_id", "get_app_tg_user_id", "get_user_names_by_ids"):
         setattr(accounts, name, getattr(db_main, name))
     settings = offline_module("handlers/admin/settings/setting_menu_handler.py")
+    backups = offline_module("handlers/admin/backups.py")
+    backups.get_configured_admin_ids = db_main.get_configured_admin_ids
+    monkeypatch.setattr(backups, "_busy", set())
     for name in ("get_accounts_overview", "get_archive_statistics", "get_account_all", "get_runtime_health", "get_configured_admin_ids", "get_admin_health_events", "get_all_health_events",
                  "get_latest_admin_health_event", "get_user_auto_update_enabled", "get_user_gemini_proxy_config",
                  "get_user_timezone_offset", "get_version_state_cache", "set_version_state_cache"):
@@ -140,6 +186,7 @@ async def setup_flow(db_main, offline_module, monkeypatch):
     dispatcher.include_router(editor.router)
     dispatcher.include_router(deleter.router)
     dispatcher.include_routers(accounts.router, settings.router, admins.router, search.router)
+    dispatcher.include_router(backups.router)
     dispatcher.include_router(loader.router)
     session = OfflineSession()
     bot = Bot("123456:offline_test_token", session=session)
@@ -169,7 +216,8 @@ async def setup_flow(db_main, offline_module, monkeypatch):
     try:
         yield SimpleNamespace(feed=feed, keys=keys, admins=repository, handled=handled, session=session, writes=writes,
                               state=lambda uid=1001: dispatcher.fsm.get_context(bot=bot, chat_id=uid, user_id=uid),
-                              db=db_main, ownership=ownership, search=search, settings=settings, editor=editor, bot=bot)
+                              db=db_main, ownership=ownership, search=search, settings=settings, editor=editor, bot=bot,
+                              backups=backups)
     finally:
         await dispatcher.storage.close()
         await dispatcher.fsm.events_isolation.close()

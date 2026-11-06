@@ -31,6 +31,9 @@ def settings_keyboard(tz_offset: int, auto_update: int, proxy_cfg: dict, has_upd
     keyboard.row(InlineKeyboardButton(text=SECRET_BUTTON, callback_data=STATUS_CALLBACK))
     if can_export_logs:
         keyboard.row(InlineKeyboardButton(text=LOG_BUTTON, callback_data="set:logs:last"))
+        from callbacks.backups import MENU
+        from data.texts.backups import BUTTON
+        keyboard.row(InlineKeyboardButton(text=BUTTON, callback_data=MENU))
 
     keyboard.row(
         InlineKeyboardButton(

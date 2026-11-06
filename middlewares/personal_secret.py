@@ -22,10 +22,12 @@ from states.personal_secret import (
 
 
 async def prompt_setup(bot, owner_id, *, message=None):
+    from db.main import get_configured_admin_ids
+    keyboard = setup_keyboard(can_import=owner_id in get_configured_admin_ids())
     if message is not None:
-        await edit_panel(message, PROMPT, setup_keyboard())
+        await edit_panel(message, PROMPT, keyboard)
     else:
-        await bot.send_message(owner_id, PROMPT, parse_mode="HTML", reply_markup=setup_keyboard())
+        await bot.send_message(owner_id, PROMPT, parse_mode="HTML", reply_markup=keyboard)
 
 
 async def notify_missing_secrets(bot):
@@ -72,6 +74,14 @@ class PersonalSecretMiddleware(BaseMiddleware):
             await call.answer(texts.MENU_UNAVAILABLE)
             return None
         current = await state.get_state()
+        from states.backups import IMPORT_STATES, IMPORT_SECRET
+        from data.texts.backups import SECRET_PROMPT, SECRET_INTERRUPTED
+        backup_reply = getattr(message, "reply_to_message", None)
+        if update.message and current != IMPORT_SECRET and getattr(backup_reply, "text", None) == SECRET_PROMPT:
+            await self.dialog.delete_input(message)
+            await message.answer(SECRET_INTERRUPTED)
+            return None
+        backup_action = bool(call and (call.data or "").startswith("backup:"))
         reply = getattr(message, "reply_to_message", None)
         if update.message and current not in SECRET_STATES and reply is not None:
             author = getattr(reply, "from_user", None)
@@ -130,7 +140,8 @@ class PersonalSecretMiddleware(BaseMiddleware):
             await self.dialog.begin(message, state, verify=key is not None)
             return None
         self_view = callback.startswith("own:") or (message.text or "") == ownership_text.MENU
-        if key is None and not self_view:
+        backup_input = current in IMPORT_STATES and call is None and command != "/start"
+        if key is None and not self_view and not backup_action and not backup_input:
             if call:
                 await call.answer(texts.SETUP_REQUIRED)
             elif update.message and not (message.text or "").startswith("/"):

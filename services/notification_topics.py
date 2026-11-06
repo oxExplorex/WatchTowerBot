@@ -133,6 +133,8 @@ async def prepare_notification_topics(bot, *, owner_id=None, account_user_id=Non
         topics = [("menu", MENU_TITLE), ("spoiler", "spoiler")]
         if owner in configured_admins:
             topics.append(("logs", LOGS_TITLE))
+            from data.texts.backups import TOPIC_TITLE
+            topics.append(("backups", TOPIC_TITLE))
         topics.extend((f"account:{user_id}", str(user_id)) for user_id in sorted(accounts))
         for key, title in topics:
             try:

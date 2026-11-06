@@ -31,6 +31,8 @@ data/session/
 data/logs/
 data/temp/
 data/media/
+data/backups/
+*.wtb
 data/__pycache__/
 
 # SQLite / sessions

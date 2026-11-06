@@ -1,0 +1,7 @@
+MENU = "backup:menu"
+CREATE = "backup:create"
+IMPORT = "backup:import"
+RESTORE = "backup:restore"
+DUMP = "backup:dump"
+DUMP_SELECT = "backup:pick:"
+DUMP_PAGE = "backup:page:"

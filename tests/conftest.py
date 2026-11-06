@@ -14,6 +14,15 @@ import pytest
 import pytest_asyncio
 
 
+@pytest.fixture(autouse=True)
+def isolate_library_log_routes(monkeypatch):
+    # Bootstrap tests may install an application route on the process-wide root.
+    # Keep it from forwarding another test's synthetic logger and capturing it twice.
+    root = logging.getLogger()
+    monkeypatch.setattr(root, "handlers", [handler for handler in root.handlers
+        if not (type(handler).__module__ == "core.log_safety" and type(handler).__name__ == "LibraryErrorHandler")])
+
+
 def pytest_addoption(parser):
     parser.addoption("--database-backend", choices=("sqlite", "postgresql"), default="sqlite")
     parser.addoption("--postgres-bin", default=None, help="Directory containing initdb and pg_ctl for disposable tests")

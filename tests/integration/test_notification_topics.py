@@ -37,14 +37,14 @@ async def test_startup_prepares_topics_including_server_logs_only_for_configured
     await prepare_notification_topics(bot)
     assert {(c.kwargs["chat_id"], c.kwargs["name"]) for c in bot.create_forum_topic.call_args_list} == {
         (1001, "456"), (1001, "789"), (1001, "spoiler"), (2002, "spoiler"), (1001, "Меню"), (2002, "Меню"),
-        (1001, "Логи")}
+        (1001, "Логи"), (1001, "Бекапы")}
     assert bot.send_message.await_count == 2
     assert all(call.kwargs["reply_markup"].inline_keyboard for call in bot.send_message.call_args_list)
     await prepare_notification_topics(bot)
-    assert bot.create_forum_topic.await_count == 7
+    assert bot.create_forum_topic.await_count == 8
     assert bot.send_message.await_count == 2
     await prepare_notification_topics(bot, owner_id=2002, account_user_id=999)
-    assert bot.create_forum_topic.await_count == 8
+    assert bot.create_forum_topic.await_count == 9
     assert bot.create_forum_topic.call_args.kwargs == dict(chat_id=2002, name="999")
 
 

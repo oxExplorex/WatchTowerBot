@@ -7,11 +7,16 @@ from data.texts.personal_secret import CANCEL_BUTTON, SETUP_BUTTON
 from keyboards.inline.navigation import with_navigation
 
 
-def setup_keyboard() -> InlineKeyboardMarkup:
+def setup_keyboard(*, can_import=False) -> InlineKeyboardMarkup:
+    extra = []
+    if can_import:
+        from callbacks.backups import IMPORT
+        from data.texts.backups import IMPORT_BUTTON
+        extra = [[InlineKeyboardButton(text=IMPORT_BUTTON, callback_data=IMPORT)]]
     return with_navigation(InlineKeyboardMarkup(
         inline_keyboard=[[
             InlineKeyboardButton(text=SETUP_BUTTON, callback_data=SETUP_CALLBACK),
-        ]],
+        ]] + extra,
     ))
 
 
