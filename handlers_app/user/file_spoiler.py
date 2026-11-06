@@ -26,20 +26,16 @@ def _safe_text(value: str | None, fallback: str = "Unknown") -> str:
     return escape(str(value))
 
 
-def _session_display_name(account) -> str:
-    return _safe_text(getattr(account, "number", None), fallback="Session")
-
-
 def _sender_display_name(message: Message) -> str:
     sender = getattr(message, "from_user", None)
     if sender:
         full_name = " ".join(
             x for x in [getattr(sender, "first_name", None), getattr(sender, "last_name", None)] if x
         ).strip()
-        return _safe_text(full_name or getattr(sender, "username", None), fallback="User")
+        return full_name or getattr(sender, "username", None) or "Пользователь"
 
     chat = getattr(message, "chat", None)
-    return _safe_text(getattr(chat, "title", None), fallback="Chat")
+    return getattr(chat, "title", None) or "Чат"
 
 
 def _message_link(message: Message) -> str | None:
@@ -63,32 +59,36 @@ def _message_link(message: Message) -> str | None:
     return None
 
 
-def _entity_link(label: str, entity_id: int | None, fallback: str) -> str:
+def _entity_link(label: str | None, entity_id: int | None, fallback: str) -> str:
     if entity_id:
-        return f"<a href=\"tg://user?id={entity_id}\">{_safe_text(label, fallback=fallback)}</a> <code>{entity_id}</code>"
+        if not label or str(label) == str(entity_id):
+            return f'<a href="tg://user?id={entity_id}">{entity_id}</a>'
+        return f"<a href=\"tg://user?id={entity_id}\">{_safe_text(label, fallback=fallback)}</a> · <code>{entity_id}</code>"
     return _safe_text(label, fallback=fallback)
 
 
-def _media_suffix(message: Message) -> str:
-    if getattr(message, "photo", None):
-        return ".jpg"
-    if getattr(message, "video", None) or getattr(message, "video_note", None):
-        return ".mp4"
-    return ".bin"
+def _media_kind(message: Message) -> str:
+    for kind in ("photo", "video", "video_note"):
+        if getattr(message, kind, None):
+            return kind
+    raise ValueError("Unsupported temporary media")
 
 
-async def _send_document_with_retry(chat_id: int, file_path: str, suffix: str):
+async def _send_media_with_retry(chat_id: int, file_path: str, kind: str, caption: str):
     last_error: Exception | None = None
+    suffix = ".jpg" if kind == "photo" else ".mp4"
 
     for attempt in range(1, SEND_ATTEMPTS + 1):
         try:
-            media = FSInputFile(file_path, filename=f"ttl_media{suffix}")
+            media = FSInputFile(file_path, filename=f"temporary_{kind}{suffix}")
+            arguments = {kind: media, "request_timeout": SEND_TIMEOUT_SECONDS}
+            if kind != "video_note":
+                arguments.update(caption=caption, parse_mode="HTML")
+            if kind == "video":
+                arguments["supports_streaming"] = True
             from services.notification_topics import send_spoiler
             sent = await send_spoiler(
-                bot, bot.send_document, chat_id,
-                document=media,
-                disable_content_type_detection=False,
-                request_timeout=SEND_TIMEOUT_SECONDS,
+                bot, getattr(bot, f"send_{kind}"), chat_id, **arguments,
             )
             return sent
         except TelegramRetryAfter as exc:
@@ -127,18 +127,20 @@ async def file_spoiler_handler(client: Client, message: Message):
 
         source_chat = getattr(message, "chat", None)
         source_chat_id = getattr(source_chat, "id", None)
-        source_chat_title = _safe_text(getattr(source_chat, "title", None), fallback="Private chat")
+        private_name = " ".join(value for value in (
+            getattr(source_chat, "first_name", None), getattr(source_chat, "last_name", None)) if value)
+        source_chat_title = _safe_text(getattr(source_chat, "title", None) or private_name, fallback="Личная переписка")
 
-        session_line = _entity_link(_session_display_name(account), getattr(account, "user_id", None), "Session")
+        session_line = _entity_link(None, getattr(account, "user_id", None), "Аккаунт")
         sender_line = _entity_link(
             _sender_display_name(message),
             getattr(getattr(message, "from_user", None), "id", None),
-            "User",
+            "Пользователь",
         )
 
         message_url = _message_link(message)
         chat_line = (
-            f"<a href=\"{message_url}\">{source_chat_title}</a>"
+            f"<a href=\"{escape(message_url, quote=True)}\">{source_chat_title}</a>"
             if message_url
             else f"{source_chat_title} <code>{source_chat_id or '-'}</code>"
         )
@@ -153,9 +155,11 @@ async def file_spoiler_handler(client: Client, message: Message):
             bot, bot.send_message, account.admin_id,
             text=status_text,
             disable_web_page_preview=True,
+            parse_mode="HTML",
         )
 
-        suffix = _media_suffix(message)
+        kind = _media_kind(message)
+        suffix = ".jpg" if kind == "photo" else ".mp4"
         with tempfile.NamedTemporaryFile(prefix="spoiler_", suffix=suffix, dir="data/temp", delete=False) as tmp:
             temp_path = tmp.name
 
@@ -166,21 +170,24 @@ async def file_spoiler_handler(client: Client, message: Message):
             return
 
         caption = constant_text.SPOILER_SAVED_CAPTION_TEXT.format(
+            media=constant_text.SPOILER_MEDIA_TITLES[kind],
             session=session_line,
             sender=sender_line,
             chat=chat_line,
         )
 
-        sent = await _send_document_with_retry(account.admin_id, downloaded, suffix)
-        from aiogram.types import ReplyParameters
-        try:
-            await bot.send_message(chat_id=account.admin_id, text=caption,
-                message_thread_id=sent.message_thread_id,
-                reply_parameters=ReplyParameters(message_id=sent.message_id),
-                disable_web_page_preview=True)
-        except Exception:
-            # Preserve source information even if a reply cannot be delivered.
-            await bot.edit_message_caption(chat_id=account.admin_id, message_id=sent.message_id, caption=caption)
+        sent = await _send_media_with_retry(account.admin_id, downloaded, kind, caption)
+        if kind == "video_note":
+            from aiogram.types import ReplyParameters
+            try:
+                await bot.send_message(chat_id=account.admin_id, text=caption,
+                    message_thread_id=sent.message_thread_id,
+                    reply_parameters=ReplyParameters(message_id=sent.message_id),
+                    disable_web_page_preview=True, parse_mode="HTML")
+            except Exception:
+                # Video notes have no captions; preserve context as a standalone message.
+                await send_spoiler(bot, bot.send_message, account.admin_id, text=caption,
+                                   disable_web_page_preview=True, parse_mode="HTML")
 
         if status_message:
             try:

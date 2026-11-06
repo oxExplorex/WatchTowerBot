@@ -1,17 +1,21 @@
 SPOILER_STATUS_TEXT = (
-    "⏳ Обнаружено временное сообщение\n"
-    "Профиль: {session}\n"
-    "От: {sender}\n"
-    "Чат: {chat}\n\n"
-    "Скачиваю медиа..."
+    "⏳ <b>Сохраняю временное вложение…</b>\n\n"
+    "<b>Отправитель:</b> {sender}\n"
+    "<b>Чат:</b> {chat}\n"
+    "<b>Аккаунт:</b> {session}"
 )
 SPOILER_DOWNLOAD_FAILED_TEXT = "⚠️ Временное сообщение обнаружено, но скачать медиа не удалось."
 SPOILER_SAVED_CAPTION_TEXT = (
-    "🕒 Временное медиа сохранено\n"
-    "Профиль: {session}\n"
-    "От: {sender}\n"
-    "Чат: {chat}"
+    "🕒 <b>{media} сохранено</b>\n\n"
+    "<b>Отправитель:</b> {sender}\n"
+    "<b>Чат:</b> {chat}\n"
+    "<b>Аккаунт:</b> {session}"
 )
+SPOILER_MEDIA_TITLES = {
+    "photo": "Временное фото",
+    "video": "Временное видео",
+    "video_note": "Временное видеосообщение",
+}
 SPOILER_PROCESSING_ERROR_TEXT = "⚠️ Ошибка при обработке временного сообщения."
 
 PARSER_SESSION_DROPPED_TEXT = (
