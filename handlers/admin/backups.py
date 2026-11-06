@@ -25,7 +25,7 @@ from services.notification_topics import delivery
 from states.backups import IMPORT_FILES, IMPORT_SECRET, IMPORT_STATES
 from states.backups import DUMP_CHAT_ID
 from keyboards.inline.backups import dump_accounts_keyboard
-from services.chat_dump import PAGE_SIZE, DumpTooLarge, chat_accounts, create_chat_dump, send_chat_dump
+from services.chat_dump import PAGE_SIZE, DumpTooLarge, chat_accounts, chat_history_status, create_chat_dump, send_chat_dump
 from utils.panel import edit_input_panel, edit_panel, remember_panel
 
 router = Router(name=__name__)
@@ -177,8 +177,9 @@ async def _dump(bot, owner, account_id, chat_id, *, progress=None):
                 session_factory=get_session_factory, store=MediaStore.from_environment())
             await update(text.DUMP_SENDING.format(**counts))
             stage = "delivery"
+            history = await chat_history_status(owner, account_id, chat_id, session_factory=get_session_factory)
             await send_chat_dump(bot, owner, path,
-                text.DUMP_CAPTION.format(chat_id=chat_id, account_user_id=account_id, **counts), apps[0])
+                text.DUMP_CAPTION.format(chat_id=chat_id, account_user_id=account_id, **counts) + history, apps[0])
             await update(text.DUMP_DONE.format(chat_id=chat_id), done=True)
             bot_logger.info("Chat dump completed: owner_id=%s account_id=%s chat_id=%s", owner, account_id, chat_id)
     except asyncio.CancelledError:

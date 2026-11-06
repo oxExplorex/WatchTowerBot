@@ -15,6 +15,7 @@ async def test_dump_worker_reports_sending_and_completion_or_failure(offline_mod
     monkeypatch.setattr(module, "create_chat_dump", AsyncMock(return_value=(tmp_path / "archive.zip",
         dict(messages=1, revisions=2, media=0, pending=0))))
     monkeypatch.setattr(module, "send_chat_dump", AsyncMock(side_effect=RuntimeError() if outcome == "error" else None))
+    monkeypatch.setattr(module, "chat_history_status", AsyncMock(return_value=""))
     monkeypatch.setattr(module, "_notice", AsyncMock())
     progress = AsyncMock()
     module._busy.add(123)

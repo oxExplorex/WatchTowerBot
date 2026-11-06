@@ -6,20 +6,22 @@ import pytest
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fails", [False, "start", "send"])
+@pytest.mark.parametrize("fails", [False, "start", "send", "copy"])
 async def test_dump_transport_uses_bot_token_and_always_closes_client(offline_module, monkeypatch, tmp_path, fails):
     module = offline_module("services/chat_dump.py")
     path = tmp_path / "dump.zip"
     path.write_bytes(b"synthetic cipher archive")
     client = SimpleNamespace(start=AsyncMock(side_effect=RuntimeError() if fails == "start" else None),
-                             send_document=AsyncMock(side_effect=RuntimeError() if fails == "send" else None))
+                             send_document=AsyncMock(side_effect=RuntimeError() if fails == "send" else None,
+                                                     return_value=SimpleNamespace(id=900)))
     factory = Mock(return_value=client)
     close = AsyncMock()
     monkeypatch.setattr(module, "close_partial_client", close)
     async def send(method, owner_id, key, title, **kwargs):
         return await method(chat_id=owner_id, message_thread_id=77, **kwargs)
     monkeypatch.setattr(module, "delivery", lambda _: SimpleNamespace(send=send))
-    bot = SimpleNamespace(id=123456, token="synthetic-bot-token")
+    bot = SimpleNamespace(id=123456, token="synthetic-bot-token",
+        copy_message=AsyncMock(side_effect=RuntimeError() if fails == "copy" else None), delete_message=AsyncMock())
     app = SimpleNamespace(user_id=123, app_id=42, api_hash="synthetic-api-hash")
     if fails:
         with pytest.raises(RuntimeError):
@@ -35,6 +37,12 @@ async def test_dump_transport_uses_bot_token_and_always_closes_client(offline_mo
     else:
         assert client.send_document.await_args.kwargs["message_thread_id"] == 77
     close.assert_awaited_once_with(client)
+    if not fails:
+        bot.copy_message.assert_awaited_once_with(from_chat_id=123, message_id=900, caption="caption",
+                                                parse_mode="HTML", chat_id=123, message_thread_id=77)
+        bot.delete_message.assert_awaited_once_with(chat_id=123, message_id=900)
+    else:
+        bot.delete_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

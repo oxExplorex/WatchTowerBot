@@ -11,6 +11,23 @@ from services.chat_dump import chat_accounts, create_chat_dump
 
 
 @pytest.mark.asyncio
+async def test_history_status_shows_checked_ranges_and_start_without_foreign_access(db_main):
+    from services.chat_dump import chat_history_status
+    from db.history_models import HistoryChat, HistoryRange
+    await db_main.create_app_tg(123, 12345, "synthetic", "app")
+    apps, _ = await db_main.get_app_tg_user_id(123)
+    account = await db_main.create_account_tg(123, 456, apps[0].uuid, "79000000001")
+    async with db_main.create_unit_of_work() as uow:
+        uow.session.add(HistoryChat(account_uuid=account.uuid, chat_id=789, reached_start=False))
+        uow.session.add(HistoryRange(account_uuid=account.uuid, chat_id=789, low_id=70, high_id=80))
+        await uow.commit()
+    status = await chat_history_status(123, 456, 789, session_factory=db_main.get_session_factory)
+    assert "70–80" in status and "ещё не достигнуто" in status
+    foreign = await chat_history_status(999, 456, 789, session_factory=db_main.get_session_factory)
+    assert "70–80" not in foreign and "нет данных" in foreign
+
+
+@pytest.mark.asyncio
 async def test_zip_dump_is_scoped_to_one_owner_account_and_chat(db_main, tmp_path):
     await PersonalKeyRepository(db_main.get_session_factory).install(123, create_key_bundle(123, "СекретДампа123"))
     for owner, account, chat in ((123, 456, 789), (123, 456, 790), (123, 457, 789), (999, 456, 789)):
