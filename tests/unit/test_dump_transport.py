@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import asyncio
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -33,4 +34,22 @@ async def test_dump_transport_uses_bot_token_and_always_closes_client(offline_mo
         client.send_document.assert_not_awaited()
     else:
         assert client.send_document.await_args.kwargs["message_thread_id"] == 77
+    close.assert_awaited_once_with(client)
+
+
+@pytest.mark.asyncio
+async def test_dump_connection_timeout_cleans_up_without_uploading(offline_module, monkeypatch, tmp_path):
+    module = offline_module("services/chat_dump.py")
+    path = tmp_path / "dump.zip"
+    path.write_bytes(b"ciphertext")
+    async def hang():
+        await asyncio.Future()
+    client = SimpleNamespace(start=AsyncMock(side_effect=hang), send_document=AsyncMock())
+    close = AsyncMock()
+    monkeypatch.setattr(module, "close_partial_client", close)
+    monkeypatch.setattr(module, "CONNECT_TIMEOUT", 0.01)
+    with pytest.raises(TimeoutError):
+        await module.send_chat_dump(SimpleNamespace(id=1, token="synthetic"), 123, path, "caption",
+            SimpleNamespace(user_id=123, app_id=42, api_hash="synthetic"), client_factory=Mock(return_value=client))
+    client.send_document.assert_not_awaited()
     close.assert_awaited_once_with(client)

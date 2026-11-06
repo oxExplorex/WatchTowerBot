@@ -156,26 +156,72 @@ async def edited_backup_secret(message):
     await PersonalSecretDialog.delete_input(message)
 
 
-async def _dump(bot, owner, account_id, chat_id):
+async def _dump(bot, owner, account_id, chat_id, *, progress=None):
+    stage = "profile"
+    async def update(status, *, done=False):
+        if progress is not None:
+            await progress(status, done=done)
     try:
+        bot_logger.info("Chat dump stage: owner_id=%s account_id=%s chat_id=%s stage=%s", owner, account_id, chat_id, stage)
         from db.main import get_app_tg_user_id
         apps, _ = await get_app_tg_user_id(owner)
         if not apps:
+            await update(text.DUMP_NEEDS_APP, done=True)
             await _notice(bot, owner, text.DUMP_NEEDS_APP)
             return
         uploads.BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix="chat_dump_", dir=uploads.BACKUP_ROOT) as root:
+            stage = "build_zip"
+            bot_logger.info("Chat dump stage: owner_id=%s account_id=%s chat_id=%s stage=%s", owner, account_id, chat_id, stage)
             path, counts = await create_chat_dump(owner, account_id, chat_id, root,
                 session_factory=get_session_factory, store=MediaStore.from_environment())
+            await update(text.DUMP_SENDING.format(**counts))
+            stage = "delivery"
             await send_chat_dump(bot, owner, path,
                 text.DUMP_CAPTION.format(chat_id=chat_id, account_user_id=account_id, **counts), apps[0])
+            await update(text.DUMP_DONE.format(chat_id=chat_id), done=True)
+            bot_logger.info("Chat dump completed: owner_id=%s account_id=%s chat_id=%s", owner, account_id, chat_id)
+    except asyncio.CancelledError:
+        await update(text.DUMP_INTERRUPTED, done=True)
+        raise
     except DumpTooLarge:
+        await update(text.DUMP_TOO_LARGE, done=True)
         await _notice(bot, owner, text.DUMP_TOO_LARGE)
     except Exception as error:
-        bot_logger.warning("Chat dump failed: owner_id=%s error=%s", owner, type(error).__name__)
+        bot_logger.warning("Chat dump failed: owner_id=%s account_id=%s chat_id=%s stage=%s error=%s",
+                           owner, account_id, chat_id, stage, type(error).__name__)
+        await update(text.DUMP_FAILED, done=True)
         await _notice(bot, owner, text.DUMP_FAILED)
     finally:
         _busy.discard(owner)
+
+
+async def _start_dump(message, state, owner, account_id, chat_id):
+    if owner in _busy:
+        await edit_input_panel(message, state, text.BUSY, backup_keyboard(uploading=True))
+        return
+    data = await state.get_data()
+    panel_id = data.get("panel_message_id", message.message_id)
+    operation = uuid4().hex
+    await state.clear()
+    await state.update_data(panel_message_id=panel_id, dump_operation=operation)
+
+    async def progress(status, *, done=False):
+        # A completed background job must not replace a screen the user navigated to.
+        current = await state.get_data()
+        if current.get("dump_operation") != operation:
+            return
+        try:
+            await edit_input_panel(message, state, status, backup_keyboard(uploading=not done))
+            if done:
+                await state.update_data(dump_operation=None)
+        except Exception as error:
+            bot_logger.warning("Dump panel update unavailable: owner_id=%s error=%s", owner, type(error).__name__)
+
+    await progress(text.DUMP_BUILDING.format(chat_id=chat_id, account_id=account_id))
+    _busy.add(owner)
+    bot_logger.info("Chat dump requested: owner_id=%s account_id=%s chat_id=%s", owner, account_id, chat_id)
+    create_logged_task(_dump(message.bot, owner, account_id, chat_id, progress=progress), name=f"chat-dump:{owner}")
 
 
 async def _choose_dump(message, state, owner, chat_id, page=0):
@@ -183,12 +229,7 @@ async def _choose_dump(message, state, owner, chat_id, page=0):
     if not accounts:
         await edit_input_panel(message, state, text.DUMP_EMPTY, backup_keyboard())
     elif len(accounts) == 1 and page == 0:
-        if owner in _busy:
-            return
-        _busy.add(owner)
-        await state.clear()
-        create_logged_task(_dump(message.bot, owner, accounts[0], chat_id), name=f"chat-dump:{owner}")
-        await _notice(message.bot, owner, text.DUMP_STARTED)
+        await _start_dump(message, state, owner, accounts[0], chat_id)
     else:
         await edit_input_panel(message, state, text.DUMP_ACCOUNTS,
             dump_accounts_keyboard(chat_id, accounts[:PAGE_SIZE], page, len(accounts) > PAGE_SIZE))
@@ -233,7 +274,4 @@ async def dump_selection(call, state):
         await _choose_dump(call.message, state, owner, chat_id, value)
     else:
         # Recheck scope inside create_chat_dump; forged/stale buttons cannot export another owner's records.
-        _busy.add(owner)
-        await state.clear()
-        create_logged_task(_dump(call.bot, owner, value, chat_id), name=f"chat-dump:{owner}")
-        await _notice(call.bot, owner, text.DUMP_STARTED)
+        await _start_dump(call.message, state, owner, value, chat_id)

@@ -19,7 +19,8 @@ from middlewares.personal_secret import PersonalSecretMiddleware, SECRET_CONFIRM
 
 
 @pytest.mark.asyncio
-async def test_dump_button_accepts_chat_id_and_rejects_foreign_chat(setup_flow, monkeypatch):
+@pytest.mark.parametrize("navigate", [False, True])
+async def test_dump_button_accepts_chat_id_and_rejects_foreign_chat(setup_flow, monkeypatch, navigate):
     from core.personal_crypto import create_key_bundle
     from states.backups import DUMP_CHAT_ID
     flow = setup_flow
@@ -35,7 +36,24 @@ async def test_dump_button_accepts_chat_id_and_rejects_foreign_chat(setup_flow, 
     worker.assert_not_awaited()
     await flow.feed(content="789")
     await asyncio.sleep(0)
-    worker.assert_awaited_once_with(flow.bot, 1001, 456, 789)
+    worker.assert_awaited_once()
+    assert worker.await_args.args == (flow.bot, 1001, 456, 789)
+    progress = worker.await_args.kwargs["progress"]
+    panel = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
+    assert "Подготавливаю дамп" in panel.text
+    panel_id = panel.message_id
+    await progress("<b>Отправляю ZIP</b>")
+    assert flow.session.calls[-1].message_id == panel_id
+    if navigate:
+        await flow.feed(callback="panel:home", panel_id=panel_id)
+        count = len(flow.session.calls)
+        await progress("<b>Дамп отправлен</b>", done=True)
+        assert len(flow.session.calls) == count
+    else:
+        await progress("<b>Дамп отправлен</b>", done=True)
+        assert flow.session.calls[-1].text == "<b>Дамп отправлен</b>"
+        assert flow.session.calls[-1].message_id == panel_id
+        assert (await flow.state().get_data())["dump_operation"] is None
 
 
 @pytest.mark.asyncio
