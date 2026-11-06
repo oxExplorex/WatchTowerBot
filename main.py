@@ -164,7 +164,9 @@ async def start_polling_bot():
                     await _notify_admins_startup_failure(constant_text.STARTUP_MISSING_ENCRYPTION_KEY_TEXT)
             raise
         if reporter is not None:
-            reporter.configure(bot.token, admin_id_list)
+            from services.notification_topics import configure_startup_reporter
+
+            await configure_startup_reporter(bot, reporter, admin_id_list)
             reporter.update("Telegram-сессии", "Подготовка сохранённых авторизаций")
         await account_operations.recover_interrupted()
         await initialize_runtime_state()

@@ -89,7 +89,7 @@ def _safe_target_path(destination: Path, relative: str) -> Path:
     return target_path
 
 
-def _safe_extract_repo(zip_content: bytes, destination: Path) -> int:
+def _safe_extract_repo(zip_content: bytes, destination: Path, *, progress=None) -> int:
     destination = destination.resolve()
     with zipfile.ZipFile(io.BytesIO(zip_content)) as archive:
         members = archive.infolist()
@@ -120,6 +120,8 @@ def _safe_extract_repo(zip_content: bytes, destination: Path) -> int:
             files.append((member, relative))
         if not files:
             raise zipfile.BadZipFile("Archive contains no application files")
+        if progress is not None:
+            progress("Проверка обновления", f"Распаковка и проверка {len(files)} файлов; подготовка резервной копии кода")
 
         # Fully extract (including CRC checks) and back up before changing code.
         workspace = Path(tempfile.mkdtemp(prefix=".watchtower-update-", dir=destination))
@@ -142,6 +144,8 @@ def _safe_extract_repo(zip_content: bytes, destination: Path) -> int:
                     mode = stat.S_IMODE(member.external_attr >> 16) & 0o777
                     if mode:
                         staged.chmod(mode)
+            if progress is not None:
+                progress("Установка обновления", f"Замена {len(files)} файлов приложения")
             try:
                 for _, relative in files:
                     target = _safe_target_path(destination, relative)
@@ -194,14 +198,18 @@ def _resolve_latest_commit_sha() -> str | None:
         return None
 
 
-def download_and_extract_github_repo() -> bool:
+def download_and_extract_github_repo(*, progress=None) -> bool:
     try:
+        if progress is not None:
+            progress("Поиск сборки", "Получение актуальной версии из GitHub")
         sha = _resolve_latest_commit_sha()
         if sha:
             zip_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/zipball/{sha}"
         else:
             zip_url = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/archive/refs/heads/{REPO_BRANCH}.zip"
 
+        if progress is not None:
+            progress("Загрузка обновления", "Скачивание архива приложения из GitHub")
         response = requests.get(
             zip_url,
             timeout=60,
@@ -214,7 +222,7 @@ def download_and_extract_github_repo() -> bool:
         response.raise_for_status()
 
         project_root = Path(__file__).resolve().parents[1]
-        updated = _safe_extract_repo(response.content, project_root)
+        updated = _safe_extract_repo(response.content, project_root, progress=progress)
         print(f"Repository updated successfully. Files updated: {updated}")
         return True
     except requests.RequestException as exc:

@@ -80,7 +80,12 @@ def _build_logger() -> logging.Logger:
     logging.getLogger("requests").setLevel(logging.INFO)
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
-    logger.info(f"Logger initialized with level: {logging.getLevelName(level)}")
+    try:
+        version = (Path(__file__).resolve().parents[1] / "VERSION").read_text(encoding="utf-8-sig").strip()[:40]
+    except OSError:
+        version = "unknown"
+    logger.info("WatchTowerBot version=%s | Logger initialized with level: %s",
+                version, logging.getLevelName(level))
     return logger
 
 

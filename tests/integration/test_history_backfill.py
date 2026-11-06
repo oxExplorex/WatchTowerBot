@@ -215,6 +215,22 @@ async def test_old_snapshot_cannot_overwrite_live_content_and_personal_key_is_re
 
 
 @pytest.mark.asyncio
+async def test_historical_page_cannot_resurrect_deleted_dialog_or_emit_new_chat(history):
+    from db.models import HistoryUser
+
+    h = history
+    await h.db.record_chat_presence(2002, 11, 1001, present=True, date=100)
+    await h.db.record_chat_presence(2002, 11, 1001, present=False, date=200)
+    result = await h.db.messages_repository.record(owner_id=1001, account_user_id=2002, chat_id=11,
+        message_id=10, source="history", event_key="old", kind="new", version_at=100,
+        payload={"text": "old contents", "media": []}, historical=True)
+    assert result is not None and not result.new_chat
+    assert await h.db.get_dump_chat_admin_all(2002) == []
+    assert [item.action_id for item in sorted(await rows(h, HistoryUser), key=lambda item: item.date)] == [1, 2]
+    assert len(await rows(h, StoredMessage)) == 1
+
+
+@pytest.mark.asyncio
 async def test_history_media_requires_secret_and_is_throttled_without_plaintext_files(history, tmp_path):
     from core.media_store import MediaStore
     from db.media_models import MessageAttachment

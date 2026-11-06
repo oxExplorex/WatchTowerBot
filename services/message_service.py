@@ -28,7 +28,7 @@ class AccountContext:
         return cls(int(account.admin_id), int(account.user_id), bool(account.alert_new_chat), bool(account.alert_bot), True)
 
 
-async def _notify_new_chat(bot, context: AccountContext, chat) -> None:
+async def _notify_new_chat(bot, context: AccountContext, chat, *, source="unknown") -> None:
     chat_id = chat.id
     name = getattr(chat, "full_name", None) or getattr(chat, "title", None) or "Unknown"
     username = getattr(chat, "username", None)
@@ -38,14 +38,21 @@ async def _notify_new_chat(bot, context: AccountContext, chat) -> None:
         # The archive is already committed; contact enrichment must not undo it.
         bot_logger.warning("Could not refresh observed contact: %s", type(exc).__name__)
     if not context.alert_new_chat:
+        bot_logger.debug("New chat notification skipped: account_user_id=%s chat_id=%s source=%s reason=disabled",
+                         context.account_user_id, chat_id, source)
         return
     if not context.alert_bot and (is_bot_or_channel(chat) or getattr(chat, "is_bot", False)):
+        bot_logger.debug("New chat notification skipped: account_user_id=%s chat_id=%s source=%s reason=bot_filter",
+                         context.account_user_id, chat_id, source)
         return
     try:
         await send_account_log(bot, context.owner_id, context.account_user_id,
                                get_user_log_text(1, chat_id, username or "-", html.quote(name)))
+        bot_logger.info("New chat notification sent: owner_id=%s account_user_id=%s chat_id=%s source=%s",
+                        context.owner_id, context.account_user_id, chat_id, source)
     except Exception as exc:
-        bot_logger.warning("Could not send new chat notification: %s", type(exc).__name__)
+        bot_logger.warning("New chat notification failed: owner_id=%s account_user_id=%s chat_id=%s source=%s error=%s",
+                           context.owner_id, context.account_user_id, chat_id, source, type(exc).__name__)
 
 
 async def save_message(bot, context: AccountContext, message, *, source: str, kind: str,
@@ -75,7 +82,7 @@ async def _save_message(bot, context, message, *, source, kind, event_key, histo
         sender_id=getattr(getattr(message, "from_user", None), "id", None),
         channel_namespace=channel_namespace(message.chat), require_account=context.require_account, **archive_options)
     if result is not None and result.new_chat:
-        await _notify_new_chat(bot, replace(context, owner_id=result.owner_id or context.owner_id), message.chat)
+        await _notify_new_chat(bot, replace(context, owner_id=result.owner_id or context.owner_id), message.chat, source=source)
     if result is not None and message.chat.id > 0 and not channel_namespace(message.chat):
         try:
             from db.repositories.avatars_repo import AvatarsRepository
@@ -108,5 +115,5 @@ async def _delete_message(bot, context, message_id, *, source, chat, event_key):
         event_key=f"{event_key or 'delete'}:{message_id}", kind="delete",
         channel_namespace=channel_namespace(chat), require_account=context.require_account)
     if result is not None and result.new_chat:
-        await _notify_new_chat(bot, replace(context, owner_id=result.owner_id or context.owner_id), chat)
+        await _notify_new_chat(bot, replace(context, owner_id=result.owner_id or context.owner_id), chat, source=source)
     return result

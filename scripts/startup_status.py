@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -100,6 +101,8 @@ class StartupReporter:
         self.state = "running"
         self.sessions = ""
         self.message_ids, self.sent_text, self.blocked = {}, {}, set()
+        self.thread_ids = {}
+        self.operation = ""
         self.revision = 0
         self.resume = False
         self._load_handoff()
@@ -111,12 +114,23 @@ class StartupReporter:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(data, dict) or not isinstance(data.get("messages"), dict):
                 return
+            if data.get("bot_id") != self.token.split(":", 1)[0]:
+                return
+            # Routes remain useful for ordinary launches too, before DB access.
+            threads = data.get("threads", {})
+            if isinstance(threads, dict):
+                self.thread_ids = {int(k): int(v) for k, v in threads.items()
+                                   if str(k).isdigit() and str(v).isdigit() and int(v) > 0}
             if (data.get("resume") is True and data.get("bot_id") == self.token.split(":", 1)[0]
                     and 0 <= time.time() - data["updated_at"] < 1800):
                 self.started_at = min(time.time(), float(data["started_at"]))
                 self.message_ids = {int(k): int(v) for k, v in data["messages"].items()
                                     if str(k).isdigit() and str(v).isdigit() and int(v) > 0}
                 self.frames = [value[:100] for value in data.get("frames", []) if isinstance(value, str)][-5:]
+                recipients = data.get("recipients", [])
+                if isinstance(recipients, list):
+                    self.recipients = _ids([*self.recipients, *recipients, *self.message_ids])
+                self.operation = str(data.get("operation", ""))[:100]
         except (OSError, ValueError, TypeError, KeyError):
             pass
 
@@ -133,7 +147,8 @@ class StartupReporter:
                 temporary = Path(stream.name)
                 json.dump({"bot_id": self.token.split(":", 1)[0], "started_at": self.started_at,
                            "updated_at": time.time(), "resume": self.resume, "messages": self.message_ids,
-                           "frames": self.frames[-5:]}, stream, ensure_ascii=False)
+                           "frames": self.frames[-5:], "recipients": self.recipients,
+                           "threads": self.thread_ids, "operation": self.operation}, stream, ensure_ascii=False)
             os.replace(temporary, self.path)
         except OSError:
             pass
@@ -144,13 +159,17 @@ class StartupReporter:
                 except OSError:
                     pass
 
-    def configure(self, token, recipients):
+    def configure(self, token, recipients, *, thread_ids=None):
         with self.condition:
             self.token = token
             if isinstance(self.transport, TelegramTransport):
                 self.transport = TelegramTransport(token)
-            self.recipients = _ids(recipients)
+            self.recipients = _ids([*self.recipients, *recipients])
+            if thread_ids:
+                for chat_id, thread_id in thread_ids.items():
+                    self.thread_ids.setdefault(chat_id, thread_id)
             self.revision += 1
+            self._save()
             self._wake()
 
     def _wake(self):
@@ -178,6 +197,9 @@ class StartupReporter:
     def render(self):
         titles = {"running": "Подготовка WatchTowerBot", "ready": "WatchTowerBot запущен",
                   "warning": "WatchTowerBot запущен с замечаниями", "failed": "WatchTowerBot · требуется проверка"}
+        if self.operation == "Обновление":
+            titles.update(running="Обновление WatchTowerBot", ready="WatchTowerBot обновлён",
+                          warning="WatchTowerBot обновлён с замечаниями")
         lines = [f"<b>{titles[self.state]}</b>"]
         try:
             version = (self.root / "VERSION").read_text(encoding="utf-8-sig").strip()[:40]
@@ -239,6 +261,9 @@ class StartupReporter:
 
     def _deliver(self, chat_id, text, *, alert=False):
         common = dict(chat_id=chat_id, text=text, parse_mode="HTML")
+        common["reply_markup"] = ({"inline_keyboard": [[
+            {"text": "Открыть настройки", "callback_data": "panel:settings"}
+        ]]} if self.state in {"ready", "warning", "failed"} else {"inline_keyboard": []})
         identity = self.message_ids.get(chat_id)
         if identity and not alert:
             try:
@@ -249,7 +274,16 @@ class StartupReporter:
                     return
                 if error.code != 400:
                     raise
-        result = self.transport("sendMessage", dict(common, disable_notification=not alert))
+        if thread_id := self.thread_ids.get(chat_id):
+            common["message_thread_id"] = thread_id
+        try:
+            result = self.transport("sendMessage", dict(common, disable_notification=not alert))
+        except DeliveryError as error:
+            if error.code != 400 or "message_thread_id" not in common:
+                raise
+            # A deleted/closed topic must not hide a startup failure completely.
+            common.pop("message_thread_id")
+            result = self.transport("sendMessage", dict(common, disable_notification=not alert))
         with self.condition:
             self.message_ids[chat_id] = int(result["message_id"])
             self._save()
@@ -282,6 +316,10 @@ class StartupReporter:
                     self._deliver(chat_id, text, alert=alert)
                     self.sent_text[chat_id] = text
                 except DeliveryError as error:
+                    logger = logging.getLogger("gemini_message_manager")
+                    if logger.handlers:
+                        logger.warning("Startup notification delivery failed: chat_id=%s code=%s retry_after=%s",
+                                       chat_id, error.code, error.retry_after)
                     if error.code in (401, 403):
                         self.blocked.add(chat_id)
                     else:
@@ -331,7 +369,12 @@ def begin_operation(label, recipients=None, message=None):
     if isinstance(chat_id, int) and chat_id > 10:
         targets.append(chat_id)
     _current = StartupReporter(previous.token, targets, root=previous.root)
+    _current.operation = label
+    _current.thread_ids.update(previous.thread_ids)
     if isinstance(chat_id, int) and chat_id > 10 and isinstance(message_id, int) and message_id > 0:
         _current.message_ids[chat_id] = message_id
+        thread_id = getattr(message, "message_thread_id", None)
+        if isinstance(thread_id, int) and thread_id > 0:
+            _current.thread_ids[chat_id] = thread_id
     _current.update(label, "Подготовка приложения к перезапуску.")
     return _current

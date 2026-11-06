@@ -3,7 +3,7 @@
 const token = location.hash.slice(1);
 history.replaceState(null, "", location.pathname);
 const $ = id => document.getElementById(id);
-let chats = [], selected = null, before = null, generation = 0;
+let chats = [], selected = null, before = null, after = null, generation = 0;
 const animations = new Set();
 
 function disposeDetachedAnimations() {
@@ -17,6 +17,7 @@ function disposeDetachedAnimations() {
 
 function avatarNode(identity, name) {
     const fallback = node("span", "avatar", Array.from(name || "?").slice(0, 2).join("").toLocaleUpperCase());
+    fallback.title = "Аватарка не сохранена в этом дампе";
     if (!identity) return fallback;
     const image = node("img", "avatar");
     image.alt = name || "Аватар";
@@ -83,42 +84,73 @@ async function showSticker(container, media) {
     }
 }
 
-function appendMedia(box, media) {
+function openMedia(media) {
+    $("media-title").textContent = media.name;
+    $("media-download").href = mediaURL(media.id, true);
+    $("media-download").download = media.name;
+    $("media-download").hidden = !media.available;
+    const content = node("div", "expanded-media");
+    $("media-content").replaceChildren(content);
+    appendMedia(content, media, {expanded:true});
+    $("media-dialog").showModal();
+}
+
+function appendMedia(box, media, {expanded=false}={}) {
     if (!media.available) {
         box.append(node("div", "unavailable", "Вложение не было скачано: " + media.name));
         return;
     }
-    let player;
     const kind = media.preview === undefined ? media.kind : media.preview;
+    const visual = ["photo", "sticker", "animation", "video", "video_note"].includes(kind);
+    const target = node(visual ? "figure" : "div", "media-card");
+    let player;
     if (kind === "sticker") {
-        const container = node("div", "sticker");
-        box.append(container);
-        showSticker(container, media);
+        player = node("div", "sticker");
+        target.append(player);
+        showSticker(player, media);
     } else if (kind === "photo") {
         player = node("img", "media");
         player.loading = "lazy";
         player.alt = "Фото из архива";
     } else if (["video", "video_note", "animation", "audio", "voice"].includes(kind)) {
         player = node(["video", "video_note", "animation"].includes(kind) ? "video" : "audio", "media");
-        player.controls = true;
+        player.controls = kind !== "animation" || expanded;
         player.preload = "none";
         player.playsInline = true;
         if (kind === "video_note") player.classList.add("round-video");
-        if (kind === "animation") {
-            player.autoplay = player.loop = player.muted = true;
-        }
+        if (kind === "animation") player.autoplay = player.loop = player.muted = true;
     }
-    if (player) {
+    if (player && kind !== "sticker") {
         player.src = mediaURL(media.id);
         player.addEventListener("error", () => {
-            player.replaceWith(node("small", "unavailable", "Браузер не смог открыть вложение. Можно скачать оригинал ниже."));
+            player.replaceWith(node("small", "unavailable", "Браузер не смог показать вложение. Откройте его и сохраните оригинал."));
         }, {once: true});
-        box.append(player);
+        target.append(player);
     }
-    const link = node("a", "attachment", "Скачать · " + media.name);
-    link.href = mediaURL(media.id, true);
-    link.download = media.name;
-    box.append(link);
+    if (visual && !expanded) {
+        if (["video", "video_note"].includes(kind)) {
+            const open = node("button", "media-open", "⤢");
+            open.title = "Открыть вложение";
+            open.addEventListener("click",()=>openMedia(media));
+            target.append(open);
+        } else {
+            target.classList.add("media-preview");
+            target.tabIndex = 0;
+            target.setAttribute("role", "button");
+            target.setAttribute("aria-label", "Открыть " + media.name);
+            target.addEventListener("click",()=>openMedia(media));
+            target.addEventListener("keydown",event=>{
+                if(event.key === "Enter" || event.key === " ") { event.preventDefault(); openMedia(media); }
+            });
+        }
+    }
+    if (!visual) {
+        const link = node("a", "attachment", media.name);
+        link.href = mediaURL(media.id, true);
+        link.download = media.name;
+        target.append(link);
+    }
+    box.append(target);
 }
 
 function bubble(message, versions = false) {
@@ -133,7 +165,7 @@ function bubble(message, versions = false) {
     if (message.text || !(message.media || []).length) box.append(node("div", "body", message.text || "Без текста"));
     if (versions) {
         const label = message.kind === "new" ? "Исходное сообщение" :
-            message.kind === "snapshot" ? "Снимок из истории Telegram" : "Редакция сообщения";
+            message.kind === "snapshot" ? "Снимок из истории Telegram" : "Сохранённая версия";
         box.prepend(node("div", "version-label", label));
     }
     for (const media of message.media || []) appendMedia(box, media);
@@ -144,9 +176,16 @@ function bubble(message, versions = false) {
         meta.append(node("span", "", (message.kind === "edit" || message.edited ? "Изменено: " : "Отправлено: ") + stamp(message.time)));
         if (message.observed_at) meta.append(node("span", "", "Сохранено ботом: " + stamp(message.observed_at)));
     } else {
-        meta.append(node("span", "", "Отправлено: " + stamp(message.time)));
-        if (message.edited) meta.append(node("span", "", "Изменено: " + stamp(message.edited_at)));
+        const time = node("span", "", message.time ? new Date(message.time*1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "Дата неизвестна");
+        time.title = "Отправлено: " + stamp(message.time);
+        meta.append(time);
+        if (message.edited) {
+            const edited = node("span", "", "изменено");
+            edited.title = "Изменено: " + stamp(message.edited_at);
+            meta.append(edited);
+        }
     }
+
     if (!versions && message.versions) {
         const button = node("button", "", "⋯");
         button.title = "История сообщения · версий: " + message.versions;
@@ -199,26 +238,19 @@ function renderChats() {
     }));
 }
 
-async function loadMessages(older = false) {
+async function loadMessages(mode = "latest", at = null) {
     const requestGeneration = generation, key = selected;
-    const previousButton = $("older");
+    const older = mode === "older", newer = mode === "newer";
     try {
-        const result = await api((window.messageQuery ? window.messageQuery(key) : "/api/messages?chat=" + encodeURIComponent(key))
-            + (older && before !== null ? "&before=" + before : ""));
+        const base = window.messageQuery ? window.messageQuery(key) : "/api/messages?chat=" + encodeURIComponent(key);
+        const cursor = older && before !== null ? "&before=" + before :
+            newer && after !== null ? "&start=" + after : mode === "date" ? "&start=" + at : "";
+        const result = await api(base + cursor);
         if (requestGeneration !== generation || key !== selected) return;
-        const area = $("messages"), height = area.scrollHeight;
-        if (previousButton) previousButton.remove();
+        const area = $("messages"), height = area.scrollHeight, scroll = area.scrollTop;
+        $("older")?.remove(); $("newer")?.remove();
         const fragment = document.createDocumentFragment();
-        if (result.before !== null) {
-            const button = node("button", "", "Показать более ранние сообщения");
-            button.id = "older";
-            button.addEventListener("click", () => {
-                button.disabled = true;
-                loadMessages(true);
-            });
-            fragment.append(button);
-        }
-        let lastDay = null;
+        let lastDay = newer ? [...area.querySelectorAll(".day-separator")].at(-1)?.dataset.day : null;
         for (const message of result.messages) {
             const day = message.time ? new Date(message.time * 1000).toLocaleDateString() : "Дата неизвестна";
             if (day !== lastDay) {
@@ -231,14 +263,34 @@ async function loadMessages(older = false) {
         }
         if (older && area.querySelector(".day-separator")?.dataset.day === lastDay)
             area.querySelector(".day-separator").remove();
-        if (older) area.prepend(fragment);
-        else area.replaceChildren(fragment);
+        if (older) {area.prepend(fragment); before = result.before;}
+        else if (newer) {area.append(fragment); after = result.after ?? null;}
+        else {area.replaceChildren(fragment); before = result.before; after = result.after ?? null;}
+        if (!result.messages.length && !older && !newer) {
+            const empty = node("div", "empty", result.total === 0
+                ? "По этому запросу сообщений не найдено." : "В этом диалоге нет сохранённых сообщений.");
+            if(result.total === 0) {
+                const reset = node("button", "", "Показать все сообщения диалога");
+                reset.addEventListener("click",()=>{window.resetChatSearch();loadMessages();});
+                empty.append(reset);
+            }
+            area.append(empty);
+        }
+        for(const [id, cursorValue, label, direction] of [
+            ["older", before, "Более ранние сообщения", "older"],
+            ["newer", after, "Более поздние сообщения", "newer"]]) {
+            if(cursorValue === null) continue;
+            const button = node("button", "message-page", label); button.id = id;
+            button.addEventListener("click",()=>{button.disabled=true;loadMessages(direction);});
+            if(id === "older") area.prepend(button); else area.append(button);
+        }
         disposeDetachedAnimations();
-        before = result.before;
         if (window.searchResult) window.searchResult(result);
-        area.scrollTop = older ? area.scrollHeight - height : area.scrollHeight;
+        area.scrollTop = older ? area.scrollHeight-height+scroll : newer ? scroll : mode === "date" ? 0 : area.scrollHeight;
     } catch (error) {
-        if (previousButton) previousButton.disabled = false;
+        if (requestGeneration !== generation || key !== selected) return;
+        $("older")?.removeAttribute("disabled"); $("newer")?.removeAttribute("disabled");
+        if(mode === "latest" || mode === "date") $("messages").replaceChildren(node("p", "unavailable", error.message));
         toast(error);
     }
 }
@@ -246,7 +298,8 @@ async function loadMessages(older = false) {
 async function openChat(chat) {
     generation++;
     selected = chat.key;
-    before = null;
+    before = after = null;
+    if(window.resetChatSearch) window.resetChatSearch();
     $("chat-title").textContent = chat.name;
     $("chat-info").textContent = "ID " + chat.id + " · аккаунт " + chat.account
         + " · " + chat.count + " сообщений";
@@ -312,3 +365,7 @@ if (!token) {
     $("error").textContent = "Откройте ссылку из окна просмотрщика или запустите его заново.";
     $("open").disabled = true;
 }
+
+$("close-media").addEventListener("click",()=>$("media-dialog").close());
+$("media-dialog").addEventListener("close",()=>{$("media-content").replaceChildren();$("media-title").textContent="";$("media-download").removeAttribute("href");disposeDetachedAnimations();});
+$("lock").addEventListener("click",()=>$("media-dialog").close());

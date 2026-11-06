@@ -1,5 +1,6 @@
 """Read WTB/ZIP backups using only their personal key; plaintext remains in RAM."""
 from contextlib import ExitStack
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -217,10 +218,31 @@ class Archive:
                 "observed_at": (revision.get("observed_at") or 0) / 1_000_000,
                 "revision_no": revision.get("revision_no")}
 
-    def page(self, key, before=None):
+    def calendar(self, key, offset=0):
+        """List only saved days and their first row, without decrypting message bodies."""
+        offset = int(offset)
+        if not -840 <= offset <= 840:
+            raise ValueError("Invalid timezone offset")
+        zone = timezone(timedelta(minutes=offset))
+        days = {}
+        for index, row in enumerate(self.chats[key]):
+            if not row.get("sent_at"):
+                continue
+            day = datetime.fromtimestamp(row["sent_at"], zone).date().isoformat()
+            entry = days.setdefault(day, {"day": day, "start": index, "count": 0})
+            entry["count"] += 1
+        return {"days": list(days.values()), "offset": offset}
+
+    def page(self, key, before=None, start=None):
         rows = self.chats[key]
-        end = len(rows) if before is None else max(0, min(before, len(rows)))
-        start = max(0, end - 50)
+        if start is None:
+            end = len(rows) if before is None else max(0, min(before, len(rows)))
+            start = max(0, end - 50)
+        else:
+            if before is not None:
+                raise ValueError("Conflicting page cursors")
+            start = max(0, min(int(start), len(rows)))
+            end = min(start + 50, len(rows))
         output = []
         for row in rows[start:end]:
             revisions = self.revisions.get(row["uuid"], [])
@@ -235,7 +257,7 @@ class Archive:
                 original_seen=bool(row.get("original_seen")),
                 avatar=f'{row["account_user_id"]}:{sender}' if self.avatars.get(f'{row["account_user_id"]}:{sender}') in self.blobs else None)
             output.append(item)
-        return {"messages": output, "before": start if start else None}
+        return {"messages": output, "before": start or None, "after": end if end < len(rows) else None}
 
     def versions(self, identity):
         if identity not in self.messages:

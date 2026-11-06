@@ -103,8 +103,12 @@ AUTO_UPDATE_FAILED_TEXT = "❌ Автообновление не удалось.
 
 MANUAL_UPDATE_START_TEXT = (
     "⬇️ Обновление запущено вручную\n\n"
-    "Версия: <code>{from_version}</code> → <code>{to_version}</code>."
+    "Версия: <code>{from_version}</code> → <code>{to_version}</code>.\n\n"
+    "Загрузка → проверка файлов → зависимости → перезапуск.\n"
+    "Здесь появится результат. Пока обновление идёт, кнопки управления скрыты."
 )
+UPDATE_CHECKING_TEXT = "<b>Проверяем обновление…</b>\n\nПолучаем актуальную версию из GitHub."
+UPDATE_CHECKING_TOAST = "Проверяем обновление…"
 MANUAL_UPDATE_DONE_TEXT = (
     "✅ Обновление установлено\n\n"
     "Текущая версия: <code>{to_version}</code>.\n"

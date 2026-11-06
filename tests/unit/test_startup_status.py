@@ -143,3 +143,58 @@ def test_transport_uses_html_utf8_and_hides_token_in_network_errors(monkeypatch)
     with pytest.raises(status.DeliveryError) as error:
         send("sendMessage", {})
     assert "synthetic-private-token" not in str(error.value)
+
+
+def test_update_handoff_keeps_initiator_topic_and_completion_controls(tmp_path):
+    sender = Transport()
+    report = reporter(tmp_path, sender)
+    report.operation = "Обновление"
+    report.recipients = [123, 456]
+    report.message_ids[456] = 900
+    report.thread_ids[456] = 42
+    report.update("Загрузка обновления")
+    report.prepare_restart()
+    report.close(timeout=3)
+
+    after = status.StartupReporter(report.token, [123], root=tmp_path, transport=sender, interval=0)
+    after.configure(report.token, [123], thread_ids={456: 99})
+    assert after.recipients == [123, 456]
+    assert after.thread_ids[456] == 42
+    after.finish(detail="Обработчики готовы")
+    after.close(timeout=3)
+    completion = [payload for _, payload in sender.calls
+                  if payload["chat_id"] == 456 and "WatchTowerBot обновлён</b>" in payload["text"]][-1]
+    assert completion["message_id"] == 900
+    assert completion["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "panel:settings"
+
+
+def test_replacement_progress_message_stays_in_original_topic(tmp_path):
+    sender = Transport()
+
+    def delivery(method, payload):
+        if method == "editMessageText":
+            raise status.DeliveryError(400)
+        return sender(method, payload)
+
+    report = reporter(tmp_path, delivery)
+    report.message_ids[123] = 500
+    report.thread_ids[123] = 42
+    report.update("Обновление")
+    report.finish()
+    report.close(timeout=3)
+    assert sender.calls[-1][1]["message_thread_id"] == 42
+
+
+def test_ordinary_launch_reuses_log_topic_but_not_previous_operation(tmp_path):
+    sender = Transport()
+    report = reporter(tmp_path, sender)
+    report.operation = "Обновление"
+    report.thread_ids[123] = 42
+    report.finish()
+    report.close(timeout=3)
+    after = reporter(tmp_path, sender)
+    assert after.message_ids == {} and after.operation == ""
+    after.update("Подготовка")
+    after.finish()
+    after.close(timeout=3)
+    assert all(payload.get("message_thread_id") == 42 for method, payload in sender.calls if method == "sendMessage")

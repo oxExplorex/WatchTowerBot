@@ -188,3 +188,41 @@ async def test_failed_restart_never_starts_previously_inactive_client(update_mod
         await module.restart_with_clients()
     client.start.assert_not_awaited()
     assert await manager.get_snapshot() == [client]
+
+
+@pytest.mark.asyncio
+async def test_manual_update_acknowledges_and_changes_panel_before_network_check(update_modules, monkeypatch):
+    _, settings, _ = update_modules
+    call = types.SimpleNamespace(answer=AsyncMock(), from_user=types.SimpleNamespace(id=1001),
+                                 message=types.SimpleNamespace(edit_text=AsyncMock()))
+
+    async def check(**kwargs):
+        call.answer.assert_awaited_once()
+        assert "Проверяем обновление" in call.message.edit_text.await_args.kwargs["text"]
+        return "available", 1, "2.0.27"
+
+    monkeypatch.setattr(settings, "_get_version_state", check)
+    monkeypatch.setattr(settings, "get_local_version", lambda: "2.0.26")
+    flow = AsyncMock()
+    monkeypatch.setattr(settings, "_run_update_flow", flow)
+    await settings.run_update_now_handler(call, types.SimpleNamespace(clear=AsyncMock()))
+    flow.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_manual_update_edits_panel_even_when_reporter_exists(update_modules, monkeypatch):
+    _, settings, _ = update_modules
+    message = types.SimpleNamespace(chat=types.SimpleNamespace(id=1001), edit_text=AsyncMock(), answer=AsyncMock())
+    report = types.SimpleNamespace(condition=threading.Condition(), message_ids={},
+                                   update=Mock(), finish=Mock(), fail=Mock())
+    monkeypatch.setattr(settings, "begin_operation", lambda *args, **kwargs: report)
+
+    def download(*, progress):
+        message.edit_text.assert_awaited_once()
+        assert message.edit_text.await_args.kwargs["reply_markup"] is None
+        assert progress == report.update
+        return False
+
+    monkeypatch.setattr(settings, "download_and_extract_github_repo", download)
+    await settings._run_update_flow(message, "1", "2", "start", "done", "failed")
+    report.finish.assert_called_once()

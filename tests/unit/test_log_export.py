@@ -53,6 +53,7 @@ def test_each_run_has_its_own_log_and_export_prefers_active_file(tmp_path, monke
         second = latest_log_file()
         assert second != first
         assert "первый запуск" in first.read_text(encoding="utf-8")
+        assert "WatchTowerBot version=" in first.read_text(encoding="utf-8")
         assert "первый запуск" not in second.read_text(encoding="utf-8")
         assert "второй запуск" in second.read_text(encoding="utf-8")
         # Even a newer timestamp on a previous log must not change the button's selection.

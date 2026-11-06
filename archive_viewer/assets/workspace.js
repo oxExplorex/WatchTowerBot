@@ -1,6 +1,6 @@
 "use strict";
 let inspectorChat = null, inspectorData = null;
-let filterMedia = false, filterApplied = {q:"", start:"", end:"", global:false};
+let filterQuery = "";
 let updatePoll = null;
 
 function showWorkspace(title, children) {
@@ -28,7 +28,7 @@ function mediaGallery(items) {
             const image = node("img", ""); image.src = mediaURL(item.id); image.loading = "lazy"; image.alt = item.name;
             button.append(image);
         } else button.append(node("small", "", (item.available ? "▦ " : "◌ ") + item.name));
-        button.addEventListener("click", () => { const area = node("section", ""); appendMedia(area,item); showWorkspace(item.name,[area]); });
+        button.addEventListener("click", () => openMedia(item));
         grid.append(button);
     }
     return grid;
@@ -45,7 +45,8 @@ window.refreshInspector = async chat => {
         name.append(node("strong","",chat.name),node("small","","Telegram · ID " + chat.id));
         profile.append(avatarNode(chat.avatar,chat.name),name);
         const parts = [profile,node("h3","","Данные"), factList([["Аккаунт",chat.account],["Сообщения",data.messages],
-            ["Редакции",data.revisions],["Изменены",data.edited],["Удалены",data.deleted]]),node("h3","","Пересечения архива")];
+            ["Сохранённые версии",data.revisions],["Изменены",data.edited],["Удалены",data.deleted]]),node("h3","","Пересечения архива")];
+        if(!chat.avatar) parts.push(node("small","avatar-note","Аватарка не сохранена в этом дампе."));
         parts.push(node("p","",data.shared.length ? "Этот участник встречается ещё в " + data.shared.length + " сохранённых переписках." : "Других переписок с этим участником не найдено."));
         parts.push(node("small","","Это пересечения сохранённых участников, не список друзей Telegram."));
         parts.push(node("h3","","Ссылки и частые слова"));
@@ -55,27 +56,37 @@ window.refreshInspector = async chat => {
         for(const url of data.links.slice(0,5)){const link=node("a","",url);link.href=url;link.target="_blank";link.rel="noreferrer noopener";parts.push(link);}
         parts.push(node("small","","Слова, ссылки и превью: последние " + data.sample_messages + " сообщений."),node("h3","","Медиа и файлы · " + data.media_total),mediaGallery(data.gallery.slice(-12).reverse()));
         $("inspector-content").replaceChildren(...parts);
-    } catch(error) { $("inspector-content").replaceChildren(node("p","unavailable",error.message)); }
+    } catch(error) {
+        if(requestGeneration === generation && selected === chat.key)
+            $("inspector-content").replaceChildren(node("p","unavailable",error.message));
+    }
 };
-window.messageQuery = key => {
-    if(!filterMedia && !filterApplied.q && !filterApplied.start && !filterApplied.end && !filterApplied.global) return "/api/messages?chat="+encodeURIComponent(key);
-    const params=new URLSearchParams({chat:filterApplied.global?"":key,q:filterApplied.q,start:filterApplied.start,end:filterApplied.end,media:filterMedia?"1":"0"});
-    return "/api/search?"+params;
+window.messageQuery = key => filterQuery
+    ? "/api/search?" + new URLSearchParams({chat:key, q:filterQuery})
+    : "/api/messages?chat=" + encodeURIComponent(key);
+window.searchResult = result => {
+    $("result-status").textContent = result.total === undefined ? "" : "Найдено в этом диалоге: " + result.total;
 };
-window.searchResult = result => { $("result-status").textContent = result.total === undefined ? "" : "Найдено: " + result.total + (filterApplied.global ? " · весь архив" : " · этот чат"); };
+window.resetChatSearch = () => {
+    filterQuery = "";
+    $("filter-query").value = "";
+    $("chat-filters").hidden = true;
+    $("result-status").textContent = "";
+};
 async function applyFilters() {
-    filterApplied={q:$("filter-query").value.trim(),start:$("filter-start").value,end:$("filter-end").value,global:$("filter-global").checked};
-    if(selected){generation++;before=null;await loadMessages();if(currentChat())window.refreshInspector(currentChat());}
+    if(!selected) return;
+    filterQuery = $("filter-query").value.trim();
+    generation++; before = after = null;
+    await loadMessages();
 }
-for(const id of ["date-filter","keyword-filter","chat-search"]){$(id).addEventListener("click",()=>{
-    const show = $("filters").hidden || id === "chat-search";
-    $("filters").hidden=!show; $("date-filter").setAttribute("aria-expanded",String(show));$("keyword-filter").setAttribute("aria-expanded",String(show));
-    if(show) $(id==="date-filter"?"filter-start":"filter-query").focus();
-});}
-$("media-filter").addEventListener("click",()=>{filterMedia=!filterMedia;$("media-filter").setAttribute("aria-pressed",String(filterMedia));applyFilters();});
+$("chat-search").addEventListener("click",()=>{
+    if(!requireChat()) return;
+    $("chat-filters").hidden = !$("chat-filters").hidden;
+    if(!$("chat-filters").hidden) $("filter-query").focus();
+});
 $("apply-filters").addEventListener("click",applyFilters);
 $("filter-query").addEventListener("keydown",event=>{if(event.key==="Enter")applyFilters();});
-$("clear-filters").addEventListener("click",()=>{ for(const id of ["filter-query","filter-start","filter-end"])$(id).value=""; $("filter-global").checked=false;filterMedia=false;$("media-filter").setAttribute("aria-pressed","false");applyFilters();});
+$("clear-filters").addEventListener("click",()=>{ $("filter-query").value=""; applyFilters(); });
 $("toggle-inspector").addEventListener("click",()=>inspectorVisible($("viewer").classList.contains("inspector-hidden")));
 $("close-inspector").addEventListener("click",()=>inspectorVisible(false));
 
@@ -86,7 +97,7 @@ async function inspected() {
 }
 $("chat-analytics").addEventListener("click",async()=>{ const data=await inspected();if(!data)return;
     const grid=node("div","metric-grid");
-    for(const [label,value] of [["Сообщений",data.messages],["Редакций",data.revisions],["Изменены",data.edited],["Удалены",data.deleted],["Недоступны",data.missing],["Вложений",data.media_total]]){const tile=node("div","metric");tile.append(node("strong","",value),node("small","",label));grid.append(tile);}
+    for(const [label,value] of [["Сообщений",data.messages],["Сохранённых версий",data.revisions],["Изменены",data.edited],["Удалены",data.deleted],["Недоступны",data.missing],["Вложений",data.media_total]]){const tile=node("div","metric");tile.append(node("strong","",value),node("small","",label));grid.append(tile);}
     showWorkspace("Аналитика сохранённого чата",[grid,node("p","","Показатели относятся к архиву. Они не измеряют онлайн-статус или полноту истории Telegram.")]);
 });
 $("chat-gallery").addEventListener("click",async()=>{
@@ -105,23 +116,9 @@ $("chat-gallery").addEventListener("click",async()=>{
     more();
 });
 $("chat-people").addEventListener("click",async()=>{const data=await inspected();if(data)showWorkspace("Сохранённые участники",data.participants.map(person=>node("div","participant",person.name+" · ID "+person.id+" · сообщений: "+person.count)));});
-$("chat-audit").addEventListener("click",async()=>{const data=await inspected();if(data)showWorkspace("Проверка записей",[factList([["Нет исходного текста редакций",data.original_missing],["Недоступны при проверке",data.missing],["Вложений ещё нет в бекапе",data.missing_media],["Неизвестна дата отправки",data.unknown_date]]),node("p","","Это замечания о полноте сохранённых данных. Недоступность сообщения сама по себе не доказывает удаление.")]);});
-$("chat-graph").addEventListener("click",async()=>{const data=await inspected();if(!data)return;
-    const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg");svg.setAttribute("viewBox","0 0 600 300");svg.classList.add("graph");
-    const ids=[...new Set(data.graph.flatMap(edge=>[edge.source,edge.target]))];
-    const points=new Map(ids.map((id,index)=>[id,{x:300+180*Math.cos(index*2*Math.PI/ids.length),y:150+90*Math.sin(index*2*Math.PI/ids.length)}]));
-    for(const edge of data.graph){const a=points.get(edge.source),b=points.get(edge.target);const line=document.createElementNS(ns,"line");for(const [key,value]of Object.entries({x1:a.x,y1:a.y,x2:b.x,y2:b.y}))line.setAttribute(key,value);svg.append(line);const text=document.createElementNS(ns,"text");text.setAttribute("x",(a.x+b.x)/2);text.setAttribute("y",(a.y+b.y)/2-5);text.textContent=edge.count;svg.append(text);}
-    for(const [id,p]of points){const circle=document.createElementNS(ns,"circle");circle.setAttribute("cx",p.x);circle.setAttribute("cy",p.y);circle.setAttribute("r",24);const text=document.createElementNS(ns,"text");text.setAttribute("x",p.x);text.setAttribute("y",p.y+43);text.setAttribute("text-anchor","middle");text.textContent=id;svg.append(circle,text);}
-    showWorkspace("Связи по сохранённым сообщениям",[svg,node("p","","Линии связывают отправителя и получателя личных сообщений. Числа — количество сохранённых сообщений, не социальные связи вне архива.")]);
-});
-function exportDialog(all=false){const chat=all?null:requireChat();if(!all&&!chat)return;
-    const choices=node("div","export-options");for(const format of ["json","html"]){const link=node("a","",format.toUpperCase());link.href="/api/export?"+new URLSearchParams({chat:chat?.key||"",format,token});link.download="watchtower-export."+format;choices.append(link);}
-    showWorkspace(all?"Экспорт всех переписок":"Экспорт ветки",[node("p","unavailable","Экспорт содержит расшифрованный текст и версии сообщений. Храните его отдельно от публичных файлов. Вложения остаются в исходном зашифрованном бекапе."),choices]);
-}
-$("export-all").addEventListener("click",()=>exportDialog(true));$("export-chat").addEventListener("click",()=>exportDialog());
 $("close-workspace").addEventListener("click",()=>$("workspace-dialog").close());
 $("workspace-dialog").addEventListener("close",()=>{$("workspace-content").replaceChildren();disposeDetachedAnimations();});
-$("lock").addEventListener("click",()=>{inspectorData=inspectorChat=null;$("inspector-content").replaceChildren();$("workspace-dialog").close();$("result-status").textContent="";for(const id of ["filter-query","filter-start","filter-end"])$(id).value="";$("filter-global").checked=false;filterApplied={q:"",start:"",end:"",global:false};filterMedia=false;$("media-filter").setAttribute("aria-pressed","false");});
+$("lock").addEventListener("click",()=>{inspectorData=inspectorChat=null;$("inspector-content").replaceChildren();$("workspace-dialog").close();window.resetChatSearch();});
 
 async function renderApplication(){
     try{const info=await api("/api/application");for(const label of document.querySelectorAll(".app-version"))label.textContent="v"+info.version+(info.build&&info.build!=="source"?" · "+info.build:"");

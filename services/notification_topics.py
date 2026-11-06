@@ -106,6 +106,22 @@ async def send_log_file(bot, owner_id, **kwargs):
     return await delivery(bot).send(bot.send_document, owner_id, "logs", LOGS_TITLE, **kwargs)
 
 
+async def configure_startup_reporter(bot, reporter, recipients):
+    """Keep bootstrap delivery independent of the DB during the next restart."""
+    routes = {}
+    service = delivery(bot)
+    for owner_id in recipients:
+        if owner_id in reporter.thread_ids:
+            continue  # A manual update continues in the panel that started it.
+        try:
+            thread_id = await service.ensure_thread(owner_id, "logs", LOGS_TITLE)
+            if thread_id is not None:
+                routes[owner_id] = thread_id
+        except Exception as error:
+            bot_logger.warning("Startup notification topic unavailable: %s", type(error).__name__)
+    reporter.configure(bot.token, recipients, thread_ids=routes)
+
+
 async def send_menu(bot, owner_id):
     from data.texts.common import START_MESSAGE_TEXT
     from keyboards.main.start_keyboard import static_admin_keyboard

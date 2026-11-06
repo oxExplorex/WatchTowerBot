@@ -208,16 +208,19 @@ async def _run_update_flow(
     failed_text: str,
 ) -> None:
     if not await try_acquire_update_run():
-        await message.answer(constant_text.SETTINGS_UPDATE_RUNNING_TOAST)
+        await edit_panel(message, constant_text.SETTINGS_UPDATE_RUNNING_TOAST)
         return
 
     reporter = begin_operation("Обновление", message=message)
     try:
+        panel = await edit_panel(message, start_text.format(from_version=local_version, to_version=latest_version))
         if reporter is not None:
+            if type(getattr(panel, "message_id", None)) is int:
+                with reporter.condition:
+                    reporter.message_ids[message.chat.id] = panel.message_id
             reporter.update("Загрузка обновления", f"Версия {local_version} → {latest_version}")
-        else:
-            await message.edit_text(start_text.format(from_version=local_version, to_version=latest_version))
-        ok = await run_blocking(download_and_extract_github_repo)
+        options = {"progress": reporter.update} if reporter is not None else {}
+        ok = await run_blocking(download_and_extract_github_repo, **options)
         if not ok:
             if reporter is not None:
                 reporter.finish(success=False, detail="Не удалось загрузить обновление. Бот продолжает работу; проверьте локальные логи.")
@@ -292,21 +295,20 @@ async def check_update_now_handler(call: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "set:update:run", StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAdmin(), F.data == "upd:update", StateFilter("*"))
 async def run_update_now_handler(call: CallbackQuery, state: FSMContext):
+    await call.answer(constant_text.UPDATE_CHECKING_TOAST)
     await state.clear()
+    await edit_panel(call.message, constant_text.UPDATE_CHECKING_TEXT)
 
     local_version = get_local_version()
     _, _, latest_version = await _get_version_state(force=True)
 
     if not latest_version:
-        await call.answer(constant_text.SETTINGS_UPDATE_UNKNOWN_TOAST)
-        return await _safe_edit_settings(call)
+        return await _safe_edit_settings(call, constant_text.SETTINGS_UPDATE_UNKNOWN_TOAST)
 
     if not is_newer_version(local_version, latest_version):
-        await call.answer(constant_text.SETTINGS_UPDATE_ALREADY_LATEST_TOAST)
-        return await _safe_edit_settings(call)
-
-    await call.answer(constant_text.SETTINGS_UPDATE_RUNNING_TOAST)
+        return await _safe_edit_settings(call, constant_text.SETTINGS_UPDATE_ALREADY_LATEST_TOAST)
 
     await _run_update_flow(
         message=call.message,
@@ -468,31 +470,6 @@ async def update_notice_close_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await not_warning_delete_message(message=call)
     await call.answer(constant_text.UPDATE_NOTIFY_CLOSED_TOAST)
-
-@router.callback_query(IsPrivate(), IsAdmin(), F.data == "upd:update", StateFilter("*"))
-async def update_notice_run_handler(call: CallbackQuery, state: FSMContext):
-    await state.clear()
-
-    local_version = get_local_version()
-    _, _, latest_version = await _get_version_state(force=True)
-
-    if not latest_version:
-        return await call.answer(constant_text.SETTINGS_UPDATE_UNKNOWN_TOAST)
-
-    if not is_newer_version(local_version, latest_version):
-        return await call.answer(constant_text.SETTINGS_UPDATE_ALREADY_LATEST_TOAST)
-
-    await call.answer(constant_text.SETTINGS_UPDATE_RUNNING_TOAST)
-
-    await _run_update_flow(
-        message=call.message,
-        local_version=local_version,
-        latest_version=latest_version,
-        start_text=constant_text.MANUAL_UPDATE_START_TEXT,
-        done_text=constant_text.MANUAL_UPDATE_DONE_TEXT,
-        failed_text=constant_text.MANUAL_UPDATE_FAILED_TEXT,
-    )
-
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "upd:snooze", StateFilter("*"))
 async def update_notice_snooze_handler(call: CallbackQuery, state: FSMContext):

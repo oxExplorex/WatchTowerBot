@@ -181,6 +181,7 @@ async def _dump(bot, owner, account_id, chat_id, *, progress=None):
             else:
                 path, counts = await create_chat_dump(owner, account_id, chat_id, root,
                     session_factory=get_session_factory, store=MediaStore.from_environment())
+            counts = {"avatars": 0, **counts}
             await update(text.DUMP_SENDING.format(**counts))
             stage = "delivery"
             history = (await chat_history_status(owner, account_id, chat_id, session_factory=get_session_factory)

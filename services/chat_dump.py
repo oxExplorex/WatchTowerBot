@@ -78,9 +78,9 @@ async def create_chat_dump(owner_id, account_user_id, chat_id, root, *, session_
         session_factory=session_factory, store=store, account_user_id=account_user_id, chat_id=chat_id)
     target = root / f"chat_{chat_id}_account_{account_user_id}.zip"
     await run_blocking(_make_zip, paths, target)
-    bot_logger.info("Chat dump ZIP ready: owner_id=%s account_id=%s chat_id=%s bytes=%s messages=%s revisions=%s media=%s",
+    bot_logger.info("Chat dump ZIP ready: owner_id=%s account_id=%s chat_id=%s bytes=%s messages=%s revisions=%s media=%s avatars=%s",
                     owner_id, account_user_id, chat_id, target.stat().st_size,
-                    counts["messages"], counts["revisions"], counts["media"])
+                    counts["messages"], counts["revisions"], counts["media"], counts["avatars"])
     return target, counts
 
 
@@ -90,6 +90,9 @@ async def create_all_chats_dump(owner_id, root, *, session_factory, store):
         session_factory=session_factory, store=store)
     target = root / "all_private_chats.zip"
     await run_blocking(_make_zip, paths, target)
+    bot_logger.info("All chats dump ZIP ready: owner_id=%s bytes=%s messages=%s revisions=%s media=%s avatars=%s",
+                    owner_id, target.stat().st_size, counts["messages"], counts["revisions"],
+                    counts["media"], counts["avatars"])
     return target, counts
 
 

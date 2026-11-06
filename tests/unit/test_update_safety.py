@@ -35,6 +35,16 @@ def test_bad_crc_does_not_partially_replace_code(tmp_path):
     assert not (tmp_path / "second.py").exists()
 
 
+def test_update_reports_validation_and_installation_without_touching_runtime_data(tmp_path):
+    phases = []
+    result = update_bot._safe_extract_repo(archive([("main.py", b"new"), ("data/temp/state.json", b"skip")]),
+                                          tmp_path, progress=lambda phase, detail: phases.append(phase))
+    assert result == 1
+    assert phases == ["Проверка обновления", "Установка обновления"]
+    assert (tmp_path / "main.py").read_bytes() == b"new"
+    assert not (tmp_path / "data/temp/state.json").exists()
+
+
 def test_apply_error_rolls_back_replaced_and_created_files(monkeypatch, tmp_path):
     (tmp_path / "main.py").write_bytes(b"original")
     content = archive([("main.py", b"new"), ("new/module.py", b"created"), ("second.py", b"fail")])

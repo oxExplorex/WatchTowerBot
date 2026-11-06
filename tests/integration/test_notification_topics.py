@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter
 from aiogram.methods import CreateForumTopic, SendMessage, SendPhoto
@@ -9,6 +9,24 @@ from aiogram.types import FSInputFile
 import pytest
 
 from db.repositories.topics_repo import TopicsRepository
+
+
+@pytest.mark.asyncio
+async def test_startup_reporter_resolves_logs_but_keeps_manual_update_panel(db_main, tmp_path):
+    from scripts.startup_status import StartupReporter
+    from services.notification_topics import TopicDelivery, configure_startup_reporter
+
+    bot = fake_bot(True)
+    bot.token = "123456:synthetic"
+    repository = TopicsRepository(db_main.get_session_factory)
+    bot._watchtower_topic_delivery = TopicDelivery(bot, repository)
+    await repository.save(bot.id, 1001, "logs", 80)
+    report = StartupReporter(root=tmp_path)  # No credentials: no real notification worker.
+    report.thread_ids[2002] = 90
+    report.configure = Mock()
+    await configure_startup_reporter(bot, report, [1001, 2002])
+    report.configure.assert_called_once_with(bot.token, [1001, 2002], thread_ids={1001: 80})
+    bot.create_forum_topic.assert_not_awaited()
 
 
 def fake_bot(enabled):

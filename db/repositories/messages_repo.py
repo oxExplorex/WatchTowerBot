@@ -113,9 +113,13 @@ class MessagesRepository:
                     return None
             await self._lock(session, owner_id, account_user_id, message_id)
             # Native upsert arbitrates races across sources/processes, not just tasks.
-            chat_insert = conflict_insert(session, DumpChatUser).values(admin_id=account_user_id, chat_id=chat_id)
-            chat_insert = chat_insert.on_conflict_do_nothing(index_elements=["admin_id", "chat_id"]).returning(DumpChatUser.uuid)
-            new_chat = (await session.execute(chat_insert)).scalar_one_or_none() is not None
+            # Old snapshots are archive content, not proof that the dialog still exists.
+            # A queued history page may finish after a scan has observed its deletion.
+            new_chat = False
+            if not historical:
+                chat_insert = conflict_insert(session, DumpChatUser).values(admin_id=account_user_id, chat_id=chat_id)
+                chat_insert = chat_insert.on_conflict_do_nothing(index_elements=["admin_id", "chat_id"]).returning(DumpChatUser.uuid)
+                new_chat = (await session.execute(chat_insert)).scalar_one_or_none() is not None
             identity = dict(owner_id=owner_id, account_user_id=account_user_id, chat_id=chat_id, message_id=message_id)
             insert = conflict_insert(session, StoredMessage).values(**identity, first_seen_at=now, channel_namespace=channel_namespace)
             await session.execute(insert.on_conflict_do_nothing(index_elements=list(identity)))

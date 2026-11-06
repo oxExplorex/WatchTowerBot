@@ -114,6 +114,10 @@ def test_loopback_viewer_requires_token_rejects_other_origins_and_locks(viewer_b
             assert response.headers["Cache-Control"] == "no-store"
         with request("/api/chats") as response:
             assert len(json.load(response)) == 1
+        with request("/api/calendar?chat=456%3A789&offset=60") as response:
+            assert json.load(response)["days"] == [{"day": "1970-01-01", "start": 0, "count": 1}]
+        with request("/api/messages?chat=456%3A789&start=0") as response:
+            assert json.load(response)["messages"][0]["id"] == backup.message
         with request(f"/api/media/{backup.media}", extra_headers={"Range": "bytes=2-5"}) as response:
             assert response.status == 206
             assert response.headers["Content-Range"] == f"bytes 2-5/{len(backup.data)}"
@@ -152,6 +156,45 @@ def test_chats_sort_by_last_saved_message_date(viewer_backup):
         archive.chats["456:12"] = [row | {"chat_id": 12, "sent_at": 300}]
         archive.chats["456:999"] = [row | {"chat_id": 999, "sent_at": 50}]
         assert [chat["key"] for chat in archive.chat_list()] == ["456:12", "456:789", "456:999"]
+    finally:
+        archive.close()
+
+
+def test_calendar_lists_only_saved_local_days_and_opens_their_first_message(viewer_backup):
+    from datetime import datetime, timezone
+
+    archive = Archive.open(viewer_backup.zip, viewer_backup.secret)
+    try:
+        original = archive.chats["456:789"][0]
+        def epoch(day):
+            return int(datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp())
+        archive.chats["456:789"] = [original | {"message_id": index, "sent_at": when} for index, when in
+            enumerate([None, epoch("2026-11-01T23:30:00"), epoch("2026-11-02T10:00:00"),
+                       epoch("2026-11-06T10:00:00")], 1)]
+        days = archive.calendar("456:789", 60)["days"]
+        assert days == [{"day": "2026-11-02", "start": 1, "count": 2},
+                        {"day": "2026-11-06", "start": 3, "count": 1}]
+        assert archive.page("456:789", start=days[0]["start"])["messages"][0]["message_id"] == 2
+        assert archive.calendar("456:789", -60)["days"][0]["day"] == "2026-11-01"
+        with pytest.raises(ValueError):
+            archive.calendar("456:789", 2000)
+    finally:
+        archive.close()
+
+
+def test_date_jump_pages_in_both_directions_without_losing_messages(viewer_backup):
+    archive = Archive.open(viewer_backup.zip, viewer_backup.secret)
+    try:
+        original = archive.chats["456:789"][0]
+        archive.chats["456:789"] = [original | {"message_id": index} for index in range(125)]
+        middle = archive.page("456:789", start=20)
+        assert middle["before"] == 20 and middle["after"] == 70
+        older = archive.page("456:789", before=middle["before"])
+        newer = archive.page("456:789", start=middle["after"])
+        last = archive.page("456:789", start=newer["after"])
+        saved = [row["message_id"] for page in [older, middle, newer, last] for row in page["messages"]]
+        assert saved == list(range(125))
+        assert older["before"] is None and last["after"] is None
     finally:
         archive.close()
 

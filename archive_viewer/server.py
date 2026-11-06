@@ -71,6 +71,7 @@ class Handler(BaseHTTPRequestHandler):
         static = {"/": ("index.html", "text/html; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                   "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),
+                  "/calendar.js": ("calendar.js", "text/javascript; charset=utf-8"),
                   "/lottie_light_canvas.min.js": ("lottie_light_canvas.min.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8")}
         if url.path in static:
@@ -109,7 +110,10 @@ class Handler(BaseHTTPRequestHandler):
                         extra={"Content-Disposition": f'attachment; filename="watchtower-export.{extension}"'})
                 elif url.path == "/api/messages":
                     before = int(query["before"][0]) if "before" in query else None
-                    self._json(archive.page(query["chat"][0], before))
+                    start = int(query["start"][0]) if "start" in query else None
+                    self._json(archive.page(query["chat"][0], before, start))
+                elif url.path == "/api/calendar":
+                    self._json(archive.calendar(query["chat"][0], query.get("offset", [0])[0]))
                 elif url.path == "/api/versions":
                     self._json(archive.versions(query["id"][0]))
                 elif url.path.startswith("/api/sticker/"):
