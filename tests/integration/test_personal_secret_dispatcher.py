@@ -61,6 +61,30 @@ async def test_dump_button_accepts_chat_id_and_rejects_foreign_chat(setup_flow, 
 
 
 @pytest.mark.asyncio
+async def test_all_chats_dump_button_starts_background_export_without_id_prompt(setup_flow, monkeypatch):
+    from core.personal_crypto import create_key_bundle
+    from callbacks import backups as callback
+    flow = setup_flow
+    await flow.keys.install(1001, create_key_bundle(1001, "Личныйсекрет1001"))
+    worker = AsyncMock()
+    monkeypatch.setattr(flow.backups, "_dump", worker)
+    await flow.feed(callback=callback.MENU)
+    panel = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
+    assert callback.DUMP_ALL in {button.callback_data for row in panel.reply_markup.inline_keyboard for button in row}
+    downloads = [button for row in panel.reply_markup.inline_keyboard for button in row if button.url]
+    assert len(downloads) == 1
+    assert downloads[0].text == "Скачать просмотрщик · Windows"
+    assert downloads[0].url.endswith("/releases/download/archive-viewer/WatchTowerViewer-windows-x64.zip")
+    await flow.feed(callback=callback.DUMP_ALL, panel_id=panel.message_id)
+    await asyncio.sleep(0)
+    worker.assert_awaited_once()
+    assert worker.await_args.args == (flow.bot, 1001, None, None)
+    assert await flow.state().get_state() is None
+    panel = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
+    assert "Подготавливаю дамп всех чатов" in panel.text
+
+
+@pytest.mark.asyncio
 async def test_backup_import_deletes_secret_before_background_work_and_keeps_it_out_of_fsm(setup_flow, monkeypatch):
     from states.backups import IMPORT_FILES, IMPORT_SECRET
     flow = setup_flow

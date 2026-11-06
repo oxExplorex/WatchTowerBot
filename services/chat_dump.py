@@ -84,6 +84,15 @@ async def create_chat_dump(owner_id, account_user_id, chat_id, root, *, session_
     return target, counts
 
 
+async def create_all_chats_dump(owner_id, root, *, session_factory, store):
+    root = Path(root)
+    paths, counts = await create_backup(owner_id, root / "parts", uuid4().hex,
+        session_factory=session_factory, store=store)
+    target = root / "all_private_chats.zip"
+    await run_blocking(_make_zip, paths, target)
+    return target, counts
+
+
 async def send_chat_dump(bot, owner_id, path, caption, app, *, client_factory=Client):
     if app.user_id != owner_id:
         raise InvalidBackup("Foreign API profile")

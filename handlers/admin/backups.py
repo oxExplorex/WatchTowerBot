@@ -25,7 +25,7 @@ from services.notification_topics import delivery
 from states.backups import IMPORT_FILES, IMPORT_SECRET, IMPORT_STATES
 from states.backups import DUMP_CHAT_ID
 from keyboards.inline.backups import dump_accounts_keyboard
-from services.chat_dump import PAGE_SIZE, DumpTooLarge, chat_accounts, chat_history_status, create_chat_dump, send_chat_dump
+from services.chat_dump import PAGE_SIZE, DumpTooLarge, chat_accounts, chat_history_status, create_chat_dump, create_all_chats_dump, send_chat_dump
 from utils.panel import edit_input_panel, edit_panel, remember_panel
 
 router = Router(name=__name__)
@@ -76,7 +76,7 @@ async def _restore(bot, owner, identity, total, secret):
         _busy.discard(owner)
 
 
-@router.callback_query(IsPrivate(), IsAdmin(), F.data.in_({callback.MENU, callback.CREATE, callback.IMPORT, callback.RESTORE, callback.DUMP}), StateFilter("*"))
+@router.callback_query(IsPrivate(), IsAdmin(), F.data.in_({callback.MENU, callback.CREATE, callback.IMPORT, callback.RESTORE, callback.DUMP, callback.DUMP_ALL}), StateFilter("*"))
 async def backup_action(call, state):
     owner = call.from_user.id
     if owner not in get_configured_admin_ids():
@@ -99,7 +99,9 @@ async def backup_action(call, state):
     await call.answer()
     await state.clear()
     await remember_panel(state, call.message)
-    if call.data == callback.DUMP:
+    if call.data == callback.DUMP_ALL:
+        await _start_dump(call.message, state, owner, None, None)
+    elif call.data == callback.DUMP:
         await state.set_state(DUMP_CHAT_ID)
         await edit_panel(call.message, text.DUMP_PROMPT, backup_keyboard(uploading=True))
     elif call.data == callback.IMPORT:
@@ -173,14 +175,21 @@ async def _dump(bot, owner, account_id, chat_id, *, progress=None):
         with TemporaryDirectory(prefix="chat_dump_", dir=uploads.BACKUP_ROOT) as root:
             stage = "build_zip"
             bot_logger.info("Chat dump stage: owner_id=%s account_id=%s chat_id=%s stage=%s", owner, account_id, chat_id, stage)
-            path, counts = await create_chat_dump(owner, account_id, chat_id, root,
-                session_factory=get_session_factory, store=MediaStore.from_environment())
+            if chat_id is None:
+                path, counts = await create_all_chats_dump(owner, root,
+                    session_factory=get_session_factory, store=MediaStore.from_environment())
+            else:
+                path, counts = await create_chat_dump(owner, account_id, chat_id, root,
+                    session_factory=get_session_factory, store=MediaStore.from_environment())
             await update(text.DUMP_SENDING.format(**counts))
             stage = "delivery"
-            history = await chat_history_status(owner, account_id, chat_id, session_factory=get_session_factory)
+            history = (await chat_history_status(owner, account_id, chat_id, session_factory=get_session_factory)
+                       if chat_id is not None else "")
+            caption = (text.DUMP_CAPTION.format(chat_id=chat_id, account_user_id=account_id, **counts) + history
+                       if chat_id is not None else text.DUMP_ALL_CAPTION.format(**counts))
             await send_chat_dump(bot, owner, path,
-                text.DUMP_CAPTION.format(chat_id=chat_id, account_user_id=account_id, **counts) + history, apps[0])
-            await update(text.DUMP_DONE.format(chat_id=chat_id), done=True)
+                caption, apps[0])
+            await update(text.DUMP_DONE.format(chat_id=chat_id) if chat_id is not None else text.DUMP_ALL_DONE, done=True)
             bot_logger.info("Chat dump completed: owner_id=%s account_id=%s chat_id=%s", owner, account_id, chat_id)
     except asyncio.CancelledError:
         await update(text.DUMP_INTERRUPTED, done=True)
@@ -219,7 +228,8 @@ async def _start_dump(message, state, owner, account_id, chat_id):
         except Exception as error:
             bot_logger.warning("Dump panel update unavailable: owner_id=%s error=%s", owner, type(error).__name__)
 
-    await progress(text.DUMP_BUILDING.format(chat_id=chat_id, account_id=account_id))
+    await progress(text.DUMP_BUILDING.format(chat_id=chat_id, account_id=account_id)
+                   if chat_id is not None else text.DUMP_ALL_BUILDING)
     _busy.add(owner)
     bot_logger.info("Chat dump requested: owner_id=%s account_id=%s chat_id=%s", owner, account_id, chat_id)
     create_logged_task(_dump(message.bot, owner, account_id, chat_id, progress=progress), name=f"chat-dump:{owner}")

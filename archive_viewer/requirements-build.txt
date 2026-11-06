@@ -1,0 +1,3 @@
+# Standalone Windows build only; do not add PyInstaller to bot requirements.
+cryptography==50.0.2
+pyinstaller==6.22.3

@@ -7,7 +7,7 @@ from core.media_store import MediaStore
 from core.personal_crypto import create_key_bundle
 from db.repositories.personal_repo import PersonalKeyRepository
 from services.backup_restore import prepare_backup
-from services.chat_dump import chat_accounts, create_chat_dump
+from services.chat_dump import chat_accounts, create_chat_dump, create_all_chats_dump
 
 
 @pytest.mark.asyncio
@@ -53,3 +53,12 @@ async def test_zip_dump_is_scoped_to_one_owner_account_and_chat(db_main, tmp_pat
     with pytest.raises(InvalidBackup):
         await create_chat_dump(123, 456, 99999, tmp_path / "forged",
             session_factory=db_main.get_session_factory, store=MediaStore(tmp_path / "media"))
+    all_path, all_counts = await create_all_chats_dump(123, tmp_path / "all",
+        session_factory=db_main.get_session_factory, store=MediaStore(tmp_path / "media"))
+    from archive_viewer.archive import Archive
+    viewer = Archive.open(all_path, "СекретДампа123")
+    try:
+        assert all_counts["messages"] == 3
+        assert {chat["key"] for chat in viewer.chat_list()} == {"456:789", "456:790", "457:789"}
+    finally:
+        viewer.close()
