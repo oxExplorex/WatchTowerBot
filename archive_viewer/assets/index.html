@@ -1,50 +1,18 @@
 <!doctype html>
-<html lang="ru">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>WatchTower · Архив</title>
-    <link rel="stylesheet" href="/style.css">
-    <script src="/lottie_light_canvas.min.js" defer></script>
-    <script src="/app.js" defer></script>
-</head>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WatchTower · Архив</title><link rel="stylesheet" href="/style.css"><script src="/lottie_light_canvas.min.js" defer></script><script src="/app.js" defer></script><script src="/workspace.js" defer></script></head>
 <body>
-<main id="unlock">
-    <section class="card">
-        <div class="brand">WATCHTOWER / АРХИВ</div>
-        <h1>Ваши переписки.<br>Только на вашем ПК.</h1>
-        <p>Введите личный секрет бекапа. Интернет и подключение к боту не нужны.</p>
-        <form id="unlock-form">
-            <label for="secret">Личный секрет</label>
-            <input id="secret" type="password" autocomplete="off" required maxlength="256">
-            <button id="open" type="submit">Открыть архив →</button>
-        </form>
-        <p id="error" role="alert"></p>
-        <small>Секрет не сохраняется. Расшифровка выполняется на вашем компьютере.</small>
-    </section>
-</main>
+<main id="unlock"><section class="card"><div class="brand"><span class="brand-mark">◉</span> WATCHTOWER / АРХИВ</div><h1>Ваши переписки.<br>Только на вашем ПК.</h1><p>Откройте зашифрованный архив личным секретом.</p><form id="unlock-form"><label for="secret">Личный секрет</label><input id="secret" type="password" autocomplete="off" required maxlength="256"><button id="open" type="submit">Открыть архив →</button></form><p id="error" role="alert"></p><small>Расшифровка выполняется локально. <span class="app-version"></span></small></section></main>
 <main id="viewer" hidden>
-    <aside>
-        <header>
-            <div class="brand">WATCHTOWER</div>
-            <button id="lock">Заблокировать</button>
-        </header>
-        <h2>Переписки <span id="count"></span></h2>
-        <input id="search" placeholder="Название, ID или аккаунт" aria-label="Поиск чата">
-        <nav id="chats"></nav>
-    </aside>
-    <section class="conversation">
-        <header id="chat-header">
-            <h2 id="chat-title">Выберите переписку</h2>
-            <small id="chat-info">Архив доступен только локально</small>
-        </header>
-        <div id="messages"><div class="empty">Выберите чат слева</div></div>
-    </section>
+<aside class="sidebar"><header class="sidebar-header"><div class="brand"><span class="brand-mark">◉</span> WATCHTOWER</div><button id="lock" class="danger" title="Заблокировать архив">▣ <span>Заблокировать</span></button></header>
+<div class="section-heading"><h2>Переписки <span id="count"></span></h2><button id="export-all">⇩ Экспорт</button></div>
+<input id="search" placeholder="Название, ID или аккаунт" aria-label="Поиск чата">
+<div class="filter-tags" aria-label="Фильтры сообщений"><button id="date-filter" aria-expanded="false">По дате</button><button id="media-filter" aria-pressed="false">По медиа</button><button id="keyword-filter" aria-expanded="false">По словам</button></div>
+<section id="filters" hidden><label>Слова в сообщении<input id="filter-query" type="search" placeholder="Текст сообщения"></label><div class="date-range"><label>С даты (UTC)<input id="filter-start" type="date"></label><label>По дату (UTC)<input id="filter-end" type="date"></label></div><label class="check"><input id="filter-global" type="checkbox">Во всём архиве</label><div class="actions"><button id="apply-filters">Применить</button><button id="clear-filters">Сбросить</button></div></section>
+<nav id="chats" aria-label="Сохранённые переписки"></nav>
+<footer class="application-status"><div><span class="app-version">Версия…</span><span class="local-badge">Локально</span></div><p id="update-status" role="status">Проверка версии…</p><div class="actions"><button id="check-update">Проверить обновление</button><button id="install-update" hidden>Обновить ↗</button></div></footer></aside>
+<section class="conversation"><header id="chat-header"><div class="chat-heading"><h2 id="chat-title">Выберите переписку</h2><small id="chat-info">Архив доступен только локально</small></div><div class="toolbar"><button id="chat-search" title="Поиск по чату">⌕ <span>Поиск</span></button><button id="export-chat">⇩ <span>Экспорт ветки</span></button><button id="chat-analytics">▥ <span>Аналитика</span></button><button id="chat-gallery">▦ <span>Медиа</span></button><button id="chat-people">♙ <span>Участники</span></button><button id="toggle-inspector" aria-expanded="true" title="Показать или скрыть инспектор">◧</button></div></header><div id="result-status" role="status"></div><div id="messages"><div class="empty">Выберите чат слева</div></div></section>
+<aside id="inspector" class="inspector"><header><h2>Информация</h2><button id="close-inspector" aria-label="Скрыть инспектор">×</button></header><div id="inspector-content"><p>Выберите чат для просмотра данных.</p></div><section class="dump-tools"><h3>Инструменты архива</h3><button id="chat-graph">◉ Построить граф связей</button><button id="chat-audit">⌕ Проверить записи</button><small>Только факты из сохранённого архива.</small></section></aside>
 </main>
-<dialog id="history">
-    <header><h2>История сообщения</h2><button id="close-history">Закрыть</button></header>
-    <div id="versions"></div>
-</dialog>
-<div id="toast" role="status" hidden></div>
-</body>
-</html>
+<dialog id="history"><header><h2>История сообщения</h2><button id="close-history">Закрыть</button></header><div id="versions"></div></dialog>
+<dialog id="workspace-dialog"><header><h2 id="workspace-title"></h2><button id="close-workspace">Закрыть</button></header><div id="workspace-content"></div></dialog>
+<div id="toast" role="status" hidden></div></body></html>

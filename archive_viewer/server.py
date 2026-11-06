@@ -9,6 +9,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from archive_viewer.archive import Archive
 from archive_viewer.media_types import media_mime, sticker_data
+from archive_viewer import inspection
+from archive_viewer.update_status import UpdateStatus
 
 ASSETS = Path(__file__).with_name("assets")
 
@@ -22,6 +24,7 @@ class ViewerServer(ThreadingHTTPServer):
         self.token = secrets.token_urlsafe(32)
         self.lock = threading.RLock()
         self.origin = f"http://127.0.0.1:{self.server_port}"
+        self.updates = UpdateStatus(self)
 
     def server_close(self):
         with self.lock:
@@ -67,6 +70,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         static = {"/": ("index.html", "text/html; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                  "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),
                   "/lottie_light_canvas.min.js": ("lottie_light_canvas.min.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8")}
         if url.path in static:
@@ -75,6 +79,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._auth():
             self._json({"error": "Доступ запрещён"}, 403)
+            return
+        if url.path == "/api/application":
+            self._json(self.server.updates.status())
             return
         with self.server.lock:
             archive = self.server.archive
@@ -85,6 +92,21 @@ class Handler(BaseHTTPRequestHandler):
                 query = parse_qs(url.query)
                 if url.path == "/api/chats":
                     self._json(archive.chat_list())
+                elif url.path == "/api/inspect":
+                    self._json(inspection.inspect_chat(archive, query["chat"][0]))
+                elif url.path == "/api/gallery":
+                    self._json(inspection.gallery(archive, query["chat"][0], query.get("before", [None])[0]))
+                elif url.path == "/api/search":
+                    self._json(inspection.search(archive, query.get("chat", [""])[0],
+                        query=query.get("q", [""])[0][:512], start=query.get("start", [""])[0],
+                        end=query.get("end", [""])[0], media=query.get("media", [""])[0] == "1",
+                        before=query.get("before", [None])[0]))
+                elif url.path == "/api/export":
+                    html = query.get("format", [""])[0] == "html"
+                    extension = "html" if html else "json"
+                    self._send(inspection.export_chat(archive, query.get("chat", [""])[0], html),
+                        ("text/html" if html else "application/json") + "; charset=utf-8",
+                        extra={"Content-Disposition": f'attachment; filename="watchtower-export.{extension}"'})
                 elif url.path == "/api/messages":
                     before = int(query["before"][0]) if "before" in query else None
                     self._json(archive.page(query["chat"][0], before))
@@ -121,11 +143,21 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._json({"error": "Не найдено"}, 404)
             except Exception:
-                self._json({"error": "Не удалось прочитать данные. Вложение может быть повреждено."}, 400)
+                self._json({"error": "Не удалось прочитать данные. Проверьте параметры запроса и целостность архива."}, 400)
 
     def do_POST(self):
         if not self._auth() or self.headers.get("Origin", self.server.origin) != self.server.origin:
             self._json({"error": "Доступ запрещён"}, 403)
+            return
+        if self.path in {"/api/update/check", "/api/update/install"}:
+            try:
+                if self.path.endswith("check"):
+                    self.server.updates.check()
+                else:
+                    self.server.updates.install()
+                self._json(self.server.updates.status())
+            except ValueError:
+                self._json({"error": "Обновление недоступно"}, 400)
             return
         if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
             self._json({"error": "Неверный запрос"}, 400)

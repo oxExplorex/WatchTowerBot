@@ -50,7 +50,7 @@ def run():
             thread.start()
             try:
                 opener = build_opener(ProxyHandler({}))
-                for resource in ("/", "/app.js", "/style.css", "/lottie_light_canvas.min.js"):
+                for resource in ("/", "/app.js", "/workspace.js", "/style.css", "/lottie_light_canvas.min.js"):
                     with opener.open(Request(server.origin + resource), timeout=5) as response:
                         assert response.status == 200 and response.read()
             finally:

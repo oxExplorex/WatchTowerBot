@@ -100,6 +100,9 @@ def test_loopback_viewer_requires_token_rejects_other_origins_and_locks(viewer_b
             headers["Content-Type"] = "application/json"
         return opener.open(Request(server.origin + path, data=data, headers=headers), timeout=5)
     try:
+        with request("/api/application") as response:
+            info = json.load(response)
+            assert info["version"] and info["state"] == "source"
         with pytest.raises(HTTPError) as failure:
             request("/api/chats", token=False)
         assert failure.value.code == 403
@@ -149,5 +152,28 @@ def test_chats_sort_by_last_saved_message_date(viewer_backup):
         archive.chats["456:12"] = [row | {"chat_id": 12, "sent_at": 300}]
         archive.chats["456:999"] = [row | {"chat_id": 999, "sent_at": 50}]
         assert [chat["key"] for chat in archive.chat_list()] == ["456:12", "456:789", "456:999"]
+    finally:
+        archive.close()
+
+
+def test_workspace_queries_export_and_pagination_do_not_duplicate_partial_page(viewer_backup):
+    from archive_viewer import inspection
+    archive = Archive.open(viewer_backup.zip, viewer_backup.secret)
+    try:
+        original = archive.chats["456:789"][0]
+        archive.chats["456:789"] = [original | {"message_id": index} for index in range(1, 62)]
+        saved = list(inspection.messages(archive, "456:789"))
+        assert len(saved) == len({row["message_id"] for row in saved}) == 61
+        latest = inspection.search(archive, "456:789", query="private-message")
+        earlier = inspection.search(archive, "456:789", query="private-message", before=latest["before"])
+        assert latest["total"] == 61 and len(latest["messages"]) + len(earlier["messages"]) == 61
+        assert not inspection.search(archive, "456:789", query="absent")["messages"]
+        assert not inspection.search(archive, "456:789", start="2030-01-01")["messages"]
+        info = inspection.inspect_chat(archive, "456:789")
+        assert info["messages"] == 61 and info["original_missing"] == 61
+        assert len(inspection.gallery(archive, "456:789")["items"]) == 60
+        export = inspection.export_chat(archive, "456:789", html=True)
+        assert b"<script>private-message</script>" not in export
+        assert b"&lt;script&gt;private-message&lt;/script&gt;" in export
     finally:
         archive.close()

@@ -26,7 +26,8 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="watchtower-viewer-build-") as directory:
         build = Path(directory)
-        metadata = {"repository": os.environ.get("GITHUB_REPOSITORY", "oxExplorex/WatchTowerBot"),
+        metadata = {"app_version": (ROOT / "VERSION").read_text(encoding="utf-8-sig").strip(),
+            "repository": os.environ.get("GITHUB_REPOSITORY", "oxExplorex/WatchTowerBot"),
             "version": os.environ.get("GITHUB_SHA") or hashlib.sha256(b"".join(
                 path.read_bytes() for path in sorted((ROOT / "archive_viewer").rglob("*")) if path.is_file()
                 and "__pycache__" not in path.parts)).hexdigest(), "built_at": int(time.time())}

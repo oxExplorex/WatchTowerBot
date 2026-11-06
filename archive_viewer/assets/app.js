@@ -203,7 +203,7 @@ async function loadMessages(older = false) {
     const requestGeneration = generation, key = selected;
     const previousButton = $("older");
     try {
-        const result = await api("/api/messages?chat=" + encodeURIComponent(key)
+        const result = await api((window.messageQuery ? window.messageQuery(key) : "/api/messages?chat=" + encodeURIComponent(key))
             + (older && before !== null ? "&before=" + before : ""));
         if (requestGeneration !== generation || key !== selected) return;
         const area = $("messages"), height = area.scrollHeight;
@@ -235,6 +235,7 @@ async function loadMessages(older = false) {
         else area.replaceChildren(fragment);
         disposeDetachedAnimations();
         before = result.before;
+        if (window.searchResult) window.searchResult(result);
         area.scrollTop = older ? area.scrollHeight - height : area.scrollHeight;
     } catch (error) {
         if (previousButton) previousButton.disabled = false;
@@ -253,6 +254,7 @@ async function openChat(chat) {
     disposeDetachedAnimations();
     renderChats();
     await loadMessages();
+    if (selected === chat.key && window.refreshInspector) window.refreshInspector(chat);
 }
 
 $("unlock-form").addEventListener("submit", async event => {

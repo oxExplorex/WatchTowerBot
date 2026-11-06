@@ -18,6 +18,30 @@ BUILD_INFO = Path(__file__).with_name("build_info.json")
 MAX_DOWNLOAD = 100 * 1024 * 1024
 
 
+def build_info():
+    if BUILD_INFO.is_file():
+        value = json.loads(BUILD_INFO.read_text(encoding="utf-8"))
+        value["app_version"] = value.get("app_version") or value["version"][:8]
+        return value
+    version = Path(__file__).resolve().parents[1] / "VERSION"
+    return {"app_version": version.read_text(encoding="utf-8-sig").strip() if version.is_file() else "dev",
+            "version": "source", "built_at": 0, "repository": "oxExplorex/WatchTowerBot"}
+
+
+def fetch_manifest(current):
+    repository = current["repository"]
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValueError("Invalid repository")
+    url = f"https://github.com/{repository}/releases/download/{RELEASE_TAG}/viewer-update.json?t={int(time.time())}"
+    with urlopen(Request(url, headers={"User-Agent": "WatchTowerViewer", "Cache-Control": "no-cache"}), timeout=5) as response:
+        raw = response.read(16385)
+        if len(raw) > 16384:
+            raise ValueError("Oversized update manifest")
+        value = json.loads(raw)
+    validate_manifest(value, current)
+    return value
+
+
 def validate_manifest(value, current):
     if (not isinstance(value, dict) or value.get("repository") != current["repository"]
             or value.get("archive") != WINDOWS_ARCHIVE
@@ -51,16 +75,12 @@ def maybe_update(archive_path=None):
         return False
     target = Path(sys.executable).resolve()
     try:
-        current = json.loads(BUILD_INFO.read_text(encoding="utf-8"))
+        current = build_info()
         repository = current["repository"]
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
             return False
         base = f"https://github.com/{repository}/releases/download/{RELEASE_TAG}/"
-        with urlopen(Request(base + "viewer-update.json", headers={"User-Agent": "WatchTowerViewer"}), timeout=3) as response:
-            raw = response.read(16385)
-            if len(raw) > 16384:
-                raise ValueError("Oversized update manifest")
-            manifest = json.loads(raw)
+        manifest = fetch_manifest(current)
         if not validate_manifest(manifest, current):
             return False
         print("Доступно обновление просмотрщика. Скачиваю и проверяю…", flush=True)
@@ -69,7 +89,7 @@ def maybe_update(archive_path=None):
         with TemporaryDirectory(prefix="download-", dir=cache) as directory:
             root = Path(directory)
             download = root / WINDOWS_ARCHIVE
-            with urlopen(Request(base + WINDOWS_ARCHIVE, headers={"User-Agent": "WatchTowerViewer"}), timeout=30) as response, download.open("xb") as output:
+            with urlopen(Request(base + WINDOWS_ARCHIVE + f"?t={manifest['built_at']}", headers={"User-Agent": "WatchTowerViewer", "Cache-Control": "no-cache"}), timeout=30) as response, download.open("xb") as output:
                 size = 0
                 while chunk := response.read(1024 * 1024):
                     size += len(chunk)

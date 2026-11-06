@@ -126,3 +126,25 @@ def test_update_handoff_preserves_backup_and_reopens_viewer(tmp_path, monkeypatc
     assert target.read_bytes() == (b"MZ-old" if replace_fails else b"MZ-new")
     assert target.with_suffix(".exe.previous").read_bytes() == b"MZ-old"
     assert start.call_args.args[0] == [str(target), "--no-update", "synthetic-backup.zip"]
+
+
+def test_ui_update_locks_archive_before_starting_installer(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from archive_viewer.update_status import UpdateStatus
+    from archive_viewer import updater
+    stopped = threading.Event()
+    close = Mock()
+    server = SimpleNamespace(path="synthetic.zip", lock=threading.RLock(),
+                             archive=SimpleNamespace(close=close), shutdown=stopped.set)
+    status = UpdateStatus(server)
+    status.enabled = True
+    status.value.update(available=True, state="available")
+    def install(path):
+        assert path == "synthetic.zip" and server.archive is None
+        close.assert_called_once()
+        return True
+    monkeypatch.setattr(updater, "maybe_update", install)
+    status.install()
+    assert stopped.wait(2)
