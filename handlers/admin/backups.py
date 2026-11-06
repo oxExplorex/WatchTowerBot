@@ -241,6 +241,10 @@ async def dump_chat_id(message, state):
     if message.from_user.id not in get_configured_admin_ids():
         return
     raw = (message.text or "").strip()
+    try:
+        await message.delete()
+    except Exception:
+        pass  # An unavailable old input must not prevent preparing the dump.
     if not raw.isascii() or not raw.isdecimal() or len(raw) > 19 or not 0 < int(raw) < 2**63:
         await edit_input_panel(message, state, text.DUMP_INVALID, backup_keyboard(uploading=True))
         return
