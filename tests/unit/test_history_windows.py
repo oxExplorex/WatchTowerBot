@@ -30,7 +30,7 @@ async def test_public_history_adapter_preserves_window_and_empty_ids(offline_mod
     client = SimpleNamespace(get_chat_history=get_chat_history)
     ids, messages = await module.fetch_history_page(client, 123, HistoryWindow(70, 80))
     assert ids == [80, 75, 70] and [item.id for item in messages] == [80, 70]
-    assert calls == [(123, {"limit": 100, "min_id": 70, "max_id": 80})]
+    assert calls == [(123, {"limit": 200, "min_id": 70, "max_id": 80})]
     calls.clear()
     assert await module.fetch_history_page(client, -100123, HistoryWindow()) is None
     assert not calls

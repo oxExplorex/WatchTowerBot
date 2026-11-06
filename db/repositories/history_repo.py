@@ -12,8 +12,8 @@ from db.repositories.base import conflict_insert
 from services.history_windows import merge_ranges
 
 HISTORY_INTERVAL = 20 * 60
-HISTORY_CHAT_LIMIT = 5
-HISTORY_PAGE_SIZE = 100
+HISTORY_CHAT_LIMIT = 10
+HISTORY_PAGE_SIZE = 200
 
 
 class HistoryRepository:
@@ -118,9 +118,12 @@ class HistoryRepository:
     async def due_chats(self, account_uuid, *, now=None):
         now = int(time.time()) if now is None else now
         async with self._session_factory()() as session:
+            # Keep old/unvisited chats ahead of recent ones; shuffle equal scan
+            # intervals so neither Telegram recency nor numeric IDs select the batch.
+            last_attempt_interval = HistoryChat.last_attempt_at // HISTORY_INTERVAL
             return list(await session.scalars(select(HistoryChat).where(
                 HistoryChat.account_uuid == account_uuid, HistoryChat.excluded == False, HistoryChat.retry_at <= now
-            ).order_by(HistoryChat.last_attempt_at, HistoryChat.chat_id).limit(HISTORY_CHAT_LIMIT)))
+            ).order_by(last_attempt_interval, func.random()).limit(HISTORY_CHAT_LIMIT)))
 
     async def ranges(self, account_uuid, chat_id):
         async with self._session_factory()() as session:

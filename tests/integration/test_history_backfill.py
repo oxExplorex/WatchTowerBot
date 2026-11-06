@@ -113,19 +113,28 @@ async def test_sparse_edited_snapshot_is_personally_encrypted_and_resumes_at_ava
 @pytest.mark.asyncio
 async def test_budget_is_persistent_fair_and_excludes_groups_and_control_bot(history):
     h = history
-    for chat_id in [11, 12, 13, 14, 15, 16, 17, -123, -100123, h.bot.id]:
+    eligible = set(range(11, 36))
+    for chat_id in [*sorted(eligible), -123, -100123, h.bot.id]:
         await h.db.create_dump_chat_user(2002, chat_id)
     async def fetch(client, chat_id, window):
-        return [100], [message(100, chat=chat_id)]
+        identity = min(100, window.high_id or 100)
+        return [identity], [message(identity, chat=chat_id)]
     fetch = AsyncMock(side_effect=fetch)
     await h.module.backfill_account(h.bot, object(), h.account, h.repository, fetch_page=fetch, pause=h.pause)
-    assert fetch.await_count == 5
-    assert [call.args[1] for call in fetch.await_args_list] == [11, 12, 13, 14, 15]
+    first = {call.args[1] for call in fetch.await_args_list}
+    assert fetch.await_count == len(first) == 10 and first <= eligible
+    assert h.pause.await_count == 9
     await h.module.backfill_account(h.bot, object(), h.account, HistoryRepository(h.db.get_session_factory), fetch_page=fetch, pause=h.pause)
-    assert fetch.await_count == 5  # Restart must not reset the 20-minute budget.
+    assert fetch.await_count == 10  # Restart must not reset the 20-minute budget.
     await reset_run(h)
     await h.module.backfill_account(h.bot, object(), h.account, h.repository, fetch_page=fetch, pause=h.pause)
-    assert [call.args[1] for call in fetch.await_args_list[5:7]] == [16, 17]
+    second = {call.args[1] for call in fetch.await_args_list[10:]}
+    assert fetch.await_count == 20 and len(second) == 10 and second <= eligible
+    assert first.isdisjoint(second)
+    await reset_run(h)
+    await h.module.backfill_account(h.bot, object(), h.account, h.repository, fetch_page=fetch, pause=h.pause)
+    # The five still-unvisited chats precede any repeat, regardless of random order.
+    assert {call.args[1] for call in fetch.await_args_list[20:25]} == eligible - first - second
 
 
 @pytest.mark.asyncio
