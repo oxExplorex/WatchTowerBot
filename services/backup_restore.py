@@ -15,6 +15,7 @@ from core.backup_parts import PartsReader
 from core.personal_crypto import context, open_text, seal_text, unlock_private_key
 from core.thread_tools import run_blocking
 from db.media_models import MessageAttachment
+from db.avatar_models import ChatAvatar
 from db.message_models import MessageReceipt, MessageRevision, StoredMessage
 from db.models import HistoryUser, User
 from db.personal_models import OwnerArchiveKey
@@ -40,6 +41,7 @@ class PreparedBackup:
     names: list = field(default_factory=list)
     blobs: dict = field(default_factory=dict)
     summary: dict = field(default_factory=dict)
+    avatars: list = field(default_factory=list)
 
 
 def prepare_backup(paths, root, owner_id, secret):
@@ -101,6 +103,12 @@ def prepare_backup(paths, root, owner_id, secret):
                 result.names.append(record)
             elif record_type == "coverage":
                 pass  # Viewer metadata, never assert that a restored live account was fully scanned.
+            elif record_type == "avatar":
+                if (type(record.get("account_user_id")) is not int or record["account_user_id"] <= 0
+                        or type(record.get("user_id")) is not int or record["user_id"] <= 0
+                        or not re.fullmatch(r"[0-9a-f]{64}", record.get("blob_key", ""))):
+                    raise InvalidBackup("Invalid avatar")
+                result.avatars.append(record)
             elif record_type == "blob":
                 key, size = record["key"], record["size"]
                 if (not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", key)
@@ -125,6 +133,15 @@ def prepare_backup(paths, root, owner_id, secret):
             identities.add(identity)
             if table == "attachments" and row.status == "stored":
                 expected_blobs.add(row.blob_key)
+        peers = {(row.account_user_id, peer) for table, row in result.rows if table == "messages"
+                 for peer in (row.chat_id, row.sender_id, row.account_user_id)}
+        avatar_ids = set()
+        for avatar in result.avatars:
+            identity = (avatar["account_user_id"], avatar["user_id"])
+            if identity not in peers or identity in avatar_ids:
+                raise InvalidBackup("Invalid avatar scope")
+            avatar_ids.add(identity)
+            expected_blobs.add(avatar["blob_key"])
         if expected_blobs != set(result.blobs):
             raise InvalidBackup("Media list does not match archive")
         return result
@@ -277,6 +294,13 @@ async def restore_backup(prepared, owner_id, secret, *, session_factory, store, 
                     session.add(User(user_id=name["user_id"], username=encrypt_text(name["username"]) if name["username"] else None,
                         full_name=encrypt_text(name["full_name"]) if name["full_name"] else None,
                         username_hash=blind_index(name["username"]) if name["username"] else None))
+            for avatar in prepared.avatars:
+                identity = dict(owner_id=owner_id, account_user_id=avatar["account_user_id"], user_id=avatar["user_id"])
+                existing = await session.scalar(select(ChatAvatar).filter_by(**identity))
+                if existing is None:
+                    blob_key, _ = blobs[avatar["blob_key"]]
+                    session.add(ChatAvatar(**identity, blob_key=blob_key, photo_key=f"restored:{blob_key}",
+                                           status="stored", updated_at=int(time.time())))
             await session.flush()
         return counts
     except BaseException:

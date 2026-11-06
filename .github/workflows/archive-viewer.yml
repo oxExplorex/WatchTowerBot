@@ -51,3 +51,4 @@ jobs:
             gh release create archive-viewer --target "$GITHUB_SHA" --title "WatchTower Archive Viewer" --notes "Standalone Windows x64 viewer. Extract the ZIP and run WatchTowerViewer.exe. Archives stay on your computer." --latest=false
           fi
           gh release upload archive-viewer dist/archive-viewer/*.zip dist/archive-viewer/*.sha256 --clobber
+          gh release upload archive-viewer dist/archive-viewer/viewer-update.json --clobber

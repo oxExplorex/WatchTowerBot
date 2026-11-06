@@ -13,6 +13,7 @@ from core.session_runtime import get_client_by_number, start_client, stop_and_re
 from core.thread_tools import run_blocking
 from db.account_operation_models import AccountOperation, ArchiveBlobCleanup, TransferAttachment
 from db.media_models import MessageAttachment
+from db.avatar_models import ChatAvatar
 from db.models import Account
 from db.repositories.account_operations_repo import AccountOperationsRepository
 from db.repositories.personal_repo import lock_owner
@@ -147,9 +148,12 @@ async def cleanup_blobs(store, *, limit=100):
                 continue
             referenced = await session.scalar(select(exists().where(MessageAttachment.owner_id == item.owner_id,
                 MessageAttachment.blob_key == item.blob_key)))
+            avatar_reference = await session.scalar(select(exists().where(ChatAvatar.owner_id == item.owner_id,
+                or_(ChatAvatar.blob_key == item.blob_key,
+                    (ChatAvatar.status == "downloading") & (ChatAvatar.lease_until > int(time.time()))))))
             staged = await session.scalar(select(exists(select(TransferAttachment.attachment_uuid).join(AccountOperation).where(
                 AccountOperation.actor_id == item.owner_id, TransferAttachment.blob_key == item.blob_key))))
-            if not referenced and not staged:
+            if not referenced and not avatar_reference and not staged:
                 await run_blocking(store.remove_blob, item.owner_id, item.blob_key)
             await session.execute(delete(ArchiveBlobCleanup).where(
                 ArchiveBlobCleanup.owner_id == item.owner_id, ArchiveBlobCleanup.blob_key == item.blob_key))

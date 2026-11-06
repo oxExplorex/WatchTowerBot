@@ -162,4 +162,5 @@ from db.topic_models import BotPhotoCache, NotificationTopic, TopicReminder  # n
 from db.account_operation_models import AccountOperation, TransferRevision, TransferAttachment, ArchiveBlobCleanup  # noqa: E402,F401
 from db.personal_models import OwnerArchiveKey  # noqa: E402,F401
 from db.media_models import MessageAttachment  # noqa: E402,F401
+from db.avatar_models import ChatAvatar  # noqa: E402,F401
 from db.message_models import StoredMessage, MessageRevision, MessageReceipt, PendingMessageDeletion  # noqa: E402,F401

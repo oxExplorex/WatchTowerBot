@@ -76,6 +76,15 @@ async def _save_message(bot, context, message, *, source, kind, event_key, histo
         channel_namespace=channel_namespace(message.chat), require_account=context.require_account, **archive_options)
     if result is not None and result.new_chat:
         await _notify_new_chat(bot, replace(context, owner_id=result.owner_id or context.owner_id), message.chat)
+    if result is not None and message.chat.id > 0 and not channel_namespace(message.chat):
+        try:
+            from db.repositories.avatars_repo import AvatarsRepository
+            from db.session import get_session_factory
+            await AvatarsRepository(get_session_factory).observe(result.owner_id or context.owner_id,
+                context.account_user_id, [message.chat, getattr(message, "from_user", None)],
+                source=source, require_account=context.require_account)
+        except Exception as error:
+            bot_logger.debug("Avatar observation deferred: %s", type(error).__name__)
     return result
 
 

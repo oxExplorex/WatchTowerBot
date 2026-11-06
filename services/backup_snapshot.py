@@ -2,7 +2,7 @@
 import hashlib
 import time
 
-from sqlalchemy import select, text, union
+from sqlalchemy import exists, or_, select, text, union
 
 from core.backup_format import BackupWriter, BLOB_FRAME, InvalidBackup, MAX_FRAME
 from core.backup_parts import PartsWriter
@@ -10,6 +10,7 @@ from core.media_store import PERSONAL_MAGIC
 from core.personal_crypto import context, seal_text
 from core.thread_tools import run_blocking
 from db.media_models import MessageAttachment
+from db.avatar_models import ChatAvatar
 from db.message_models import MessageReceipt, MessageRevision, StoredMessage
 from db.models import Account, HistoryUser, User
 from db.history_models import HistoryChat
@@ -36,7 +37,7 @@ async def create_backup(owner_id, root, identity, *, session_factory, store, acc
             type(chat_id) is not int or type(account_user_id) is not int or chat_id <= 0 or account_user_id <= 0)):
         raise InvalidBackup("Invalid chat scope")
     parts = PartsWriter(root, identity)
-    counts = {name: 0 for name in ("messages", "revisions", "attachments", "events", "media", "pending")}
+    counts = {name: 0 for name in ("messages", "revisions", "attachments", "events", "media", "pending", "avatars")}
     try:
         async with session_factory()() as session, session.begin():
             dialect = session.get_bind().dialect.name
@@ -105,9 +106,21 @@ async def create_backup(owner_id, root, identity, *, session_factory, store, acc
                 await run_blocking(writer.record, {"type": "coverage", "account_user_id": account_id,
                     "chat_id": progress.chat_id, "reached_start": progress.reached_start,
                     "oldest_message_id": progress.oldest_message_id, "known_top_id": progress.known_top_id})
+            message_blobs = set(blobs)
+            avatars = await session.stream_scalars(select(ChatAvatar).where(ChatAvatar.owner_id == owner_id,
+                ChatAvatar.status == "stored", ChatAvatar.blob_key.is_not(None),
+                exists(select(StoredMessage.uuid).where(*scope,
+                    StoredMessage.account_user_id == ChatAvatar.account_user_id,
+                    or_(StoredMessage.chat_id == ChatAvatar.user_id, StoredMessage.sender_id == ChatAvatar.user_id,
+                        StoredMessage.account_user_id == ChatAvatar.user_id)).correlate(ChatAvatar))))
+            async for avatar in avatars:
+                await run_blocking(writer.record, {"type": "avatar", "account_user_id": avatar.account_user_id,
+                    "user_id": avatar.user_id, "blob_key": avatar.blob_key})
+                blobs.add(avatar.blob_key)
+                counts["avatars"] += 1
             for blob_key in sorted(blobs):
                 await run_blocking(_blob, writer, store.path(owner_id, blob_key), blob_key)
-                counts["media"] += 1
+                counts["media"] += int(blob_key in message_blobs)
             await run_blocking(writer.record, {"type": "summary", **counts})
             await run_blocking(writer.finish)
         return await run_blocking(parts.finish), counts

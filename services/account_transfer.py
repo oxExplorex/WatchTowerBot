@@ -9,6 +9,7 @@ from core.personal_crypto import context, open_text, seal_text
 from core.thread_tools import run_blocking
 from db.account_operation_models import AccountOperation, TransferAttachment, TransferRevision
 from db.media_models import MessageAttachment
+from db.avatar_models import ChatAvatar
 from db.message_models import MessageReceipt, MessageRevision, PendingMessageDeletion, StoredMessage
 from db.models import Account, AccountHealth, HistoryUser, TelegramApp
 from db.personal_models import OwnerArchiveKey
@@ -35,6 +36,15 @@ def attachment_query(operation):
         StoredMessage.owner_id == operation.owner_id, StoredMessage.account_user_id == operation.account_user_id,
         or_(TransferAttachment.attachment_uuid.is_(None),
             TransferAttachment.original_state_version != MessageAttachment.state_version))
+
+
+def avatar_query(operation):
+    return select(ChatAvatar).outerjoin(TransferAttachment, and_(
+        TransferAttachment.attachment_uuid == ChatAvatar.uuid,
+        TransferAttachment.operation_uuid == operation.uuid)).where(
+        ChatAvatar.owner_id == operation.owner_id, ChatAvatar.account_user_id == operation.account_user_id,
+        or_(TransferAttachment.attachment_uuid.is_(None),
+            TransferAttachment.original_state_version != ChatAvatar.state_version))
 
 
 async def locked_transfer(session, operation_id, run_token):
@@ -100,8 +110,20 @@ async def prepare_batch(session_factory, operation_id, run_token, private_key, s
             elif attachment.sources_encryption_version == 2:
                 raise ValueError("Unavailable media has personally sealed download locators")
             await session.merge(staged)
+        avatar = await session.scalar(avatar_query(operation).order_by(ChatAvatar.uuid).limit(1)) if attachment is None else None
+        if avatar is not None:
+            if avatar.status == "downloading" and avatar.lease_until > int(time.time()):
+                return False
+            staged = TransferAttachment(operation_uuid=operation.uuid, attachment_uuid=avatar.uuid,
+                original_snapshot=avatar.model_dump_json(), original_state_version=avatar.state_version,
+                sources=avatar.file_id or "", file_key=avatar.photo_key,
+                encryption_version=2, sources_encryption_version=1)
+            if avatar.status == "stored":
+                staged.blob_key, staged.stored_size = await run_blocking(store.transfer_blob,
+                    operation.owner_id, operation.actor_id, avatar.blob_key, private_key, target_key.public_key)
+            await session.merge(staged)
         await session.flush()
-        return not revisions and attachment is None
+        return not revisions and attachment is None and avatar is None
 
 
 async def _merge_message_metadata(session, source, target):
@@ -139,7 +161,9 @@ async def publish(session_factory, operation_id, run_token):
         operation = await locked_transfer(session, operation_id, run_token)
         if operation is None:
             return None
-        if await session.scalar(revision_query(operation).limit(1)) or await session.scalar(attachment_query(operation).limit(1)):
+        if (await session.scalar(revision_query(operation).limit(1))
+                or await session.scalar(attachment_query(operation).limit(1))
+                or await session.scalar(avatar_query(operation).limit(1))):
             return False
         source_ids = select(StoredMessage.uuid).where(StoredMessage.owner_id == operation.owner_id,
             StoredMessage.account_user_id == operation.account_user_id)
@@ -164,6 +188,21 @@ async def publish(session_factory, operation_id, run_token):
         await session.execute(update(MessageAttachment).where(MessageAttachment.uuid.in_(select(stage.c.attachment_uuid))).values(**values))
         await session.execute(update(MessageAttachment).where(MessageAttachment.uuid.in_(select(stage.c.attachment_uuid)),
             MessageAttachment.status == "downloading").values(status="pending"))
+        for avatar in (await session.scalars(select(ChatAvatar).where(ChatAvatar.owner_id == operation.owner_id,
+                ChatAvatar.account_user_id == operation.account_user_id))).all():
+            staged = await session.get(TransferAttachment, (operation.uuid, avatar.uuid))
+            destination = await session.scalar(select(ChatAvatar).where(ChatAvatar.owner_id == operation.actor_id,
+                ChatAvatar.account_user_id == avatar.account_user_id, ChatAvatar.user_id == avatar.user_id))
+            await queue_blob_cleanup(session, operation.owner_id, avatar.blob_key)
+            if destination is not None:
+                await queue_blob_cleanup(session, operation.actor_id, destination.blob_key)
+                await session.delete(destination)
+                await session.flush()
+            avatar.owner_id, avatar.blob_key = operation.actor_id, staged.blob_key
+            avatar.lease_token, avatar.lease_until = None, 0
+            avatar.state_version += 1
+            if avatar.status == "downloading":
+                avatar.status = "pending"
         target = aliased(StoredMessage)
         while True:
             collisions = (await session.execute(select(StoredMessage, target).join(target, and_(

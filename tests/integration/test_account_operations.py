@@ -6,6 +6,7 @@ from core.media_store import MediaStore
 from core.personal_crypto import context, create_key_bundle, seal_text, unlock_private_key
 from db.account_operation_models import AccountOperation, TransferRevision
 from db.media_models import MessageAttachment
+from db.avatar_models import ChatAvatar
 from db.message_models import MessageReceipt, MessageRevision, PendingMessageDeletion, StoredMessage
 from db.models import AccountHealth, DumpChatUser, HistoryUser
 from db.repositories.account_locks import AccountAlreadyConnected
@@ -65,6 +66,8 @@ async def test_transfer_survives_restart_keeps_originals_and_publishes_account_o
         attachment.sources = seal_text(old_bundle["public_key"], decrypt_text(attachment.sources), context(1001, f"sources:{attachment.uuid}"))
         attachment.sources_encryption_version, attachment.encryption_version = 2, 2
         attachment.state_version += 1
+        uow.session.add(ChatAvatar(owner_id=1001, account_user_id=2002, user_id=42,
+            photo_key="synthetic-photo", status="stored", blob_key=old_blob))
         # A previous owner may retain an empty identity of the same Telegram message.
         uow.session.add(StoredMessage(owner_id=2002, account_user_id=2002, chat_id=42, message_id=1, first_seen_at=1))
     operation = await operations.request_transfer(data["account"].uuid, 2002, data["target_app"].uuid)
@@ -103,6 +106,9 @@ async def test_transfer_survives_restart_keeps_originals_and_publishes_account_o
         attachment = await uow.session.scalar(select(MessageAttachment))
         assert attachment.owner_id == 2002 and attachment.sources_encryption_version == 2
         new_blob = attachment.blob_key
+        avatar = await uow.session.scalar(select(ChatAvatar))
+        assert avatar.owner_id == 2002 and avatar.blob_key == new_blob
+        assert store.read(2002, avatar.blob_key, private_key=new_private) == b"synthetic encrypted attachment"
     for message in messages:
         revisions = await db.messages_repository.get_revisions(owner_id=2002, message_uuid=message.uuid)
         assert len(revisions) == 1
@@ -330,6 +336,8 @@ async def test_full_delete_is_durable_scoped_and_cleans_only_unreferenced_files(
             if shared_blob or attachment.revision_uuid == target_revision.uuid:
                 attachment.status, attachment.blob_key, attachment.stored_size = "stored", blob, size
         uow.session.add_all([
+            ChatAvatar(owner_id=1001, account_user_id=2002, user_id=42,
+                photo_key="synthetic-photo", status="stored", blob_key=blob),
             HistoryUser(admin_id=1001, user_id=42, chat_id=42, account_user_id=2002, action_id=1, date=1),
             HistoryUser(admin_id=1001, user_id=42, chat_id=42, account_user_id=3003, action_id=1, date=1),
             AccountHealth(account_uuid=data["account"].uuid, admin_id=1001, user_id=2002, status=1, date=1),
@@ -359,6 +367,7 @@ async def test_full_delete_is_durable_scoped_and_cleans_only_unreferenced_files(
         assert histories and all(event.account_user_id == 3003 for event in histories)
         assert list(await uow.session.scalars(select(DumpChatUser)))  # Shared chat survives.
         assert len(list(await uow.session.scalars(select(MessageAttachment)))) == 1
+        assert not list(await uow.session.scalars(select(ChatAvatar)))
     revision = (await db.messages_repository.get_revisions(owner_id=1001, message_uuid=untouched.message_uuid))[0]
     assert db.messages_repository.decode_payload(revision, owner_id=1001, private_key=private)["text"].endswith("2")
     monkeypatch.setattr(account_operations, "get_session_factory", db.get_session_factory)
@@ -383,3 +392,21 @@ async def test_full_delete_waits_for_active_attachment_download(account_data):
         attachment = await uow.session.scalar(select(MessageAttachment))
         attachment.lease_until = 0
     assert await operations.remove_connection(request.uuid)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_preserves_blob_referenced_only_by_avatar(account_data, monkeypatch):
+    from services import account_operations
+    from db.repositories.account_operations_repo import queue_blob_cleanup
+    data = account_data
+    bundle, _, private, _ = await install_keys(data)
+    with data["store"].writer(1001, public_key=bundle["public_key"]) as writer:
+        writer.write(b"avatar-only")
+        blob, _ = writer.finish()
+    async with data["db"].create_unit_of_work() as uow:
+        uow.session.add(ChatAvatar(owner_id=1001, account_user_id=2002, user_id=42,
+            photo_key="synthetic", status="stored", blob_key=blob))
+        await queue_blob_cleanup(uow.session, 1001, blob)
+    monkeypatch.setattr(account_operations, "get_session_factory", data["db"].get_session_factory)
+    await account_operations.cleanup_blobs(data["store"])
+    assert data["store"].read(1001, blob, private_key=private) == b"avatar-only"

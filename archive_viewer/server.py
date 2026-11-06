@@ -5,9 +5,10 @@ from pathlib import Path
 import secrets
 import re
 import threading
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from archive_viewer.archive import Archive
+from archive_viewer.media_types import media_mime, sticker_data
 
 ASSETS = Path(__file__).with_name("assets")
 
@@ -66,6 +67,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         static = {"/": ("index.html", "text/html; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                  "/lottie_light_canvas.min.js": ("lottie_light_canvas.min.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8")}
         if url.path in static:
             name, mime = static[url.path]
@@ -88,19 +90,17 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(archive.page(query["chat"][0], before))
                 elif url.path == "/api/versions":
                     self._json(archive.versions(query["id"][0]))
+                elif url.path.startswith("/api/sticker/"):
+                    self._json(sticker_data(archive.media(url.path.rsplit("/", 1)[1])))
+                elif url.path.startswith("/api/avatar/"):
+                    data = archive.avatar(unquote(url.path.rsplit("/", 1)[1]))
+                    mime = media_mime(data)
+                    if not mime.startswith("image/"):
+                        raise ValueError("Unsupported avatar")
+                    self._send(data, mime)
                 elif url.path.startswith("/api/media/"):
                     data = archive.media(url.path.rsplit("/", 1)[1])
-                    mime = "application/octet-stream"
-                    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-                        mime = "image/png"
-                    elif data.startswith(b"\xff\xd8\xff"):
-                        mime = "image/jpeg"
-                    elif data.startswith((b"GIF87a", b"GIF89a")):
-                        mime = "image/gif"
-                    elif len(data) > 12 and data[4:8] == b"ftyp":
-                        mime = "video/mp4"
-                    elif data.startswith(b"OggS"):
-                        mime = "audio/ogg"
+                    mime = media_mime(data)
                     extra = {}
                     if mime == "application/octet-stream" or "download" in query:
                         extra["Content-Disposition"] = 'attachment; filename="attachment.bin"'

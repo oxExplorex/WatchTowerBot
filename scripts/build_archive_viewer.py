@@ -1,10 +1,13 @@
 """Build on Windows with a dedicated environment; publish no files automatically."""
 import argparse
 import hashlib
+import json
+import os
 import platform
 from pathlib import Path
 import subprocess
 import sys
+import time
 from tempfile import TemporaryDirectory
 import zipfile
 
@@ -23,9 +26,15 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="watchtower-viewer-build-") as directory:
         build = Path(directory)
+        metadata = {"repository": os.environ.get("GITHUB_REPOSITORY", "oxExplorex/WatchTowerBot"),
+            "version": os.environ.get("GITHUB_SHA") or hashlib.sha256(b"".join(
+                path.read_bytes() for path in sorted((ROOT / "archive_viewer").rglob("*")) if path.is_file()
+                and "__pycache__" not in path.parts)).hexdigest(), "built_at": int(time.time())}
+        (build / "build_info.json").write_text(json.dumps(metadata), encoding="utf-8")
         subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile", "--console",
             "--noupx", "--name", Path(EXECUTABLE).stem, "--paths", str(ROOT),
             "--add-data", f"{ROOT / 'archive_viewer' / 'assets'}:archive_viewer/assets",
+            "--add-data", f"{build / 'build_info.json'}:archive_viewer",
             "--distpath", str(build / "dist"), "--workpath", str(build / "work"),
             "--specpath", str(build), str(ROOT / "scripts" / "viewer_entry.py")], check=True, cwd=ROOT)
         executable = build / "dist" / EXECUTABLE
@@ -35,9 +44,12 @@ def main():
         with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.write(executable, EXECUTABLE)
             archive.write(ROOT / "archive_viewer" / "README.md", "README.md")
+            archive.write(ROOT / "archive_viewer" / "assets" / "lottie-LICENSE.md", "lottie-LICENSE.md")
         with target.open("rb") as stream:
             checksum = hashlib.file_digest(stream, "sha256").hexdigest()
         target.with_suffix(".zip.sha256").write_text(f"{checksum}  {target.name}\n", encoding="utf-8")
+        (output / "viewer-update.json").write_text(json.dumps(metadata | {"archive": WINDOWS_ARCHIVE,
+            "size": target.stat().st_size, "sha256": checksum}), encoding="utf-8")
         print(f"Built and checked: {target}")
 
 

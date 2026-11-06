@@ -5,6 +5,7 @@ from sqlalchemy import delete, exists, func, select, update
 
 from db.history_models import HistoryChat, HistoryRange, HistoryRun, TelegramCooldown
 from db.media_models import MessageAttachment
+from db.avatar_models import ChatAvatar
 from db.message_models import MessageReceipt, MessageRevision, PendingMessageDeletion, StoredMessage
 from db.models import Account, AccountHealth, DumpChatUser, HistoryUser
 from db.repositories.personal_repo import lock_owner
@@ -18,6 +19,10 @@ async def erase_account_archive(session, operation):
     messages = select(StoredMessage.uuid).where(StoredMessage.owner_id == owner, StoredMessage.account_user_id == account)
     revisions = select(MessageRevision.uuid).where(MessageRevision.message_uuid.in_(messages))
     attachments = MessageAttachment.revision_uuid.in_(revisions)
+    avatar_scope = (ChatAvatar.owner_id == owner, ChatAvatar.account_user_id == account)
+    if await session.scalar(select(exists().where(*avatar_scope,
+            ChatAvatar.status == "downloading", ChatAvatar.lease_until > int(time.time())))):
+        return False
     # A downloader writes files outside the DB transaction; wait for its lease.
     if await session.scalar(select(exists().where(attachments,
             MessageAttachment.status == "downloading", MessageAttachment.lease_until > int(time.time())))):
@@ -28,6 +33,9 @@ async def erase_account_archive(session, operation):
             select(HistoryChat.chat_id).where(HistoryChat.account_uuid == operation.account_uuid))))
     for blob in await session.scalars(select(MessageAttachment.blob_key).where(attachments)):
         await queue_blob_cleanup(session, owner, blob)
+    for blob in await session.scalars(select(ChatAvatar.blob_key).where(*avatar_scope)):
+        await queue_blob_cleanup(session, owner, blob)
+    await session.execute(delete(ChatAvatar).where(*avatar_scope))
     await session.execute(delete(MessageAttachment).where(attachments))
     await session.execute(delete(MessageReceipt).where(MessageReceipt.message_uuid.in_(messages)))
     await session.execute(delete(PendingMessageDeletion).where(

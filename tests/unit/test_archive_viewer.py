@@ -30,11 +30,13 @@ def viewer_backup(tmp_path):
     writer.record({"type": "info", "scope": "private"})
     writer.record({"type": "row", "table": "messages", "data": dict(uuid=message_id, owner_id=owner,
         account_user_id=456, chat_id=789, sender_id=789, message_id=10, sent_at=100,
-        is_edited=True, is_deleted=True, history_missing_at=None, latest_revision_uuid=revision_ids[-1])})
+        is_edited=True, is_deleted=True, history_missing_at=None, latest_revision_uuid=revision_ids[-1],
+        latest_version_at=101, original_seen=False)})
     for i, revision in enumerate(revision_ids):
         payload = dict(text="<script>private-message</script>" if i else "раньше", media=[dict(kind="document", file_name="secret.txt")])
         writer.record({"type": "row", "table": "revisions", "data": dict(uuid=revision, message_uuid=message_id,
-            revision_no=i + 1, version_at=100 + i, kind="edit" if i else "new", encryption_version=2,
+            revision_no=i + 1, version_at=100 + i, observed_at=1_700_000_000_000_000,
+            kind="edit" if i else "new", encryption_version=2,
             payload=seal_text(bundle["public_key"], json.dumps(payload), context(owner, f"revision:{revision}")))})
     data = b"private-file-content"
     symmetric, nonce = os.urandom(32), os.urandom(12)
@@ -68,6 +70,10 @@ def test_viewer_opens_archive_versions_and_media_without_env_or_database(viewer_
         message = archive.page(chats[0]["key"])["messages"][0]
         assert message["edited"] and message["deleted"] and message["versions"] == 2
         assert message["text"] == "<script>private-message</script>"
+        assert message["time"] == 100 and message["edited_at"] == 101
+        versions = archive.versions(backup.message)
+        assert versions[-1]["time"] == 101 and versions[-1]["observed_at"] == 1_700_000_000
+        assert versions[-1]["sent_at"] == 100 and not versions[-1]["original_seen"]
         assert len(archive.versions(backup.message)) == 2
         assert archive.media(backup.media) == backup.data
         assert all(backup.data not in path.read_bytes() for path in directory.iterdir())
@@ -134,3 +140,14 @@ def test_standalone_self_test_uses_synthetic_data_and_bundled_assets(capsys):
     from archive_viewer.self_test import run
     run()
     assert "Standalone viewer self-test passed" in capsys.readouterr().out
+
+
+def test_chats_sort_by_last_saved_message_date(viewer_backup):
+    archive = Archive.open(viewer_backup.zip, viewer_backup.secret)
+    try:
+        row = archive.chats["456:789"][0]
+        archive.chats["456:12"] = [row | {"chat_id": 12, "sent_at": 300}]
+        archive.chats["456:999"] = [row | {"chat_id": 999, "sent_at": 50}]
+        assert [chat["key"] for chat in archive.chat_list()] == ["456:12", "456:789", "456:999"]
+    finally:
+        archive.close()

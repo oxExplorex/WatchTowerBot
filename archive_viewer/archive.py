@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from core.backup_format import BackupReader, BLOB_FRAME, JSON_FRAME, MAGIC, MAX_HEADER, InvalidBackup
 from core.backup_parts import MAX_PARTS, PART_SIZE, parse_part_name
 from core.personal_crypto import context, open_text, unwrap_key
+from archive_viewer.media_types import preview_kind
 
 MAX_METADATA = 256 * 1024 * 1024
 MAX_MEDIA = 128 * 1024 * 1024
@@ -83,6 +84,7 @@ class Archive:
         self.messages, self.revisions, self.attachments, self.names, self.blobs = {}, {}, {}, {}, {}
         self._cache = None
         self.by_revision = {}
+        self.avatars = {}
 
     @classmethod
     def open(cls, path, secret):
@@ -101,6 +103,7 @@ class Archive:
         self.names.clear()
         self.by_revision.clear()
         self.blobs.clear()
+        self.avatars.clear()
         self.chats = {}
         self._cache = None
         self.private_key = None
@@ -163,6 +166,12 @@ class Archive:
                         self.attachments[row["uuid"]] = row
                 elif tag == "name":
                     self.names[str(item["user_id"])] = item
+                elif tag == "avatar":
+                    if (type(item.get("account_user_id")) is not int or item["account_user_id"] <= 0
+                            or type(item.get("user_id")) is not int or item["user_id"] <= 0
+                            or not re.fullmatch(r"[0-9a-f]{64}", item.get("blob_key", ""))):
+                        raise InvalidBackup("Invalid avatar")
+                    self.avatars[f'{item["account_user_id"]}:{item["user_id"]}'] = item["blob_key"]
                 elif tag == "summary":
                     summary = True
                 elif tag != "coverage":
@@ -185,7 +194,10 @@ class Archive:
     def chat_list(self):
         return [{"key": key, "id": str(rows[0]["chat_id"]), "account": str(rows[0]["account_user_id"]),
                  "name": self.names.get(str(rows[0]["chat_id"]), {}).get("full_name") or str(rows[0]["chat_id"]),
-                 "count": len(rows)} for key, rows in sorted(self.chats.items())]
+                 "count": len(rows), "last_message_at": max((row.get("sent_at") or 0 for row in rows), default=0),
+                 "avatar": key if self.avatars.get(key) in self.blobs else None}
+                for key, rows in sorted(self.chats.items(), key=lambda pair:
+                    (-max((row.get("sent_at") or 0 for row in pair[1]), default=0), pair[0]))]
 
     def _version(self, revision):
         payload = json.loads(open_text(self.private_key, revision["payload"],
@@ -196,10 +208,14 @@ class Archive:
             position = item["position"]
             description = entries[position] if 0 <= position < len(entries) else {}
             media.append({"id": item["uuid"], "kind": description.get("kind", "document"),
+                          "preview": preview_kind(description.get("kind", "document"),
+                              description.get("mime_type"), description.get("file_name")),
                           "name": description.get("file_name") or "Вложение",
                           "available": item["status"] == "stored" and item.get("blob_key") in self.blobs})
         return {"text": payload.get("text") or payload.get("caption") or "", "media": media,
-                "time": revision.get("version_at"), "kind": revision.get("kind")}
+                "time": revision.get("version_at"), "kind": revision.get("kind"),
+                "observed_at": (revision.get("observed_at") or 0) / 1_000_000,
+                "revision_no": revision.get("revision_no")}
 
     def page(self, key, before=None):
         rows = self.chats[key]
@@ -214,20 +230,32 @@ class Archive:
             item.update(id=row["uuid"], message_id=row["message_id"], time=row.get("sent_at"),
                 sender=self.names.get(sender, {}).get("full_name") or sender,
                 outgoing=sender == str(row["account_user_id"]), edited=row["is_edited"], deleted=row["is_deleted"],
-                missing=bool(row.get("history_missing_at")), versions=len(revisions))
+                missing=bool(row.get("history_missing_at")), versions=len(revisions),
+                edited_at=(row.get("latest_version_at") or (latest or {}).get("version_at")) if row["is_edited"] else None,
+                original_seen=bool(row.get("original_seen")),
+                avatar=f'{row["account_user_id"]}:{sender}' if self.avatars.get(f'{row["account_user_id"]}:{sender}') in self.blobs else None)
             output.append(item)
         return {"messages": output, "before": start if start else None}
 
     def versions(self, identity):
         if identity not in self.messages:
             raise KeyError(identity)
-        return [self._version(row) for row in self.revisions.get(identity, [])]
+        message = self.messages[identity]
+        return [self._version(row) | {"sent_at": message.get("sent_at"),
+                "original_seen": bool(message.get("original_seen")), "edited": message["is_edited"]}
+                for row in self.revisions.get(identity, [])]
 
     def media(self, identity):
         item = self.attachments[identity]
         key = item.get("blob_key")
         if item["status"] != "stored" or key not in self.blobs:
             raise KeyError(identity)
+        return self._read_blob(key)
+
+    def avatar(self, identity):
+        return self._read_blob(self.avatars[identity])
+
+    def _read_blob(self, key):
         if self._cache is not None and self._cache[0] == key:
             return self._cache[1]
         raw = self.blobs[key].read_bytes()

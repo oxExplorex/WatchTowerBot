@@ -152,6 +152,7 @@ def test_real_loader_and_consumers_share_one_registry():
             main.starting_tg_parse_dialogs_handler.reset_mock()
             main.start_update_notifier = AsyncMock()
             main.run_media_archiver = AsyncMock()
+            main.run_avatar_archiver = AsyncMock()
             main.run_history_backfill = AsyncMock()
             main.run_runtime_health = AsyncMock()
             report = Mock()
@@ -175,6 +176,7 @@ def test_real_loader_and_consumers_share_one_registry():
             finally:
                 asyncio.sleep = original_sleep
             main.start_all_clients.assert_awaited_once()
+            main.run_avatar_archiver.assert_awaited_once_with(loader.bot)
             main.bot.me.assert_awaited_once()
             report.finish.assert_called_once()
             registered_clients = main._register_pyrogram_handlers.call_args.args[0]
