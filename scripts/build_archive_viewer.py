@@ -13,7 +13,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from archive_viewer.distribution import EXECUTABLE, WINDOWS_ARCHIVE
+from archive_viewer.distribution import EXECUTABLE, windows_archive
 
 
 def main():
@@ -42,7 +42,9 @@ def main():
         executable = build / "dist" / EXECUTABLE
         # Run the frozen program outside the checkout: bundled assets and crypto must stand alone.
         subprocess.run([str(executable), "--self-test"], check=True, cwd=build, timeout=60)
-        target = output / WINDOWS_ARCHIVE
+        archive_name = windows_archive(metadata["app_version"])
+        metadata["release_tag"] = "v" + metadata["app_version"]
+        target = output / archive_name
         with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.write(executable, EXECUTABLE)
             archive.write(ROOT / "archive_viewer" / "README.md", "README.md")
@@ -50,7 +52,7 @@ def main():
         with target.open("rb") as stream:
             checksum = hashlib.file_digest(stream, "sha256").hexdigest()
         target.with_suffix(".zip.sha256").write_text(f"{checksum}  {target.name}\n", encoding="utf-8")
-        (output / "viewer-update.json").write_text(json.dumps(metadata | {"archive": WINDOWS_ARCHIVE,
+        (output / "viewer-update.json").write_text(json.dumps(metadata | {"archive": archive_name,
             "size": target.stat().st_size, "sha256": checksum}), encoding="utf-8")
         print(f"Built and checked: {target}")
 

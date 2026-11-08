@@ -11,6 +11,34 @@ from archive_viewer.media_types import media_mime, preview_kind, sticker_data
 from archive_viewer.updater import unpack_update, validate_manifest
 
 
+def test_versioned_release_manifest_and_download_names(monkeypatch):
+    import io
+    from archive_viewer import updater
+    from core.viewer_distribution import download_url, windows_archive
+
+    current = dict(repository="owner/repo", version="old", built_at=100)
+    manifest = dict(repository="owner/repo", version="new", built_at=200,
+                    app_version="2.1.2", release_tag="v2.1.2",
+                    archive=windows_archive("2.1.2"), size=100, sha256="a" * 64)
+    urls = []
+    def fetch(request, **kwargs):
+        urls.append(request.full_url)
+        return io.BytesIO(json.dumps(manifest).encode())
+    monkeypatch.setattr(updater, "urlopen", fetch)
+    assert updater.fetch_manifest(current) == manifest
+    assert "/releases/latest/download/viewer-update.json" in urls[0]
+    assert validate_manifest(manifest, current)
+    assert windows_archive("2.1.2") == "WatchTower-Viewer-2.1.2-Windows-x64.zip"
+    url = download_url("owner", "repo")
+    assert "/releases/download/v" in url and url.endswith("-Windows-x64.zip")
+    for invalid in ({"archive": "../unsafe.zip"}, {"release_tag": "../../unsafe"},
+                    {"app_version": "2.1.3"}, {"release_tag": "v2.1.3"}):
+        with pytest.raises(ValueError):
+            validate_manifest(manifest | invalid, current)
+    with pytest.raises(ValueError):
+        windows_archive("../../unsafe")
+
+
 def test_stickers_support_webp_webm_and_bounded_tgs():
     webp = b"RIFF\x00\x00\x00\x00WEBP"
     webm = b"\x1a\x45\xdf\xa3webm"
@@ -151,7 +179,8 @@ def test_ui_update_locks_archive_before_starting_installer(monkeypatch):
     assert stopped.wait(2)
 
 
-def test_downloaded_exe_is_not_renamed_after_self_test_and_each_attempt_is_isolated(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("versioned", [False, True])
+def test_downloaded_exe_is_not_renamed_after_self_test_and_each_attempt_is_isolated(tmp_path, monkeypatch, capsys, versioned):
     import io
     from unittest.mock import Mock
     from archive_viewer import updater
@@ -163,6 +192,9 @@ def test_downloaded_exe_is_not_renamed_after_self_test_and_each_attempt_is_isola
     raw = packed.getvalue()
     manifest = current | dict(version="new", built_at=200, archive=WINDOWS_ARCHIVE,
         size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    if versioned:
+        manifest.update(app_version="2.1.2", release_tag="v2.1.2",
+                        archive="WatchTower-Viewer-2.1.2-Windows-x64.zip")
     target = tmp_path / "installed.exe"
     target.write_bytes(b"MZ-old")
     build = tmp_path / "build_info.json"
@@ -174,7 +206,11 @@ def test_downloaded_exe_is_not_renamed_after_self_test_and_each_attempt_is_isola
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setattr(updater, "build_info", lambda: current)
     monkeypatch.setattr(updater, "fetch_manifest", lambda _: manifest)
-    monkeypatch.setattr(updater, "urlopen", lambda *args, **kwargs: io.BytesIO(raw))
+    urls = []
+    def download(request, **kwargs):
+        urls.append(request.full_url)
+        return io.BytesIO(raw)
+    monkeypatch.setattr(updater, "urlopen", download)
     check, start = Mock(), Mock()
     monkeypatch.setattr(updater.subprocess, "run", check)
     monkeypatch.setattr(updater.subprocess, "Popen", start)
@@ -182,6 +218,8 @@ def test_downloaded_exe_is_not_renamed_after_self_test_and_each_attempt_is_isola
     monkeypatch.setattr(updater.os, "replace", rename)
     assert updater.maybe_update("synthetic-backup.zip")
     assert updater.maybe_update("synthetic-backup.zip")
+    release = "v2.1.2" if versioned else "archive-viewer"
+    assert all(f"/releases/download/{release}/{manifest['archive']}?" in url for url in urls)
     paths = [call.args[0][0] for call in start.call_args_list]
     assert len(set(paths)) == 2
     assert paths == [call.args[0][0] for call in check.call_args_list]

@@ -12,7 +12,7 @@ import time
 from urllib.request import Request, urlopen
 import zipfile
 
-from archive_viewer.distribution import EXECUTABLE, RELEASE_TAG, WINDOWS_ARCHIVE
+from archive_viewer.distribution import EXECUTABLE, RELEASE_TAG, WINDOWS_ARCHIVE, windows_archive
 
 BUILD_INFO = Path(__file__).with_name("build_info.json")
 MAX_DOWNLOAD = 100 * 1024 * 1024
@@ -32,7 +32,7 @@ def fetch_manifest(current):
     repository = current["repository"]
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("Invalid repository")
-    url = f"https://github.com/{repository}/releases/download/{RELEASE_TAG}/viewer-update.json?t={int(time.time())}"
+    url = f"https://github.com/{repository}/releases/latest/download/viewer-update.json?t={int(time.time())}"
     with urlopen(Request(url, headers={"User-Agent": "WatchTowerViewer", "Cache-Control": "no-cache"}), timeout=5) as response:
         raw = response.read(16385)
         if len(raw) > 16384:
@@ -43,8 +43,15 @@ def fetch_manifest(current):
 
 
 def validate_manifest(value, current):
+    if isinstance(value, dict) and "release_tag" in value:
+        version = value.get("app_version")
+        if (not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version)
+                or value["release_tag"] != "v" + version
+                or value.get("archive") != windows_archive(version)):
+            raise ValueError("Invalid viewer release")
+    elif isinstance(value, dict) and value.get("archive") != WINDOWS_ARCHIVE:
+        raise ValueError("Invalid legacy viewer archive")
     if (not isinstance(value, dict) or value.get("repository") != current["repository"]
-            or value.get("archive") != WINDOWS_ARCHIVE
             or type(value.get("built_at")) is not int
             or type(value.get("size")) is not int or not 0 < value["size"] <= MAX_DOWNLOAD
             or not isinstance(value.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"])
@@ -82,19 +89,20 @@ def maybe_update(archive_path=None):
         repository = current["repository"]
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
             return False
-        base = f"https://github.com/{repository}/releases/download/{RELEASE_TAG}/"
         manifest = fetch_manifest(current)
         if not validate_manifest(manifest, current):
             return False
+        release_tag = manifest.get("release_tag", RELEASE_TAG)
+        base = f"https://github.com/{repository}/releases/download/{release_tag}/"
         print("Доступно обновление просмотрщика. Скачиваю и проверяю…", flush=True)
         phase = "подготовка каталога загрузки"
         cache = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".cache") / "WatchTowerViewer" / "updates"
         cache.mkdir(parents=True, exist_ok=True)
         cleanup_downloads(cache)
         root = Path(mkdtemp(prefix="download-", dir=cache))
-        download = root / WINDOWS_ARCHIVE
+        download = root / manifest["archive"]
         phase = "скачивание архива"
-        with urlopen(Request(base + WINDOWS_ARCHIVE + f"?t={manifest['built_at']}", headers={"User-Agent": "WatchTowerViewer", "Cache-Control": "no-cache"}), timeout=30) as response, download.open("xb") as output:
+        with urlopen(Request(base + manifest["archive"] + f"?t={manifest['built_at']}", headers={"User-Agent": "WatchTowerViewer", "Cache-Control": "no-cache"}), timeout=30) as response, download.open("xb") as output:
             size = 0
             while chunk := response.read(1024 * 1024):
                 size += len(chunk)
