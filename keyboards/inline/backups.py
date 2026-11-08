@@ -3,7 +3,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from callbacks import backups as callback
 from data.texts import backups as text
 from keyboards.inline.navigation import with_navigation
-from archive_viewer.distribution import download_url
+from core.viewer_distribution import download_url
 from scripts.update_bot import REPO_OWNER, REPO_NAME
 
 

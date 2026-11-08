@@ -1,8 +1,3 @@
-"""Public download names shared by the bot and standalone build tooling."""
-RELEASE_TAG = "archive-viewer"
-WINDOWS_ARCHIVE = "WatchTowerViewer-windows-x64.zip"
-EXECUTABLE = "WatchTowerViewer.exe"
+"""Compatibility imports for the standalone viewer and existing build tooling."""
 
-
-def download_url(owner, repository):
-    return f"https://github.com/{owner}/{repository}/releases/download/{RELEASE_TAG}/{WINDOWS_ARCHIVE}"
+from core.viewer_distribution import EXECUTABLE, RELEASE_TAG, WINDOWS_ARCHIVE, download_url
