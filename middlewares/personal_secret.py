@@ -5,6 +5,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import InaccessibleMessage
 
 from callbacks.personal_secret import CANCEL_CALLBACK, SETUP_CALLBACK, VERIFY_CALLBACK, STATUS_CALLBACK
+from callbacks.startup import CLOSE as CLOSE_STARTUP
 from data.texts import personal_secret as texts
 from data.texts import account_ownership as ownership_text
 from data.texts.personal_secret import CONFIRM_PROMPT, INPUT_PROMPT, PROMPT
@@ -62,6 +63,8 @@ class PersonalSecretMiddleware(BaseMiddleware):
         if message.chat.type != "private" or message.chat.id != user.id:
             return None
         owner_id = user.id
+        if call and call.data == CLOSE_STARTUP:
+            return await handler(update, data)
         data["personal_secret_dialog"] = self.dialog
         key = await self.repository.get(owner_id)
         if call and isinstance(call.message, InaccessibleMessage):

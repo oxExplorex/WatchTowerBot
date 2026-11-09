@@ -60,6 +60,11 @@ from utils.runtime_chart import render_runtime_chart
 from core.session_runtime import is_session_running
 from services.log_export import latest_log_file
 from services.notification_topics import send_log_file
+from services.startup_notifications import announce_update
+from scripts.startup_status import current_reporter
+from callbacks.startup import CLOSE as CLOSE_STARTUP
+from utils.callback_answers import answer_callback
+from aiogram.exceptions import TelegramBadRequest
 from data.texts import logs as log_text
 from keyboards.main.start_keyboard import static_admin_keyboard
 
@@ -223,11 +228,9 @@ async def _run_update_flow(
 
     reporter = begin_operation("Обновление", message=message)
     try:
-        panel = await edit_panel(message, start_text.format(from_version=local_version, to_version=latest_version))
+        await edit_panel(message, start_text.format(from_version=local_version, to_version=latest_version))
         if reporter is not None:
-            if type(getattr(panel, "message_id", None)) is int:
-                with reporter.condition:
-                    reporter.message_ids[message.chat.id] = panel.message_id
+            await announce_update(message.bot, reporter, local_version, latest_version)
             reporter.update("Загрузка обновления", f"Версия {local_version} → {latest_version}")
         options = {"progress": reporter.update} if reporter is not None else {}
         ok = await run_blocking(download_and_extract_github_repo, **options)
@@ -480,6 +483,19 @@ async def update_notice_close_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await not_warning_delete_message(message=call)
     await call.answer(constant_text.UPDATE_NOTIFY_CLOSED_TOAST)
+
+
+@router.callback_query(IsPrivate(), IsAdmin(), F.data == CLOSE_STARTUP, StateFilter("*"))
+async def startup_notice_close_handler(call: CallbackQuery):
+    reporter = current_reporter()
+    if reporter is not None:
+        reporter.dismiss(call.message.chat.id, call.message.message_id)
+    try:
+        await call.message.delete()
+    except TelegramBadRequest as error:
+        if "message to delete not found" not in error.message.casefold():
+            raise
+    await answer_callback(call)
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "upd:snooze", StateFilter("*"))
 async def update_notice_snooze_handler(call: CallbackQuery, state: FSMContext):

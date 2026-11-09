@@ -159,13 +159,14 @@ def test_update_handoff_keeps_initiator_topic_and_completion_controls(tmp_path):
     after = status.StartupReporter(report.token, [123], root=tmp_path, transport=sender, interval=0)
     after.configure(report.token, [123], thread_ids={456: 99})
     assert after.recipients == [123, 456]
-    assert after.thread_ids[456] == 42
+    assert after.thread_ids[456] == 99  # The currently configured Logs route wins.
     after.finish(detail="Обработчики готовы")
     after.close(timeout=3)
     completion = [payload for _, payload in sender.calls
                   if payload["chat_id"] == 456 and "WatchTowerBot обновлён</b>" in payload["text"]][-1]
     assert completion["message_id"] == 900
-    assert completion["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "panel:settings"
+    assert completion["reply_markup"]["inline_keyboard"] == [[{"text": "Закрыть", "callback_data": "startup:close"}]]
+    assert "Запущен бот версии <code>2.0.0</code>" in completion["text"]
 
 
 def test_replacement_progress_message_stays_in_original_topic(tmp_path):
@@ -198,3 +199,26 @@ def test_ordinary_launch_reuses_log_topic_but_not_previous_operation(tmp_path):
     after.finish()
     after.close(timeout=3)
     assert all(payload.get("message_thread_id") == 42 for method, payload in sender.calls if method == "sendMessage")
+
+
+def test_dismissed_result_is_not_recreated_by_late_session_status(tmp_path):
+    sender = Transport()
+    report = reporter(tmp_path, sender)
+    report.finish()
+    report.close(timeout=3)
+    count = len(sender.calls)
+    report.dismiss(123, 700)
+    report.session_result(0, 1)
+    report.close(timeout=3)
+    assert len(sender.calls) == count
+
+
+def test_update_does_not_reuse_menu_message_or_start_http_before_announcement(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    before = reporter(tmp_path)
+    before.thread_ids[123] = 42
+    monkeypatch.setattr(status, "_current", before)
+    after = status.begin_operation("Обновление", message=SimpleNamespace(
+        chat=SimpleNamespace(id=123), message_id=500, message_thread_id=99))
+    assert after.message_ids == {} and after.thread is None
+    assert after.thread_ids[123] == 42

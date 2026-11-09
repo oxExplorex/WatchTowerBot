@@ -1,0 +1,1 @@
+CLOSE = "startup:close"

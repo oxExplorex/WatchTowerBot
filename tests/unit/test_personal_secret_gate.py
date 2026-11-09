@@ -55,6 +55,18 @@ def setup(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_closing_startup_log_does_not_require_secret_or_clear_current_wizard(setup):
+    repository, state, gate = setup
+    await state.set_state(SECRET_INPUT)
+    handler = AsyncMock()
+    call = SimpleNamespace(data="startup:close", message=message(), answer=AsyncMock())
+    await gate(handler, update(call=call), context(state))
+    handler.assert_awaited_once()
+    repository.get.assert_not_awaited()
+    assert await state.get_state() == SECRET_INPUT
+
+
+@pytest.mark.asyncio
 async def test_onboarding_confirms_without_plaintext_in_fsm_and_deletes_every_entry(setup):
     repository, state, gate = setup
     handler, data = AsyncMock(), context(state)

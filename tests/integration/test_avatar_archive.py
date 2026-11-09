@@ -17,6 +17,54 @@ from services.backup_restore import prepare_backup, restore_backup
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("matching", [True, False])
+async def test_expired_avatar_locator_refreshes_same_photo_and_preserves_encryption(db_main, tmp_path, offline_module, matching):
+    from pyrogram.errors import FileReferenceExpired
+    from utils.crypto_store import decrypt_text
+    module = offline_module("services/avatar_archive.py")
+    owner, account, peer, secret = 123, 456, 789, "АватарАрхива123"
+    bundle = create_key_bundle(owner, secret)
+    await PersonalKeyRepository(db_main.get_session_factory).install(owner, bundle)
+    repository = AvatarsRepository(db_main.get_session_factory)
+    await repository.observe(owner, account, [SimpleNamespace(id=peer, photo=SimpleNamespace(
+        small_file_id="expired", small_photo_unique_id="original-photo"))])
+    item = await repository.claim()
+    calls = []
+    async def stream(file_id):
+        if file_id == "expired":
+            raise FileReferenceExpired()
+        assert file_id == "refreshed"
+        yield b"synthetic-private-avatar"
+    async def photos(user_id, *, limit):
+        calls.append((user_id, limit))
+        yield SimpleNamespace(small_file_id="wrong", small_photo_unique_id="different-photo")
+        if matching:
+            yield SimpleNamespace(small_file_id="refreshed", small_photo_unique_id="original-photo")
+    client = SimpleNamespace(stream_media=stream, get_chat_photos=photos)
+    store = MediaStore(tmp_path / "media")
+    options = dict(limits=SimpleNamespace(media_slot=AsyncMock(return_value=0), defer=AsyncMock()),
+        keys=MediaRepository(db_main.get_session_factory), resolve_client=AsyncMock(return_value=client),
+        run_client=lambda client, operation: operation())
+    await module.archive_avatar(SimpleNamespace(), repository, store, item, **options)
+    async with db_main.get_session_factory()() as session, session.begin():
+        row = await session.get(ChatAvatar, item.uuid)
+        assert decrypt_text(row.file_id) == ("refreshed" if matching else "expired") and row.status == "pending"
+        if not matching:
+            assert await session.scalar(select(ChatAvatar.uuid).where(ChatAvatar.uuid != item.uuid)) is None
+            assert calls == [(peer, 100)]
+            return  # Never substitute another photograph when the original is gone.
+        row.next_attempt_at = 0
+    fresh = await repository.claim()
+    await module.archive_avatar(SimpleNamespace(), repository, store, fresh, **options)
+    async with db_main.get_session_factory()() as session:
+        rows = list(await session.scalars(select(ChatAvatar)))
+    assert len(rows) == 1 and rows[0].uuid == item.uuid and rows[0].status == "stored"
+    assert calls == [(peer, 100)]
+    assert b"synthetic-private-avatar" not in store.path(owner, rows[0].blob_key).read_bytes()
+    assert store.read(owner, rows[0].blob_key, private_key=unlock_private_key(owner, bundle, secret)) == b"synthetic-private-avatar"
+
+
+@pytest.mark.asyncio
 async def test_avatar_is_encrypted_owner_scoped_exported_and_restored(db_main, tmp_path, offline_module):
     archive_avatar = offline_module("services/avatar_archive.py").archive_avatar
     owner, account_id, peer = 123, 456, 789

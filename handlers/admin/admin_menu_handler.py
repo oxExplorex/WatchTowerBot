@@ -12,6 +12,7 @@ from data.texts.topics import MENU_TITLE
 
 from utils.others import close_state_pyrogram_client
 from utils.panel import clear_panel_state, edit_input_panel, edit_panel, remember_panel
+from utils.callback_answers import answer_callback
 
 router = Router(name=__name__)
 
@@ -47,7 +48,7 @@ async def noop_callback_handler(call: CallbackQuery):
 
 @router.callback_query(IsPrivate(), IsAdmin(), F.data == "panel:home", StateFilter("*"))
 async def main_menu_handler(call: CallbackQuery, state: FSMContext):
-    await call.answer()
+    await answer_callback(call)
     await close_state_pyrogram_client(state)
     await clear_panel_state(state)
     service = delivery(call.bot)

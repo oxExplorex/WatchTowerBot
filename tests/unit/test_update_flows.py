@@ -212,17 +212,49 @@ async def test_manual_update_acknowledges_and_changes_panel_before_network_check
 @pytest.mark.asyncio
 async def test_manual_update_edits_panel_even_when_reporter_exists(update_modules, monkeypatch):
     _, settings, _ = update_modules
-    message = types.SimpleNamespace(chat=types.SimpleNamespace(id=1001), edit_text=AsyncMock(), answer=AsyncMock())
+    message = types.SimpleNamespace(bot=object(), chat=types.SimpleNamespace(id=1001), edit_text=AsyncMock(), answer=AsyncMock())
     report = types.SimpleNamespace(condition=threading.Condition(), message_ids={},
                                    update=Mock(), finish=Mock(), fail=Mock())
     monkeypatch.setattr(settings, "begin_operation", lambda *args, **kwargs: report)
+    announce = AsyncMock()
+    monkeypatch.setattr(settings, "announce_update", announce)
 
     def download(*, progress):
         message.edit_text.assert_awaited_once()
         assert message.edit_text.await_args.kwargs["reply_markup"] is None
         assert progress == report.update
+        announce.assert_awaited_once_with(message.bot, report, "1", "2")
         return False
 
     monkeypatch.setattr(settings, "download_and_extract_github_repo", download)
     await settings._run_update_flow(message, "1", "2", "start", "done", "failed")
     report.finish.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_close_startup_notice_deletes_only_the_clicked_log(update_modules, monkeypatch):
+    _, settings, _ = update_modules
+    report = types.SimpleNamespace(dismiss=Mock())
+    monkeypatch.setattr(settings, "current_reporter", lambda: report)
+    message = types.SimpleNamespace(chat=types.SimpleNamespace(id=1001), message_id=500, delete=AsyncMock())
+    call = types.SimpleNamespace(message=message, answer=AsyncMock())
+    await settings.startup_notice_close_handler(call)
+    report.dismiss.assert_called_once_with(1001, 500)
+    message.delete.assert_awaited_once()
+    call.answer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expired", [True, False])
+async def test_callback_acknowledgement_ignores_only_expired_queries(expired):
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import AnswerCallbackQuery
+    from utils.callback_answers import answer_callback
+    error = TelegramBadRequest(method=AnswerCallbackQuery(callback_query_id="synthetic"),
+                               message="query is too old and response timeout expired" if expired else "other bad request")
+    call = types.SimpleNamespace(answer=AsyncMock(side_effect=error))
+    if expired:
+        await answer_callback(call)
+    else:
+        with pytest.raises(TelegramBadRequest):
+            await answer_callback(call)

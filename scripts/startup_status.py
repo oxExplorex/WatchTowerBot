@@ -13,14 +13,18 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from callbacks.startup import CLOSE
+from data.texts.startup import CLOSE_BUTTON, RUNNING_VERSION
+
 ROOT = Path(__file__).resolve().parents[1]
 _current = None
 
 
 class DeliveryError(Exception):
-    def __init__(self, code=0, *, retry_after=0, unchanged=False):
+    def __init__(self, code=0, *, retry_after=0, unchanged=False, reason=""):
         super().__init__("Startup notification delivery failed")
         self.code, self.retry_after, self.unchanged = code, retry_after, unchanged
+        self.reason = reason
 
 
 class TelegramTransport:
@@ -38,9 +42,9 @@ class TelegramTransport:
                 response = error
             with response:
                 result = json.loads(response.read(64 * 1024))
-        except (OSError, URLError, ValueError):
+        except (OSError, URLError, ValueError) as error:
             # Never expose an exception containing the request URL or bot token.
-            raise DeliveryError() from None
+            raise DeliveryError(reason=type(getattr(error, "reason", error)).__name__) from None
         if not result.get("ok"):
             raise DeliveryError(result.get("error_code", 0),
                 retry_after=min(3600, max(0, int(result.get("parameters", {}).get("retry_after", 0)))),
@@ -101,6 +105,7 @@ class StartupReporter:
         self.state = "running"
         self.sessions = ""
         self.message_ids, self.sent_text, self.blocked = {}, {}, set()
+        self.dismissed = set()
         self.thread_ids = {}
         self.operation = ""
         self.revision = 0
@@ -167,7 +172,7 @@ class StartupReporter:
             self.recipients = _ids([*self.recipients, *recipients])
             if thread_ids:
                 for chat_id, thread_id in thread_ids.items():
-                    self.thread_ids.setdefault(chat_id, thread_id)
+                    self.thread_ids[chat_id] = thread_id
             self.revision += 1
             self._save()
             self._wake()
@@ -203,7 +208,8 @@ class StartupReporter:
         lines = [f"<b>{titles[self.state]}</b>"]
         try:
             version = (self.root / "VERSION").read_text(encoding="utf-8-sig").strip()[:40]
-            lines.append(f"Версия <code>{html.escape(version)}</code>")
+            lines.append(RUNNING_VERSION.format(version=html.escape(version)) if self.state in {"ready", "warning"}
+                         else f"Версия <code>{html.escape(version)}</code>")
         except OSError:
             pass
         lines.append("")
@@ -259,10 +265,16 @@ class StartupReporter:
         if self.thread is not None and self.thread is not threading.current_thread():
             self.thread.join(timeout=timeout)
 
+    def dismiss(self, chat_id, message_id):
+        with self.condition:
+            if self.message_ids.get(chat_id) == message_id:
+                self.dismissed.add(chat_id)
+
+
     def _deliver(self, chat_id, text, *, alert=False):
         common = dict(chat_id=chat_id, text=text, parse_mode="HTML")
         common["reply_markup"] = ({"inline_keyboard": [[
-            {"text": "Открыть настройки", "callback_data": "panel:settings"}
+            {"text": CLOSE_BUTTON, "callback_data": CLOSE}
         ]]} if self.state in {"ready", "warning", "failed"} else {"inline_keyboard": []})
         identity = self.message_ids.get(chat_id)
         if identity and not alert:
@@ -310,7 +322,7 @@ class StartupReporter:
                 alert = self.state == "failed"
             retry = False
             for chat_id in recipients:
-                if chat_id in self.blocked or self.sent_text.get(chat_id) == text:
+                if chat_id in self.blocked or chat_id in self.dismissed or self.sent_text.get(chat_id) == text:
                     continue
                 try:
                     self._deliver(chat_id, text, alert=alert)
@@ -318,8 +330,9 @@ class StartupReporter:
                 except DeliveryError as error:
                     logger = logging.getLogger("gemini_message_manager")
                     if logger.handlers:
-                        logger.warning("Startup notification delivery failed: chat_id=%s code=%s retry_after=%s",
-                                       chat_id, error.code, error.retry_after)
+                        log = logger.warning if error.code else logger.debug
+                        log("Startup notification delivery deferred: chat_id=%s code=%s reason=%s retry_after=%s",
+                            chat_id, error.code, error.reason or "telegram_api", error.retry_after)
                     if error.code in (401, 403):
                         self.blocked.add(chat_id)
                     else:
@@ -365,16 +378,15 @@ def begin_operation(label, recipients=None, message=None):
         previous.condition.notify_all()
     targets = list(recipients if recipients is not None else previous.recipients)
     chat_id = getattr(getattr(message, "chat", None), "id", None)
-    message_id = getattr(message, "message_id", None)
     if isinstance(chat_id, int) and chat_id > 10:
         targets.append(chat_id)
-    _current = StartupReporter(previous.token, targets, root=previous.root)
+    _current = StartupReporter(previous.token, targets, root=previous.root, transport=previous.transport)
     _current.operation = label
     _current.thread_ids.update(previous.thread_ids)
-    if isinstance(chat_id, int) and chat_id > 10 and isinstance(message_id, int) and message_id > 0:
-        _current.message_ids[chat_id] = message_id
-        thread_id = getattr(message, "message_thread_id", None)
-        if isinstance(thread_id, int) and thread_id > 0:
-            _current.thread_ids[chat_id] = thread_id
-    _current.update(label, "Подготовка приложения к перезапуску.")
+    # The settings panel is not an operation log. The async sender creates a
+    # separate message in Logs before starting the worker or downloading code.
+    _current.message_ids.clear()
+    _current.frames.clear()
+    _current.phase, _current.detail = label, "Подготовка приложения к перезапуску."
+    _current._save()
     return _current

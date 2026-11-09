@@ -164,6 +164,14 @@ class AvatarsRepository:
                 state_version=ChatAvatar.state_version + 1).returning(ChatAvatar).execution_options(populate_existing=True))
             return result.scalar_one_or_none()
 
+    async def refresh_locator(self, item, file_id):
+        """Replace an expired download locator without changing the occurrence."""
+        async with self._session_factory()() as session, session.begin():
+            await lock_owner(session, item.owner_id)
+            await session.execute(update(ChatAvatar).where(ChatAvatar.uuid == item.uuid,
+                ChatAvatar.owner_id == item.owner_id, ChatAvatar.lease_token == item.lease_token,
+                ChatAvatar.status == "downloading").values(file_id=encrypt_text(file_id)))
+
     async def finish(self, item, *, blob_key=None, delay=0):
         async with self._session_factory()() as session, session.begin():
             await lock_owner(session, item.owner_id)

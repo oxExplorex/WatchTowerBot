@@ -156,6 +156,7 @@ def test_real_loader_and_consumers_share_one_registry():
             main.run_history_backfill = AsyncMock()
             main.run_runtime_health = AsyncMock()
             report = Mock()
+            report.condition = __import__("threading").Condition()
             report.state = "running"
             main.current_reporter = lambda: report
             main.bot.me = AsyncMock()

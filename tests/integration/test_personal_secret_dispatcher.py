@@ -74,7 +74,10 @@ async def test_all_chats_dump_button_starts_background_export_without_id_prompt(
     downloads = [button for row in panel.reply_markup.inline_keyboard for button in row if button.url]
     assert len(downloads) == 1
     assert downloads[0].text == "Скачать просмотрщик · Windows"
-    assert downloads[0].url.endswith("/releases/download/archive-viewer/WatchTowerViewer-windows-x64.zip")
+    from core.versioning import get_local_version
+    from core.viewer_distribution import windows_archive
+    version = get_local_version()
+    assert downloads[0].url.endswith(f"/releases/download/v{version}/{windows_archive(version)}")
     await flow.feed(callback=callback.DUMP_ALL, panel_id=panel.message_id)
     await asyncio.sleep(0)
     worker.assert_awaited_once()

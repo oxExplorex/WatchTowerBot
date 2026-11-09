@@ -8,9 +8,9 @@ from db.repositories.avatars_repo import AvatarsRepository
 from db.repositories.history_repo import HistoryRepository
 from db.repositories.media_repo import MediaRepository
 from db.session import get_session_factory
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FileReferenceExpired, FloodWait
 from services.media_archive import resolve_media_client, SourceUnavailable
-from utils.crypto_store import decrypt_text
+from utils.crypto_store import decrypt_text, message_fingerprint
 from utils.archive_policy import IGNORED_CHAT_IDS, chat_kind
 
 
@@ -47,6 +47,31 @@ async def archive_avatar(bot, repository, store, item, *, resolve_client=resolve
         await repository.finish(item, blob_key=blob_key)
         bot_logger.debug("Avatar stored: account_user_id=%s peer_id=%s occurrence=%s",
                          item.account_user_id, item.user_id, item.uuid)
+    except FileReferenceExpired:
+        # Profile-photo locators expire. Resolve the same photo, never silently
+        # replace a historical occurrence with the contact's current picture.
+        try:
+            async def refresh():
+                async with asyncio.timeout(30):
+                    async for photo in client.get_chat_photos(item.user_id, limit=100):
+                        unique = getattr(photo, "small_photo_unique_id", None) or getattr(photo, "small_file_id", None)
+                        if unique and message_fingerprint(f"avatar:{unique}") == item.photo_key:
+                            return photo.small_file_id
+                return None
+            fresh = await run_client(client, refresh)
+            if fresh:
+                await repository.refresh_locator(item, fresh)
+            await repository.finish(item, delay=30 if fresh else 3600)
+        except asyncio.CancelledError:
+            await repository.finish(item, delay=30)
+            raise
+        except FloodWait as error:
+            await limits.defer(item.account_user_id, int(error.value) + 5)
+            await repository.finish(item, delay=int(error.value) + 5)
+        except Exception as error:
+            await repository.finish(item, delay=3600)
+            bot_logger.debug("Avatar locator refresh deferred: account_user_id=%s peer_id=%s error=%s",
+                             item.account_user_id, item.user_id, type(error).__name__)
     except asyncio.CancelledError:
         await repository.finish(item, delay=30)
         raise

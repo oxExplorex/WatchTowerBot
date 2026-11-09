@@ -22,6 +22,7 @@ from db.main import (
 from loader import bot
 from scripts.update_bot import download_and_extract_github_repo
 from scripts.startup_status import begin_operation
+from services.startup_notifications import announce_update
 from keyboards.inline.settings import update_notification_keyboard as _notification_keyboard
 
 NOTIFY_INTERVAL_SEC = 60 * 60 * 24
@@ -94,6 +95,7 @@ async def _run_auto_update(target_ids: Iterable[int], current_version: str, late
             to_version=latest_version,
         )
         if reporter is not None:
+            await announce_update(bot, reporter, current_version, latest_version)
             reporter.update("Загрузка обновления", f"Версия {current_version} → {latest_version}")
         else:
             for admin_id in ids:

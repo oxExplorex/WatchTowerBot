@@ -108,11 +108,12 @@ async def send_log_file(bot, owner_id, **kwargs):
 
 async def configure_startup_reporter(bot, reporter, recipients):
     """Keep bootstrap delivery independent of the DB during the next restart."""
+    from services.startup_notifications import use_runtime_transport
+
+    use_runtime_transport(bot, reporter)
     routes = {}
     service = delivery(bot)
     for owner_id in recipients:
-        if owner_id in reporter.thread_ids:
-            continue  # A manual update continues in the panel that started it.
         try:
             thread_id = await service.ensure_thread(owner_id, "logs", LOGS_TITLE)
             if thread_id is not None:

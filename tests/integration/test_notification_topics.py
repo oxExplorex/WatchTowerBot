@@ -12,7 +12,7 @@ from db.repositories.topics_repo import TopicsRepository
 
 
 @pytest.mark.asyncio
-async def test_startup_reporter_resolves_logs_but_keeps_manual_update_panel(db_main, tmp_path):
+async def test_startup_reporter_resolves_logs_instead_of_manual_update_panel(db_main, tmp_path):
     from scripts.startup_status import StartupReporter
     from services.notification_topics import TopicDelivery, configure_startup_reporter
 
@@ -21,11 +21,12 @@ async def test_startup_reporter_resolves_logs_but_keeps_manual_update_panel(db_m
     repository = TopicsRepository(db_main.get_session_factory)
     bot._watchtower_topic_delivery = TopicDelivery(bot, repository)
     await repository.save(bot.id, 1001, "logs", 80)
+    await repository.save(bot.id, 2002, "logs", 81)
     report = StartupReporter(root=tmp_path)  # No credentials: no real notification worker.
     report.thread_ids[2002] = 90
     report.configure = Mock()
     await configure_startup_reporter(bot, report, [1001, 2002])
-    report.configure.assert_called_once_with(bot.token, [1001, 2002], thread_ids={1001: 80})
+    report.configure.assert_called_once_with(bot.token, [1001, 2002], thread_ids={1001: 80, 2002: 81})
     bot.create_forum_topic.assert_not_awaited()
 
 
@@ -41,6 +42,54 @@ def fake_bot(enabled):
         create_forum_topic=AsyncMock(side_effect=create), reopen_forum_topic=AsyncMock(),
         send_message=AsyncMock(), send_photo=AsyncMock(return_value=SimpleNamespace(
             photo=[SimpleNamespace(file_id="instruction-photo")])))
+
+
+@pytest.mark.asyncio
+async def test_update_announcement_survives_restart_in_logs_and_gets_close_button(db_main, tmp_path, monkeypatch):
+    from scripts.startup_status import StartupReporter
+    from services import startup_notifications as startup
+    from services.notification_topics import TopicDelivery
+    bot = fake_bot(True)
+    repository = TopicsRepository(db_main.get_session_factory)
+    bot._watchtower_topic_delivery = TopicDelivery(bot, repository)
+    await repository.save(bot.id, 1001, "logs", 43)
+    await repository.save(bot.id, 1001, "menu", 42)
+    bot.send_message.return_value = SimpleNamespace(message_id=500, message_thread_id=43)
+    bot.edit_message_text = AsyncMock()
+    report = StartupReporter(root=tmp_path)
+    report.recipients, report.operation = [1001], "Обновление"
+    await startup.announce_update(bot, report, "2.1.2", "2.1.3")
+    initial = bot.send_message.await_args.kwargs
+    assert initial["message_thread_id"] == 43 and "Подождите" in initial["text"]
+    assert report.message_ids == {1001: 500}
+    report.prepare_restart()  # No token/worker: all transport is synthetic.
+    (tmp_path / "VERSION").write_text("2.1.3", encoding="utf-8")
+    after = StartupReporter(root=tmp_path)
+    after.finish()
+    monkeypatch.setattr(startup, "get_admin_ids", AsyncMock(return_value=[1001]))
+    await startup.restore_startup_notifications(bot, after)
+    result = bot.edit_message_text.await_args.kwargs
+    assert result["message_id"] == 500
+    assert "Запущен бот версии <code>2.1.3</code>" in result["text"]
+    assert [b.callback_data for row in result["reply_markup"].inline_keyboard for b in row] == ["startup:close"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_reporter_uses_aiogram_session_instead_of_early_http(db_main, tmp_path):
+    from scripts.startup_status import StartupReporter
+    from services.startup_notifications import use_runtime_transport
+    bot = fake_bot(False)
+    bot.send_message.return_value = SimpleNamespace(message_id=500)
+    early = Mock(side_effect=AssertionError("Early HTTP must not be used after bootstrap"))
+    report = StartupReporter("123456:synthetic", [1001], root=tmp_path, transport=early)
+    report.thread_ids[1001] = 43
+    use_runtime_transport(bot, report)
+    report.finish()
+    await asyncio.to_thread(report.close, 3)
+    early.assert_not_called()
+    bot.send_message.assert_awaited_once()
+    assert bot.send_message.await_args.kwargs["message_thread_id"] == 43
+    assert report.message_ids == {1001: 500} and not report.running
 
 
 @pytest.mark.asyncio
