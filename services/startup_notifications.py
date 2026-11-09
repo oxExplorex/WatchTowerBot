@@ -13,6 +13,33 @@ from data.texts.topics import LOGS_TITLE
 from data.texts.startup import UPDATE_PHASE, UPDATE_DETAIL
 
 
+async def send_update_notice(bot, owner_id, text):
+    return await delivery(bot).send(bot.send_message, owner_id, "logs", LOGS_TITLE,
+        text=text, parse_mode="HTML", reply_markup=close_keyboard())
+
+
+async def prepare_update_menu(message, reporter=None):
+    """Keep progress out of Menu and reuse this panel after exec."""
+    from data.texts.common import START_MESSAGE_TEXT
+    from keyboards.main.start_keyboard import static_admin_keyboard
+    from utils.panel import edit_panel
+    from data.texts.topics import MENU_TITLE
+
+    service = delivery(message.bot)
+    if await service.enabled():
+        thread_id = await service.ensure_thread(message.chat.id, "menu", MENU_TITLE)
+        if thread_id is None or message.message_thread_id != thread_id:
+            return  # An update notification in Logs must stay in Logs.
+    elif message.message_thread_id is not None:
+        return
+    panel = await edit_panel(message, START_MESSAGE_TEXT, static_admin_keyboard())
+    identity = getattr(panel, "message_id", None) or message.message_id
+    if reporter is not None:
+        with reporter.condition:
+            reporter.menu_ids[message.chat.id] = identity
+            reporter._save()
+
+
 def use_runtime_transport(bot, reporter):
     """Keep the worker on the configured aiogram session, including its proxy."""
     from scripts.startup_status import DeliveryError
@@ -68,6 +95,8 @@ async def announce_update(bot, reporter, current_version, latest_version):
 
 
 async def restore_startup_notifications(bot, reporter=None):
+    if reporter is not None:
+        bot._watchtower_restart_menus = dict(reporter.menu_ids)
     admin_ids = {owner for owner in await get_admin_ids() if owner > 10}
     for owner_id in sorted(admin_ids):
         try:

@@ -111,6 +111,7 @@ async def configure_startup_reporter(bot, reporter, recipients):
     from services.startup_notifications import use_runtime_transport
 
     use_runtime_transport(bot, reporter)
+    bot._watchtower_restart_menus = dict(reporter.menu_ids)
     routes = {}
     service = delivery(bot)
     for owner_id in recipients:
@@ -137,6 +138,24 @@ async def send_startup_menu(bot, owner_id):
         if sent is None:
             sent = bot._watchtower_startup_menus = set()
         if owner_id not in sent:
+            identity = getattr(bot, "_watchtower_restart_menus", {}).get(owner_id)
+            if identity is not None:
+                from data.texts.common import START_MESSAGE_TEXT
+                from keyboards.main.start_keyboard import static_admin_keyboard
+                try:
+                    panel = await bot.edit_message_text(chat_id=owner_id, message_id=identity,
+                        text=START_MESSAGE_TEXT, reply_markup=static_admin_keyboard(), parse_mode="HTML")
+                except TelegramBadRequest as error:
+                    reason = error.message.casefold()
+                    if "message is not modified" in reason:
+                        sent.add(owner_id)
+                        return
+                    if not any(marker in reason for marker in ("message to edit not found", "message can't be edited",
+                                                              "message cannot be edited")):
+                        raise
+                else:
+                    sent.add(owner_id)
+                    return panel
             panel = await send_menu(bot, owner_id)
             sent.add(owner_id)
             return panel

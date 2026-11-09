@@ -17,7 +17,12 @@ from callbacks.startup import CLOSE
 from data.texts.startup import CLOSE_BUTTON, RUNNING_VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
+_PROCESS_STARTED = time.monotonic()
 _current = None
+
+
+def process_uptime():
+    return max(0, time.monotonic() - _PROCESS_STARTED)
 
 
 class DeliveryError(Exception):
@@ -107,6 +112,7 @@ class StartupReporter:
         self.message_ids, self.sent_text, self.blocked = {}, {}, set()
         self.dismissed = set()
         self.thread_ids = {}
+        self.menu_ids = {}
         self.operation = ""
         self.revision = 0
         self.resume = False
@@ -136,6 +142,10 @@ class StartupReporter:
                 if isinstance(recipients, list):
                     self.recipients = _ids([*self.recipients, *recipients, *self.message_ids])
                 self.operation = str(data.get("operation", ""))[:100]
+                menus = data.get("menus", {})
+                if isinstance(menus, dict):
+                    self.menu_ids = {int(k): int(v) for k, v in menus.items()
+                                     if str(k).isdigit() and str(v).isdigit() and int(v) > 0}
         except (OSError, ValueError, TypeError, KeyError):
             pass
 
@@ -153,7 +163,8 @@ class StartupReporter:
                 json.dump({"bot_id": self.token.split(":", 1)[0], "started_at": self.started_at,
                            "updated_at": time.time(), "resume": self.resume, "messages": self.message_ids,
                            "frames": self.frames[-5:], "recipients": self.recipients,
-                           "threads": self.thread_ids, "operation": self.operation}, stream, ensure_ascii=False)
+                           "threads": self.thread_ids, "menus": self.menu_ids,
+                           "operation": self.operation}, stream, ensure_ascii=False)
             os.replace(temporary, self.path)
         except OSError:
             pass
@@ -386,6 +397,7 @@ def begin_operation(label, recipients=None, message=None):
     # The settings panel is not an operation log. The async sender creates a
     # separate message in Logs before starting the worker or downloading code.
     _current.message_ids.clear()
+    _current.menu_ids.clear()
     _current.frames.clear()
     _current.phase, _current.detail = label, "Подготовка приложения к перезапуску."
     _current._save()

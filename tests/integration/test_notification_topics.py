@@ -93,6 +93,92 @@ async def test_runtime_reporter_uses_aiogram_session_instead_of_early_http(db_ma
 
 
 @pytest.mark.asyncio
+async def test_update_reuses_menu_after_restart_instead_of_leaving_progress_and_sending_duplicate(db_main, tmp_path, monkeypatch):
+    from scripts.startup_status import StartupReporter
+    from services import startup_notifications as startup
+    from services.notification_topics import TopicDelivery, send_startup_menu
+    bot = fake_bot(True)
+    bot.edit_message_text = AsyncMock()
+    bot.send_message.return_value = SimpleNamespace(message_id=500, message_thread_id=43)
+    repository = TopicsRepository(db_main.get_session_factory)
+    bot._watchtower_topic_delivery = TopicDelivery(bot, repository)
+    await repository.save(bot.id, 1001, "logs", 43)
+    await repository.save(bot.id, 1001, "menu", 42)
+    panel = SimpleNamespace(message_id=88, message_thread_id=42, bot=bot, chat=SimpleNamespace(id=1001),
+        edit_text=AsyncMock(return_value=SimpleNamespace(message_id=88)))
+    report = StartupReporter(root=tmp_path)
+    report.recipients, report.operation = [1001], "Обновление"
+    await startup.prepare_update_menu(panel, report)
+    assert report.menu_ids == {1001: 88}
+    assert "Обновление запущено" not in panel.edit_text.await_args.kwargs["text"]
+    assert panel.edit_text.await_args.kwargs["reply_markup"].inline_keyboard
+    await startup.announce_update(bot, report, "2.1.4", "2.1.5")
+    report.prepare_restart()
+    after = StartupReporter(root=tmp_path)
+    assert after.menu_ids == {1001: 88}
+    after.finish()
+    # Topic preparation may run before the final startup notification task.
+    bot._watchtower_restart_menus = dict(after.menu_ids)
+    await send_startup_menu(bot, 1001)
+    monkeypatch.setattr(startup, "get_admin_ids", AsyncMock(return_value=[1001]))
+    await startup.restore_startup_notifications(bot, after)
+    assert [call.kwargs["message_id"] for call in bot.edit_message_text.await_args_list] == [88, 500]
+    assert bot.send_message.await_count == 1  # Only the update log, never another menu.
+
+
+@pytest.mark.asyncio
+async def test_update_from_logs_never_turns_log_message_into_menu(db_main, tmp_path):
+    from scripts.startup_status import StartupReporter
+    from services.startup_notifications import prepare_update_menu
+    from services.notification_topics import TopicDelivery
+    bot = fake_bot(True)
+    repository = TopicsRepository(db_main.get_session_factory)
+    bot._watchtower_topic_delivery = TopicDelivery(bot, repository)
+    await repository.save(bot.id, 1001, "menu", 42)
+    panel = SimpleNamespace(message_id=88, message_thread_id=43, bot=bot,
+                            chat=SimpleNamespace(id=1001), edit_text=AsyncMock())
+    report = StartupReporter(root=tmp_path)
+    await prepare_update_menu(panel, report)
+    panel.edit_text.assert_not_awaited()
+    assert report.menu_ids == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted", [True, False])
+async def test_restart_menu_recovery_is_idempotent_for_deleted_or_unchanged_panel(db_main, deleted):
+    from aiogram.methods import EditMessageText
+    from services.notification_topics import TopicDelivery, send_startup_menu
+    bot = fake_bot(True)
+    repository = TopicsRepository(db_main.get_session_factory)
+    bot._watchtower_topic_delivery = TopicDelivery(bot, repository)
+    bot._watchtower_restart_menus = {1001: 88}
+    await repository.save(bot.id, 1001, "menu", 42)
+    bot.edit_message_text = AsyncMock(side_effect=TelegramBadRequest(
+        method=EditMessageText(chat_id=1001, message_id=88, text="test"),
+        message="message to edit not found" if deleted else "message is not modified"))
+    await send_startup_menu(bot, 1001)
+    await send_startup_menu(bot, 1001)
+    assert bot.edit_message_text.await_count == 1
+    assert bot.send_message.await_count == (1 if deleted else 0)
+    if deleted:
+        assert bot.send_message.await_args.kwargs["message_thread_id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_available_update_notification_uses_logs_topic(db_main, offline_module, monkeypatch):
+    import sys
+    from services.notification_topics import TopicDelivery
+    bot = fake_bot(True)
+    repository = TopicsRepository(db_main.get_session_factory)
+    bot._watchtower_topic_delivery = TopicDelivery(bot, repository)
+    await repository.save(bot.id, 1001, "logs", 43)
+    monkeypatch.setitem(sys.modules, "loader", SimpleNamespace(bot=bot))
+    module = offline_module("aiotask/update_notifier.py")
+    assert await module._safe_send(1001, "test update available", include_update=True)
+    assert bot.send_message.await_args.kwargs["message_thread_id"] == 43
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("topics_enabled", [False, True])
 async def test_restart_restores_existing_menu_when_bootstrap_delivery_failed(
         db_main, monkeypatch, tmp_path, topics_enabled):

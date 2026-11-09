@@ -60,8 +60,8 @@ from utils.runtime_chart import render_runtime_chart
 from core.session_runtime import is_session_running
 from services.log_export import latest_log_file
 from services.notification_topics import send_log_file
-from services.startup_notifications import announce_update
-from scripts.startup_status import current_reporter
+from services.startup_notifications import announce_update, prepare_update_menu, send_update_notice
+from scripts.startup_status import current_reporter, process_uptime
 from callbacks.startup import CLOSE as CLOSE_STARTUP
 from utils.callback_answers import answer_callback
 from aiogram.exceptions import TelegramBadRequest
@@ -129,7 +129,8 @@ async def _send_stats(message: Message, admin_only: bool, *, admin_id=None, edit
         title = f"{constant_text.STATS_TITLE_GLOBAL} ({tz_offset_label(tz_offset)})"
 
     observations = await get_runtime_health(admin_id if admin_only else 0, since_14d)
-    image = await asyncio.to_thread(render_runtime_chart, observations, tz_offset, now_ts)
+    image = await asyncio.to_thread(render_runtime_chart, observations, tz_offset, now_ts,
+                                   uptime_seconds=process_uptime())
 
     values = dict(
             title=title,
@@ -223,15 +224,17 @@ async def _run_update_flow(
     failed_text: str,
 ) -> None:
     if not await try_acquire_update_run():
-        await edit_panel(message, constant_text.SETTINGS_UPDATE_RUNNING_TOAST)
         return
 
     reporter = begin_operation("Обновление", message=message)
     try:
-        await edit_panel(message, start_text.format(from_version=local_version, to_version=latest_version))
+        await prepare_update_menu(message, reporter)
         if reporter is not None:
             await announce_update(message.bot, reporter, local_version, latest_version)
             reporter.update("Загрузка обновления", f"Версия {local_version} → {latest_version}")
+        else:
+            await send_update_notice(message.bot, message.chat.id,
+                start_text.format(from_version=local_version, to_version=latest_version))
         options = {"expected_version": latest_version}
         if reporter is not None:
             options["progress"] = reporter.update
@@ -240,13 +243,13 @@ async def _run_update_flow(
             if reporter is not None:
                 reporter.finish(success=False, detail="Не удалось загрузить обновление. Бот продолжает работу; проверьте локальные логи.")
             else:
-                await message.answer(failed_text)
+                await send_update_notice(message.bot, message.chat.id, failed_text)
             return
 
         if reporter is not None:
             reporter.update("Обновление загружено", "Подготовка к перезапуску и проверке зависимостей")
         else:
-            await message.answer(done_text.format(to_version=latest_version))
+            await send_update_notice(message.bot, message.chat.id, done_text.format(to_version=latest_version))
         await asyncio.sleep(2)
         await restart_with_clients()
     except BaseException as error:
@@ -314,7 +317,6 @@ async def check_update_now_handler(call: CallbackQuery, state: FSMContext):
 async def run_update_now_handler(call: CallbackQuery, state: FSMContext):
     await call.answer(constant_text.UPDATE_CHECKING_TOAST)
     await state.clear()
-    await edit_panel(call.message, constant_text.UPDATE_CHECKING_TEXT)
 
     local_version = get_local_version()
     _, _, latest_version = await _get_version_state(force=True)

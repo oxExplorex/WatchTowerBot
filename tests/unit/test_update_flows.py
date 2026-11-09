@@ -29,6 +29,8 @@ async def update_modules(monkeypatch, offline_module):
     settings = offline_module("handlers/admin/settings/setting_menu_handler.py")
     monkeypatch.setattr(settings, "get_configured_admin_ids", lambda: frozenset({1001}))
     monkeypatch.setattr(notifier, "_safe_send", AsyncMock())
+    monkeypatch.setattr(settings, "prepare_update_menu", AsyncMock())
+    monkeypatch.setattr(settings, "send_update_notice", AsyncMock())
     return notifier, settings, loader.session_manager
 
 
@@ -42,7 +44,7 @@ async def test_failed_download_never_stops_or_restarts_clients(update_modules, m
     monkeypatch.setattr(module, "download_and_extract_github_repo", Mock(return_value=False))
     restart = AsyncMock()
     monkeypatch.setattr(module, "restart_with_clients" if manual else "_restart_process", restart)
-    message = types.SimpleNamespace(edit_text=AsyncMock(), answer=AsyncMock())
+    message = types.SimpleNamespace(bot=object(), chat=types.SimpleNamespace(id=1001), edit_text=AsyncMock(), answer=AsyncMock())
     if manual:
         await settings._run_update_flow(message, "1", "2", "start", "done", "failed")
     else:
@@ -108,9 +110,10 @@ async def test_settings_summary_distinguishes_unchecked_and_direct_connection(up
 
 
 @pytest.mark.asyncio
-async def test_failure_sending_start_message_releases_update_lock(update_modules):
+async def test_failure_preparing_menu_releases_update_lock(update_modules):
     notifier, settings, _ = update_modules
-    message = types.SimpleNamespace(edit_text=AsyncMock(side_effect=RuntimeError("offline")))
+    message = types.SimpleNamespace(bot=object(), chat=types.SimpleNamespace(id=1001), edit_text=AsyncMock(side_effect=RuntimeError("offline")))
+    settings.prepare_update_menu.side_effect = RuntimeError("offline")
     with pytest.raises(RuntimeError):
         await settings._run_update_flow(message, "1", "2", "start", "done", "failed")
     assert await notifier.try_acquire_update_run() is True
@@ -132,7 +135,7 @@ async def test_cancellation_keeps_update_lock_until_file_worker_finishes(update_
     module = settings if manual else notifier
     monkeypatch.setattr(module, "begin_operation", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "download_and_extract_github_repo", download)
-    message = types.SimpleNamespace(edit_text=AsyncMock(), answer=AsyncMock())
+    message = types.SimpleNamespace(bot=object(), chat=types.SimpleNamespace(id=1001), edit_text=AsyncMock(), answer=AsyncMock())
     operation = (settings._run_update_flow(message, "1", "2", "start", "done", "failed")
                  if manual else notifier._run_auto_update([1001], "1", "2"))
     task = asyncio.create_task(operation)
@@ -192,14 +195,14 @@ async def test_failed_restart_never_starts_previously_inactive_client(update_mod
 
 
 @pytest.mark.asyncio
-async def test_manual_update_acknowledges_and_changes_panel_before_network_check(update_modules, monkeypatch):
+async def test_manual_update_acknowledges_without_replacing_menu_with_progress(update_modules, monkeypatch):
     _, settings, _ = update_modules
     call = types.SimpleNamespace(answer=AsyncMock(), from_user=types.SimpleNamespace(id=1001),
                                  message=types.SimpleNamespace(edit_text=AsyncMock()))
 
     async def check(**kwargs):
         call.answer.assert_awaited_once()
-        assert "Проверяем обновление" in call.message.edit_text.await_args.kwargs["text"]
+        call.message.edit_text.assert_not_awaited()
         return "available", 1, "2.0.27"
 
     monkeypatch.setattr(settings, "_get_version_state", check)
@@ -211,7 +214,7 @@ async def test_manual_update_acknowledges_and_changes_panel_before_network_check
 
 
 @pytest.mark.asyncio
-async def test_manual_update_edits_panel_even_when_reporter_exists(update_modules, monkeypatch):
+async def test_manual_update_keeps_progress_in_logs_and_prepares_reusable_menu(update_modules, monkeypatch):
     _, settings, _ = update_modules
     message = types.SimpleNamespace(bot=object(), chat=types.SimpleNamespace(id=1001), edit_text=AsyncMock(), answer=AsyncMock())
     report = types.SimpleNamespace(condition=threading.Condition(), message_ids={},
@@ -222,8 +225,8 @@ async def test_manual_update_edits_panel_even_when_reporter_exists(update_module
 
     def download(*, progress, expected_version):
         assert expected_version == "2"
-        message.edit_text.assert_awaited_once()
-        assert message.edit_text.await_args.kwargs["reply_markup"] is None
+        message.edit_text.assert_not_awaited()
+        settings.prepare_update_menu.assert_awaited_once_with(message, report)
         assert progress == report.update
         announce.assert_awaited_once_with(message.bot, report, "1", "2")
         return False

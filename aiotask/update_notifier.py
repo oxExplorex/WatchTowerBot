@@ -23,6 +23,8 @@ from loader import bot
 from scripts.update_bot import download_and_extract_github_repo
 from scripts.startup_status import begin_operation
 from services.startup_notifications import announce_update
+from services.notification_topics import delivery
+from data.texts.topics import LOGS_TITLE
 from keyboards.inline.settings import update_notification_keyboard as _notification_keyboard
 
 NOTIFY_INTERVAL_SEC = 60 * 60 * 24
@@ -46,8 +48,7 @@ async def _safe_send(
     include_close: bool = True,
 ) -> bool:
     try:
-        await bot.send_message(
-            chat_id=chat_id,
+        await delivery(bot).send(bot.send_message, chat_id, "logs", LOGS_TITLE,
             text=text,
             reply_markup=_notification_keyboard(
                 include_snooze=include_snooze,
