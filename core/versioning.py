@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import base64
+import json
 import re
-import time
 from pathlib import Path
 
 import aiohttp
 
 from core.logging import bot_logger
-from scripts.update_bot import REPO_BRANCH, REPO_NAME, REPO_OWNER
+from scripts.update_bot import REPO_NAME, REPO_OWNER
+from core.bot_release import MAX_METADATA_BYTES, parse_release, release_api_url
 
 _VERSION_RE = re.compile(r"\d+")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -37,80 +37,30 @@ def is_newer_version(current_version: str, latest_version: str) -> bool:
 
 
 def get_remote_version_url() -> str:
-    return f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/{REPO_BRANCH}/VERSION"
+    return release_api_url(REPO_OWNER, REPO_NAME)
 
 
 def get_remote_version_api_url() -> str:
-    return (
-        f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/VERSION"
-        f"?ref={REPO_BRANCH}"
-    )
-
-
-async def _fetch_remote_version_via_api(session: aiohttp.ClientSession) -> str | None:
-    api_url = f"{get_remote_version_api_url()}&t={int(time.time())}"
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "User-Agent": "gemini-message-manager-tg",
-    }
-
-    async with session.get(api_url, headers=headers) as response:
-        if response.status != 200:
-            return None
-
-        payload = await response.json()
-        encoded = payload.get("content")
-        if not encoded:
-            return None
-
-        try:
-            decoded = base64.b64decode(encoded).decode("utf-8", errors="replace")
-        except Exception:
-            return None
-
-        version = decoded.strip()
-        return version or None
-
-
-async def _fetch_remote_version_via_raw(session: aiohttp.ClientSession) -> str | None:
-    base_url = get_remote_version_url()
-    cache_busted_url = f"{base_url}?t={int(time.time())}"
-    headers = {
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "User-Agent": "gemini-message-manager-tg",
-    }
-
-    async with session.get(cache_busted_url, headers=headers) as response:
-        if response.status != 200:
-            return None
-        return (await response.text()).strip() or None
+    return get_remote_version_url()
 
 
 async def fetch_remote_version(timeout_sec: int = 15, log_prefix: str = "Version check") -> str | None:
     timeout = aiohttp.ClientTimeout(total=timeout_sec)
-
+    headers = {"Accept": "application/vnd.github+json", "Cache-Control": "no-cache",
+               "User-Agent": "WatchTowerBot"}
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            version = await _fetch_remote_version_via_api(session)
-            if version:
-                return version
-
-            version = await _fetch_remote_version_via_raw(session)
-            if version:
-                return version
-
-            bot_logger.warning(
-                f"{log_prefix} failed: no data from API/raw | "
-                f"api={get_remote_version_api_url()} raw={get_remote_version_url()}"
-            )
-            return None
-    except Exception as exc:
-        bot_logger.warning(
-            f"{log_prefix} error: {exc} | "
-            f"api={get_remote_version_api_url()} raw={get_remote_version_url()}"
-        )
+            async with session.get(get_remote_version_url(), headers=headers) as response:
+                if response.status != 200:
+                    bot_logger.warning("%s: published release unavailable, status=%s", log_prefix, response.status)
+                    return None
+                chunks, size = [], 0
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    size += len(chunk)
+                    if size > MAX_METADATA_BYTES:
+                        raise ValueError("Oversized release metadata")
+                    chunks.append(chunk)
+                return parse_release(json.loads(b"".join(chunks))).version
+    except Exception as error:
+        bot_logger.warning("%s: published release check failed: %s", log_prefix, type(error).__name__)
         return None
-

@@ -232,7 +232,9 @@ async def _run_update_flow(
         if reporter is not None:
             await announce_update(message.bot, reporter, local_version, latest_version)
             reporter.update("Загрузка обновления", f"Версия {local_version} → {latest_version}")
-        options = {"progress": reporter.update} if reporter is not None else {}
+        options = {"expected_version": latest_version}
+        if reporter is not None:
+            options["progress"] = reporter.update
         ok = await run_blocking(download_and_extract_github_repo, **options)
         if not ok:
             if reporter is not None:

@@ -6,7 +6,6 @@ on:
     branches: [main]
     paths:
       - 'VERSION'
-      - '.github/workflows/release.yml'
 
 concurrency:
   group: watchtower-release
@@ -86,12 +85,12 @@ jobs:
           Автоматические архивы GitHub «Source code» содержат полный репозиторий.
           NOTES
             gh release create "$tag" --target "$GITHUB_SHA" \
-              --title "WatchTower v${VERSION}" --notes-file dist/release-notes.md --draft
+              --title "$tag" --notes-file dist/release-notes.md --draft
           fi
           gh release upload "$tag" dist/bot/*.zip dist/bot/*.sha256 \
             dist/archive-viewer/*.zip dist/archive-viewer/*.sha256 \
             dist/archive-viewer/viewer-update.json --clobber
-          gh release edit "$tag" --draft=false --latest
+          gh release edit "$tag" --title "$tag" --draft=false --latest
       - name: Keep existing viewer installations updatable
         env:
           GH_TOKEN: ${{ github.token }}

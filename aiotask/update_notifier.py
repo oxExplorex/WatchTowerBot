@@ -101,7 +101,9 @@ async def _run_auto_update(target_ids: Iterable[int], current_version: str, late
             for admin_id in ids:
                 await _safe_send(admin_id, start_text, include_snooze=False, include_close=False)
 
-        options = {"progress": reporter.update} if reporter is not None else {}
+        options = {"expected_version": latest_version}
+        if reporter is not None:
+            options["progress"] = reporter.update
         ok = await run_blocking(download_and_extract_github_repo, **options)
 
         if not ok:

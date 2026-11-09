@@ -63,7 +63,8 @@ def test_apply_error_rolls_back_replaced_and_created_files(monkeypatch, tmp_path
     assert not list(tmp_path.glob(".watchtower-update-*"))
 
 
-@pytest.mark.parametrize("path", [".env", ".env.local", "data/session/account.session", "data/proxy.txt", ".local-notes/plan.md", "data/media/123/blob.wtm"])
+@pytest.mark.parametrize("path", [".env", ".env.local", ".env.production", "data/session/account.session", "data/proxy.txt",
+                                 ".local-notes/plan.md", "data/media/123/blob.wtm", "data/backups/part.wtb", "archive.sqlite3"])
 def test_local_data_is_preserved(tmp_path, path):
     protected = tmp_path / path
     protected.parent.mkdir(parents=True, exist_ok=True)

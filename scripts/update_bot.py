@@ -1,18 +1,28 @@
 import io
+import hashlib
+import json
 import os
 import re
 import shutil
 import stat
 import subprocess
 import tempfile
-import traceback
 import zipfile
 from pathlib import Path, PurePosixPath
 
 import requests
 
+# Also support direct execution: python scripts/update_bot.py.
+import sys
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.bot_release import (MAX_ARCHIVE_BYTES, MAX_CHECKSUM_BYTES, MAX_METADATA_BYTES,
+                              parse_release, release_api_url, version_tuple)
+
 DEFAULT_REPO_OWNER = "oxExplorex"
-DEFAULT_REPO_NAME = "gemini_message_manager_tg"
+DEFAULT_REPO_NAME = "WatchTowerBot"
 DEFAULT_REPO_BRANCH = "main"
 
 
@@ -56,6 +66,7 @@ PROTECTED_PATHS = {
     ".git",
     ".gitignore",
     ".venv",
+    "venv",
     ".local-notes",
     ".editorconfig",
     ".gitattributes",
@@ -66,11 +77,15 @@ PROTECTED_PATHS = {
     "data/logs",
     "data/temp",
     "data/media",
+    "data/backups",
 }
 
 
 def _is_protected(relative_path: str) -> bool:
     normalized = relative_path.replace("\\", "/").strip("/").casefold()
+    if (normalized.split("/")[0].startswith(".env") and normalized != ".env.example"
+            or normalized.endswith((".db", ".sqlite", ".sqlite3", ".session", ".session-wal", ".session-shm"))):
+        return True
     if normalized.split("/")[0].startswith(".watchtower-update-"):
         return True
     return any(normalized == item.casefold() or normalized.startswith(f"{item.casefold()}/") for item in PROTECTED_PATHS)
@@ -108,9 +123,11 @@ def _safe_extract_repo(zip_content: bytes, destination: Path, *, progress=None) 
             if stat.S_ISLNK(member.external_attr >> 16):
                 raise ValueError(f"Archive contains a link: {name}")
             relative = "/".join(parts[1:])
-            if not relative or _is_protected(relative) or member.is_dir():
+            if not relative or member.is_dir():
                 continue
             target_path = _safe_target_path(destination, relative)
+            if _is_protected(relative):
+                continue
             identity = relative.casefold()
             if identity in seen:
                 raise ValueError(f"Duplicate archive target: {relative}")
@@ -179,61 +196,76 @@ def _safe_extract_repo(zip_content: bytes, destination: Path, *, progress=None) 
     return len(files)
 
 
-def _resolve_latest_commit_sha() -> str | None:
-    api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/commits/{REPO_BRANCH}"
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "User-Agent": "gemini-message-manager-tg",
-    }
-
-    try:
-        response = requests.get(api_url, headers=headers, timeout=30)
+def _download(url, limit):
+    headers = {"Accept": "application/vnd.github+json", "Cache-Control": "no-cache",
+               "User-Agent": "WatchTowerBot"}
+    with requests.get(url, timeout=(10, 60), headers=headers, stream=True) as response:
         response.raise_for_status()
-        payload = response.json()
-        sha = str(payload.get("sha") or "").strip()
-        return sha or None
-    except Exception:
-        return None
+        chunks, size = [], 0
+        for chunk in response.iter_content(64 * 1024):
+            size += len(chunk)
+            if size > limit:
+                raise ValueError("Release download exceeds size limit")
+            chunks.append(chunk)
+        return b"".join(chunks)
 
 
-def download_and_extract_github_repo(*, progress=None) -> bool:
+def _validate_bot_archive(content, version):
+    prefix = f"WatchTower-Bot-{version}/"
+    required = {"VERSION", "main.py", "loader.py", "requirements.txt", "alembic.ini",
+                "scripts/update_bot.py", "scripts/install_dependencies.py"}
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        members = archive.infolist()
+        if len(members) > 10000 or sum(item.file_size for item in members) > 256 * 1024**2:
+            raise ValueError("Expanded release exceeds size limit")
+        if any(not item.orig_filename.startswith(prefix) for item in members):
+            raise ValueError("Unexpected bot release folder")
+        names = {item.filename[len(prefix):] for item in members if not item.is_dir()}
+        if not required <= names:
+            raise ValueError("Bot release is missing required files")
+        if any(name.startswith("archive_viewer/") or name.lower().endswith(".exe") for name in names):
+            raise ValueError("Bot release contains viewer files")
+        version_file = archive.getinfo(prefix + "VERSION")
+        if version_file.file_size > 128 or archive.read(version_file).decode("utf-8-sig").strip() != version:
+            raise ValueError("Archive VERSION does not match release")
+
+
+def download_and_extract_github_repo(*, progress=None, expected_version=None, allow_current=False) -> bool:
+    """Compatibility entry point: install only a verified published bot ZIP."""
     try:
         if progress is not None:
-            progress("Поиск сборки", "Получение актуальной версии из GitHub")
-        sha = _resolve_latest_commit_sha()
-        if sha:
-            zip_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/zipball/{sha}"
-        else:
-            zip_url = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/archive/refs/heads/{REPO_BRANCH}.zip"
-
+            progress("Поиск сборки", "Проверка опубликованного релиза GitHub")
+        metadata = _download(release_api_url(REPO_OWNER, REPO_NAME, expected_version), MAX_METADATA_BYTES)
+        release = parse_release(json.loads(metadata), expected_version=expected_version)
+        current = (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8-sig").strip()
+        target_version, current_version = version_tuple(release.version), version_tuple(current)
+        if target_version < current_version or target_version == current_version and not allow_current:
+            raise ValueError("Release is not newer than the installed version")
         if progress is not None:
-            progress("Загрузка обновления", "Скачивание архива приложения из GitHub")
-        response = requests.get(
-            zip_url,
-            timeout=60,
-            headers={
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache",
-                "User-Agent": "gemini-message-manager-tg",
-            },
-        )
-        response.raise_for_status()
-
-        project_root = Path(__file__).resolve().parents[1]
-        updated = _safe_extract_repo(response.content, project_root, progress=progress)
-        print(f"Repository updated successfully. Files updated: {updated}")
+            progress("Загрузка обновления", f"Скачивание готовой сборки {release.version}")
+        checksum = _download(release.asset_url(REPO_OWNER, REPO_NAME, checksum=True), MAX_CHECKSUM_BYTES)
+        if len(checksum) != release.checksum_size:
+            raise ValueError("Incomplete checksum file")
+        match = re.fullmatch(r"([a-fA-F0-9]{64})[ \t]+\*?" + re.escape(release.archive) + r"\s*",
+                             checksum.decode("ascii"))
+        if match is None:
+            raise ValueError("Invalid release checksum file")
+        content = _download(release.asset_url(REPO_OWNER, REPO_NAME), MAX_ARCHIVE_BYTES)
+        if len(content) != release.size or hashlib.sha256(content).hexdigest() != match[1].lower():
+            raise ValueError("Release checksum or size mismatch")
+        _validate_bot_archive(content, release.version)
+        updated = _safe_extract_repo(content, PROJECT_ROOT, progress=progress)
+        print(f"Release {release.version} installed. Files updated: {updated}")
         return True
-    except requests.RequestException as exc:
-        print(f"Download error: {exc}")
-    except zipfile.BadZipFile as exc:
-        print(f"Bad ZIP archive: {exc}")
-    except Exception:
-        print(f"Unexpected update error: {traceback.format_exc()}")
-
+    except (requests.RequestException, ValueError, OSError, zipfile.BadZipFile) as error:
+        # Do not print HTTP URLs, credentials or local filesystem paths.
+        print(f"Release update failed: {type(error).__name__}. Existing installation retained.")
+    except Exception as error:
+        print(f"Unexpected release update failure: {type(error).__name__}")
     return False
 
 
 if __name__ == "__main__":
-    raise SystemExit(0 if download_and_extract_github_repo() else 1)
+    # update.bat/update.sh can be retried after code was installed but dependency
+    # preparation failed. Reinstalling the same verified release is safe here.
+    raise SystemExit(0 if download_and_extract_github_repo(allow_current=True) else 1)

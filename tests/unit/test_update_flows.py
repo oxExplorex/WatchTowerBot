@@ -123,7 +123,8 @@ async def test_cancellation_keeps_update_lock_until_file_worker_finishes(update_
     notifier, settings, _ = update_modules
     started, release = threading.Event(), threading.Event()
 
-    def download():
+    def download(*, expected_version):
+        assert expected_version == "2"
         started.set()
         assert release.wait(5)
         return False
@@ -219,7 +220,8 @@ async def test_manual_update_edits_panel_even_when_reporter_exists(update_module
     announce = AsyncMock()
     monkeypatch.setattr(settings, "announce_update", announce)
 
-    def download(*, progress):
+    def download(*, progress, expected_version):
+        assert expected_version == "2"
         message.edit_text.assert_awaited_once()
         assert message.edit_text.await_args.kwargs["reply_markup"] is None
         assert progress == report.update
