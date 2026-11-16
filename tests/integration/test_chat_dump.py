@@ -28,7 +28,7 @@ async def test_history_status_shows_checked_ranges_and_start_without_foreign_acc
 
 
 @pytest.mark.asyncio
-async def test_zip_dump_is_scoped_to_one_owner_account_and_chat(db_main, tmp_path):
+async def test_zip_dump_is_scoped_to_one_owner_account_and_chat(db_main, tmp_path, monkeypatch):
     await PersonalKeyRepository(db_main.get_session_factory).install(123, create_key_bundle(123, "СекретДампа123"))
     for owner, account, chat in ((123, 456, 789), (123, 456, 790), (123, 457, 789), (999, 456, 789)):
         await db_main.messages_repository.record(owner_id=owner, account_user_id=account, chat_id=chat,
@@ -53,8 +53,13 @@ async def test_zip_dump_is_scoped_to_one_owner_account_and_chat(db_main, tmp_pat
     with pytest.raises(InvalidBackup):
         await create_chat_dump(123, 456, 99999, tmp_path / "forged",
             session_factory=db_main.get_session_factory, store=MediaStore(tmp_path / "media"))
+    import core.backup_parts as parts
+    monkeypatch.setattr(parts, "PART_SIZE", 1024)  # Force several internal parts without a large fixture.
     all_path, all_counts = await create_all_chats_dump(123, tmp_path / "all",
         session_factory=db_main.get_session_factory, store=MediaStore(tmp_path / "media"))
+    with zipfile.ZipFile(all_path) as archive:
+        assert len(archive.namelist()) > 1
+    assert list((tmp_path / "all").glob("*.zip")) == [all_path]
     from archive_viewer.archive import Archive
     viewer = Archive.open(all_path, "СекретДампа123")
     try:

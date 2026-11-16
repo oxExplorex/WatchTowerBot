@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from pyrogram import Client
 from pyrogram.enums import ParseMode
+from aiogram.types import FSInputFile
 from sqlalchemy import select
 
 from core.backup_format import InvalidBackup
@@ -22,10 +23,15 @@ from data.texts import backups as text
 
 PAGE_SIZE = 8
 MAX_ZIP_SIZE = 1900 * 1024 * 1024
+BOT_API_ZIP_SIZE = 49_000_000
 CONNECT_TIMEOUT = 90
 
 
 class DumpTooLarge(InvalidBackup):
+    pass
+
+
+class ApiProfileRequired(InvalidBackup):
     pass
 
 
@@ -96,11 +102,16 @@ async def create_all_chats_dump(owner_id, root, *, session_factory, store):
     return target, counts
 
 
-async def send_chat_dump(bot, owner_id, path, caption, app, *, client_factory=Client):
-    if app.user_id != owner_id:
+async def send_chat_dump(bot, owner_id, path, caption, app=None, *, client_factory=Client):
+    if app is not None and app.user_id != owner_id:
         raise InvalidBackup("Foreign API profile")
     if Path(path).stat().st_size > MAX_ZIP_SIZE:
         raise DumpTooLarge("Dump exceeds transport limit")
+    if app is None:
+        if Path(path).stat().st_size > BOT_API_ZIP_SIZE:
+            raise ApiProfileRequired("Large backup requires an API profile")
+        return await delivery(bot).send(bot.send_document, owner_id, "backups", text.TOPIC_TITLE,
+            document=FSInputFile(path), caption=caption, parse_mode="HTML", request_timeout=180)
     client = client_factory(name=f"backup_bot_{bot.id}_{owner_id}", api_id=app.app_id, api_hash=app.api_hash,
                             bot_token=bot.token, in_memory=True, no_updates=True)
     try:

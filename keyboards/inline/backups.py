@@ -12,7 +12,6 @@ def backup_keyboard(*, uploading=False, complete=False):
     if not uploading:
         rows = [[InlineKeyboardButton(text=text.CREATE_BUTTON, callback_data=callback.CREATE)],
                 [InlineKeyboardButton(text=text.DUMP_BUTTON, callback_data=callback.DUMP)],
-                [InlineKeyboardButton(text=text.DUMP_ALL_BUTTON, callback_data=callback.DUMP_ALL)],
                 [InlineKeyboardButton(text=text.IMPORT_BUTTON, callback_data=callback.IMPORT)],
                 [InlineKeyboardButton(text=text.VIEWER_BUTTON, url=download_url(REPO_OWNER, REPO_NAME))]]
     elif complete:

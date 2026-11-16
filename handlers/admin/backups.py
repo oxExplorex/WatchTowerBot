@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from aiogram import F, Router
 from aiogram.filters import StateFilter
-from aiogram.types import FSInputFile, ForceReply
+from aiogram.types import ForceReply
 
 from callbacks import backups as callback
 from core.async_tools import create_logged_task
@@ -18,14 +18,14 @@ from db.session import get_session_factory
 from filters.all_filters import IsAdmin, IsPrivate
 from handlers.admin.personal_secret import PersonalSecretDialog
 from keyboards.inline.backups import backup_keyboard
-from services.backup_snapshot import create_backup
 from services.backup_restore import prepare_backup, restore_backup
 from services import backup_uploads as uploads
 from services.notification_topics import delivery
 from states.backups import IMPORT_FILES, IMPORT_SECRET, IMPORT_STATES
 from states.backups import DUMP_CHAT_ID
 from keyboards.inline.backups import dump_accounts_keyboard
-from services.chat_dump import PAGE_SIZE, DumpTooLarge, chat_accounts, chat_history_status, create_chat_dump, create_all_chats_dump, send_chat_dump
+from services.chat_dump import (PAGE_SIZE, BOT_API_ZIP_SIZE, ApiProfileRequired, DumpTooLarge,
+    chat_accounts, chat_history_status, create_chat_dump, create_all_chats_dump, send_chat_dump)
 from utils.panel import edit_input_panel, edit_panel, remember_panel
 
 router = Router(name=__name__)
@@ -36,26 +36,6 @@ _crypto_limit = asyncio.Semaphore(1)
 async def _notice(bot, owner, message, **kwargs):
     return await delivery(bot).send(bot.send_message, owner, "backups", text.TOPIC_TITLE,
                                    text=message, parse_mode="HTML", **kwargs)
-
-
-async def _export(bot, owner):
-    try:
-        uploads.BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
-        with TemporaryDirectory(prefix="export_", dir=uploads.BACKUP_ROOT) as root:
-            files, counts = await create_backup(owner, root, uuid4().hex,
-                session_factory=get_session_factory, store=MediaStore.from_environment())
-            for index, path in enumerate(files, 1):
-                await delivery(bot).send(bot.send_document, owner, "backups", text.TOPIC_TITLE,
-                    document=FSInputFile(path), caption=text.PART_CAPTION.format(index=index, total=len(files), **counts),
-                    parse_mode="HTML", request_timeout=180)
-                if index < len(files):
-                    await asyncio.sleep(1)
-            await _notice(bot, owner, text.SENT)
-    except Exception as error:
-        bot_logger.warning("Backup export failed: owner_id=%s error=%s", owner, type(error).__name__)
-        await _notice(bot, owner, text.FAILED)
-    finally:
-        _busy.discard(owner)
 
 
 async def _restore(bot, owner, identity, total, secret):
@@ -99,7 +79,7 @@ async def backup_action(call, state):
     await call.answer()
     await state.clear()
     await remember_panel(state, call.message)
-    if call.data == callback.DUMP_ALL:
+    if call.data in {callback.CREATE, callback.DUMP_ALL}:
         await _start_dump(call.message, state, owner, None, None)
     elif call.data == callback.DUMP:
         await state.set_state(DUMP_CHAT_ID)
@@ -107,10 +87,6 @@ async def backup_action(call, state):
     elif call.data == callback.IMPORT:
         await state.set_state(IMPORT_FILES)
         await edit_panel(call.message, text.UPLOAD_PROMPT, backup_keyboard(uploading=True))
-    elif call.data == callback.CREATE:
-        _busy.add(owner)
-        create_logged_task(_export(call.bot, owner), name=f"backup-export:{owner}")
-        await _notice(call.bot, owner, text.CREATING)
     else:
         await edit_panel(call.message, text.MENU, backup_keyboard())
 
@@ -167,10 +143,6 @@ async def _dump(bot, owner, account_id, chat_id, *, progress=None):
         bot_logger.info("Chat dump stage: owner_id=%s account_id=%s chat_id=%s stage=%s", owner, account_id, chat_id, stage)
         from db.main import get_app_tg_user_id
         apps, _ = await get_app_tg_user_id(owner)
-        if not apps:
-            await update(text.DUMP_NEEDS_APP, done=True)
-            await _notice(bot, owner, text.DUMP_NEEDS_APP)
-            return
         uploads.BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix="chat_dump_", dir=uploads.BACKUP_ROOT) as root:
             stage = "build_zip"
@@ -189,12 +161,15 @@ async def _dump(bot, owner, account_id, chat_id, *, progress=None):
             caption = (text.DUMP_CAPTION.format(chat_id=chat_id, account_user_id=account_id, **counts) + history
                        if chat_id is not None else text.DUMP_ALL_CAPTION.format(**counts))
             await send_chat_dump(bot, owner, path,
-                caption, apps[0])
+                caption, apps[0] if apps and path.stat().st_size > BOT_API_ZIP_SIZE else None)
             await update(text.DUMP_DONE.format(chat_id=chat_id) if chat_id is not None else text.DUMP_ALL_DONE, done=True)
             bot_logger.info("Chat dump completed: owner_id=%s account_id=%s chat_id=%s", owner, account_id, chat_id)
     except asyncio.CancelledError:
         await update(text.DUMP_INTERRUPTED, done=True)
         raise
+    except ApiProfileRequired:
+        await update(text.DUMP_NEEDS_APP, done=True)
+        await _notice(bot, owner, text.DUMP_NEEDS_APP)
     except DumpTooLarge:
         await update(text.DUMP_TOO_LARGE, done=True)
         await _notice(bot, owner, text.DUMP_TOO_LARGE)

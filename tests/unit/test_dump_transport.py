@@ -6,6 +6,30 @@ import pytest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("large", [False, True])
+async def test_zip_without_profile_uses_bot_api_or_reports_large_file(offline_module, monkeypatch, tmp_path, large):
+    module = offline_module("services/chat_dump.py")
+    path = tmp_path / "backup.zip"
+    path.write_bytes(b"synthetic ciphertext")
+    if large:
+        monkeypatch.setattr(module, "BOT_API_ZIP_SIZE", 1)
+    async def send(method, owner, key, title, **kwargs):
+        return await method(chat_id=owner, message_thread_id=77, **kwargs)
+    monkeypatch.setattr(module, "delivery", lambda _: SimpleNamespace(send=send))
+    bot, factory = SimpleNamespace(send_document=AsyncMock()), Mock()
+    if large:
+        with pytest.raises(module.ApiProfileRequired):
+            await module.send_chat_dump(bot, 123, path, "caption", client_factory=factory)
+        bot.send_document.assert_not_awaited()
+    else:
+        await module.send_chat_dump(bot, 123, path, "caption", client_factory=factory)
+        bot.send_document.assert_awaited_once()
+        assert bot.send_document.await_args.kwargs["document"].path == path
+        assert bot.send_document.await_args.kwargs["message_thread_id"] == 77
+    factory.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("fails", [False, "start", "send", "copy"])
 async def test_dump_transport_uses_bot_token_and_always_closes_client(offline_module, monkeypatch, tmp_path, fails):
     module = offline_module("services/chat_dump.py")

@@ -61,7 +61,8 @@ async def test_dump_button_accepts_chat_id_and_rejects_foreign_chat(setup_flow, 
 
 
 @pytest.mark.asyncio
-async def test_all_chats_dump_button_starts_background_export_without_id_prompt(setup_flow, monkeypatch):
+@pytest.mark.parametrize("action", ["backup:create", "backup:all"])
+async def test_all_chats_dump_button_starts_background_export_without_id_prompt(setup_flow, monkeypatch, action):
     from core.personal_crypto import create_key_bundle
     from callbacks import backups as callback
     flow = setup_flow
@@ -70,7 +71,9 @@ async def test_all_chats_dump_button_starts_background_export_without_id_prompt(
     monkeypatch.setattr(flow.backups, "_dump", worker)
     await flow.feed(callback=callback.MENU)
     panel = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
-    assert callback.DUMP_ALL in {button.callback_data for row in panel.reply_markup.inline_keyboard for button in row}
+    callbacks = [button.callback_data for row in panel.reply_markup.inline_keyboard for button in row]
+    assert callbacks.count(callback.CREATE) == 1 and callback.DUMP in callbacks
+    assert callback.DUMP_ALL not in callbacks
     downloads = [button for row in panel.reply_markup.inline_keyboard for button in row if button.url]
     assert len(downloads) == 1
     assert downloads[0].text == "Скачать просмотрщик · Windows"
@@ -78,13 +81,13 @@ async def test_all_chats_dump_button_starts_background_export_without_id_prompt(
     from core.viewer_distribution import windows_archive
     version = get_local_version()
     assert downloads[0].url.endswith(f"/releases/download/v{version}/{windows_archive(version)}")
-    await flow.feed(callback=callback.DUMP_ALL, panel_id=panel.message_id)
+    await flow.feed(callback=action, panel_id=panel.message_id)
     await asyncio.sleep(0)
     worker.assert_awaited_once()
     assert worker.await_args.args == (flow.bot, 1001, None, None)
     assert await flow.state().get_state() is None
     panel = next(call for call in reversed(flow.session.calls) if isinstance(call, EditMessageText))
-    assert "Подготавливаю дамп всех чатов" in panel.text
+    assert "Подготавливаю бекап" in panel.text
 
 
 @pytest.mark.asyncio
