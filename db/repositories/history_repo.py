@@ -187,7 +187,9 @@ class HistoryRepository:
                     StoredMessage.is_deleted == False, ~changed_during_fetch
                 ).values(history_missing_at=now))
             row.turn += 1
+            if window.recheck:
+                row.recheck_before_id = min(raw_ids) - 1 if raw_ids and min(raw_ids) > window.low_id else None
             row.last_attempt_at, row.last_error, row.retry_at = now, None, 0
-            if window.high_id is None:
+            if window.high_id is None and not window.recheck:
                 row.last_head_at = now
             return True

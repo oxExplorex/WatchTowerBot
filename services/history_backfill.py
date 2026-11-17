@@ -46,7 +46,7 @@ async def backfill_account(bot, client, account, repository, *, fetch_page=fetch
     context = AccountContext.from_account(account)
     if context is None:
         return
-    checked = processed = failed = 0
+    checked = processed = failed = rechecked = 0
     for index, progress in enumerate(await repository.due_chats(account.uuid)):
         if index >= HISTORY_CHAT_LIMIT:
             break
@@ -78,7 +78,9 @@ async def backfill_account(bot, client, account, repository, *, fetch_page=fetch
                     return  # No checkpoint after revocation, deletion or missing personal key.
                 saved_ids.append(message.id)
             stage = "checkpoint"
-            await repository.checkpoint(progress, window, raw_ids, saved_ids, started_at)
+            if not await repository.checkpoint(progress, window, raw_ids, saved_ids, started_at):
+                return
+            rechecked += int(window.recheck)
             processed += len(saved_ids)
             if callable(getattr(client, "get_chat", None)):
                 from services.avatar_archive import collect_chat_avatar
@@ -99,8 +101,8 @@ async def backfill_account(bot, client, account, repository, *, fetch_page=fetch
             if is_fatal_session_error(exc, include_not_started=True):
                 return
     if checked:
-        bot_logger.info("History pass: account_user_id=%s chats=%s messages_processed=%s deferred=%s",
-                        account.user_id, checked, processed, failed)
+        bot_logger.info("History pass: account_user_id=%s chats=%s messages_processed=%s deferred=%s rechecked=%s",
+                        account.user_id, checked, processed, failed, rechecked)
 
 
 async def run_history_backfill(bot, session_manager):

@@ -18,6 +18,18 @@ def test_windows_target_exact_holes_and_do_not_require_message_one():
     assert merge_ranges([(81, 100), (70, 80), (1, 69), (75, 85)]) == [(1, 100)]
 
 
+def test_covered_history_is_rechecked_and_cursor_is_bounded():
+    progress = SimpleNamespace(known_top_id=600, reached_start=True, turn=3, last_head_at=10000,
+                               recheck_before_id=None)
+    assert plan_window(progress, [(1, 600)], 10001) == HistoryWindow(1, 600, recheck=True)
+    progress.recheck_before_id = 399
+    assert plan_window(progress, [(1, 600)], 10001) == HistoryWindow(1, 399, recheck=True)
+    progress.recheck_before_id = 900  # A stale cursor cannot expand the covered scope.
+    assert plan_window(progress, [(1, 600)], 10001) == HistoryWindow(1, 600, recheck=True)
+    progress.turn = 4
+    assert plan_window(progress, [(1, 600)], 10001) == HistoryWindow()
+
+
 @pytest.mark.asyncio
 async def test_public_history_adapter_preserves_window_and_empty_ids(offline_module):
     module = offline_module("services/history_backfill.py")

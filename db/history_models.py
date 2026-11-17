@@ -23,6 +23,7 @@ class HistoryChat(SQLModel, table=True):
     turn: int = 0
     last_attempt_at: int = Field(default=0, sa_type=BigInteger)
     last_head_at: int = Field(default=0, sa_type=BigInteger)
+    recheck_before_id: int | None = None
     retry_at: int = Field(default=0, sa_type=BigInteger)
     last_error: str | None = None
 

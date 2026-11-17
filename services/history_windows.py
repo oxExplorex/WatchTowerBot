@@ -8,6 +8,7 @@ HEAD_REFRESH_SECONDS = 6 * 60 * 60
 class HistoryWindow:
     low_id: int = 1
     high_id: int | None = None
+    recheck: bool = False
 
 
 def merge_ranges(ranges):
@@ -26,6 +27,12 @@ def plan_window(progress, ranges, now):
     ranges = merge_ranges(ranges)
     if not ranges:
         return HistoryWindow(high_id=progress.known_top_id or None)
+    # Coverage records a previous visit, not permanent completeness. Reserve one
+    # in four pages for a rolling inspection of already visited history.
+    if progress.turn % 4 == 3:
+        cursor = getattr(progress, "recheck_before_id", None)
+        upper = cursor if cursor is not None and ranges[0][0] <= cursor <= ranges[-1][1] else ranges[-1][1]
+        return HistoryWindow(ranges[0][0], upper, recheck=True)
     upper = max(progress.known_top_id, ranges[-1][1])
     holes = []
     for low, high in reversed(ranges):

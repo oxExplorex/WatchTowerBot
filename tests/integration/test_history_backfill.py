@@ -8,7 +8,7 @@ import pytest_asyncio
 from sqlalchemy import select, update
 
 from core.personal_crypto import create_key_bundle, unlock_private_key
-from db.history_models import HistoryChat, HistoryRun
+from db.history_models import HistoryChat, HistoryRange, HistoryRun
 from db.message_models import MessageRevision, StoredMessage
 from db.repositories.history_repo import HistoryRepository
 from db.repositories.personal_repo import PersonalKeyRepository
@@ -41,6 +41,128 @@ async def history(db_main, offline_module, monkeypatch):
 async def reset_run(history):
     async with history.db.create_unit_of_work() as uow:
         await uow.session.execute(update(HistoryRun).values(next_run_at=0))
+
+
+@pytest.mark.asyncio
+async def test_partial_live_capture_does_not_mark_new_interval_as_verified(history):
+    h = history
+    async with h.db.create_unit_of_work() as uow:
+        uow.session.add(HistoryChat(account_uuid=h.account.uuid, chat_id=11, known_top_id=100,
+                                   reached_start=True, turn=1))
+        uow.session.add(HistoryRange(account_uuid=h.account.uuid, chat_id=11, low_id=1, high_id=100))
+    # The old portion is checked. Live reception then sees only the edges of a
+    # new interval, not the message in its middle.
+    for identity in (100, 101, 300):
+        await h.db.messages_repository.record(owner_id=1001, account_user_id=2002, chat_id=11,
+            message_id=identity, source="userbot", kind="new", event_key=str(identity), sent_at=100,
+            payload={"text": "live", "media": []})
+    await h.repository.seed(h.account, h.bot.id)
+    assert await h.repository.ranges(h.account.uuid, 11) == [(1, 100)]
+    assert (await rows(h, HistoryChat))[0].known_top_id == 300
+    fetch = AsyncMock(return_value=([300, 200, 101], [message(300), message(200), message(101)]))
+    await h.module.backfill_account(h.bot, object(), h.account, h.repository, fetch_page=fetch, pause=h.pause)
+    assert fetch.await_args.args[2] == HistoryWindow(101, 300)
+    assert not fetch.await_args.args[2].recheck
+    assert {item.message_id for item in await rows(h, StoredMessage)} == {100, 101, 200, 300}
+    assert await h.repository.ranges(h.account.uuid, 11) == [(1, 300)]
+
+
+@pytest.mark.asyncio
+async def test_recheck_recovers_message_inside_covered_range_and_resumes_after_restart(history, monkeypatch, tmp_path):
+    import db.repositories.history_repo as history_repo
+    h = history
+    # A tiny page reproduces an old missing message outside the current head page.
+    monkeypatch.setattr(history_repo, "HISTORY_PAGE_SIZE", 2)
+    monkeypatch.setattr(h.module, "HISTORY_PAGE_SIZE", 2)
+    for identity in (600, 400, 200, 1):
+        await h.db.messages_repository.record(owner_id=1001, account_user_id=2002, chat_id=11,
+            message_id=identity, source="userbot", kind="new", event_key=str(identity), sent_at=100,
+            payload={"text": "known", "media": []})
+    async with h.db.create_unit_of_work() as uow:
+        uow.session.add(HistoryChat(account_uuid=h.account.uuid, chat_id=11, known_top_id=600,
+                                   reached_start=True, oldest_message_id=1, turn=3))
+        uow.session.add(HistoryRange(account_uuid=h.account.uuid, chat_id=11, low_id=1, high_id=600))
+    windows = []
+    async def fetch(client, chat_id, window):
+        windows.append(window)
+        ids = [identity for identity in (600, 400, 200, 75, 1)
+               if window.low_id <= identity <= (window.high_id or 600)][:2]
+        return ids, [message(identity) for identity in ids]
+    await h.module.backfill_account(h.bot, object(), h.account, h.repository, fetch_page=fetch, pause=h.pause)
+    progress = (await rows(h, HistoryChat))[0]
+    assert windows[0] == HistoryWindow(1, 600, recheck=True)
+    assert progress.recheck_before_id == 399
+    assert 75 not in {item.message_id for item in await rows(h, StoredMessage)}
+    # Reconstruct repositories like a restarted worker. Normal head refreshes
+    # cannot see 75; the persisted recheck cursor eventually reaches it.
+    for _ in range(8):
+        await reset_run(h)
+        await h.module.backfill_account(h.bot, object(), h.account,
+            HistoryRepository(h.db.get_session_factory), fetch_page=fetch, pause=h.pause)
+    assert [window.high_id for window in windows if window.recheck] == [600, 399, 74]
+    stored = await rows(h, StoredMessage)
+    assert {item.message_id for item in stored} == {1, 75, 200, 400, 600}
+    assert not any(item.is_deleted for item in stored)
+    assert (await rows(h, HistoryChat))[0].recheck_before_id is None
+    assert len(await rows(h, MessageRevision)) == 5
+    private = unlock_private_key(1001, h.bundle, "Личныйсекрет1001")
+    revision = next(item for item in await rows(h, MessageRevision)
+                    if item.message_uuid == next(row.uuid for row in stored if row.message_id == 75))
+    assert revision.encryption_version == 2
+    assert h.db.messages_repository.decode_payload(revision, owner_id=1001, private_key=private)["text"] == "private history"
+    from core.media_store import MediaStore
+    from services.chat_dump import create_all_chats_dump
+    from archive_viewer.archive import Archive
+    path, counts = await create_all_chats_dump(1001, tmp_path / "export",
+        session_factory=h.db.get_session_factory, store=MediaStore(tmp_path / "media"))
+    viewer = Archive.open(path, "Личныйсекрет1001")
+    try:
+        assert counts["messages"] == 5
+        recovered = next(item for item in viewer.page("2002:11")["messages"] if item["message_id"] == 75)
+        assert recovered["text"] == "private history"
+    finally:
+        viewer.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_recheck_does_not_advance_cursor_or_coverage(history):
+    h = history
+    await h.db.create_dump_chat_user(2002, 11)
+    async with h.db.create_unit_of_work() as uow:
+        uow.session.add(HistoryChat(account_uuid=h.account.uuid, chat_id=11, known_top_id=600,
+                                   reached_start=True, turn=3, recheck_before_id=399))
+        uow.session.add(HistoryRange(account_uuid=h.account.uuid, chat_id=11, low_id=1, high_id=600))
+    await h.module.backfill_account(h.bot, object(), h.account, h.repository,
+        fetch_page=AsyncMock(side_effect=TimeoutError), pause=h.pause)
+    progress = (await rows(h, HistoryChat))[0]
+    assert progress.turn == 3 and progress.recheck_before_id == 399
+    assert await h.repository.ranges(h.account.uuid, 11) == [(1, 600)]
+
+
+@pytest.mark.asyncio
+async def test_history_recheck_migration_preserves_legacy_progress(history):
+    import importlib
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    h = history
+    migration = importlib.import_module("migrations.versions.20261117_01_history_recheck")
+    async with h.db.get_session_factory()() as session:
+        engine = session.bind
+    def check(connection):
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            legacy = sa.Table("history_chat", sa.MetaData(), autoload_with=connection)
+            key = h.account.uuid.hex if connection.dialect.name == "sqlite" else h.account.uuid
+            connection.execute(legacy.insert().values(account_uuid=key, chat_id=11, known_top_id=600,
+                oldest_message_id=1, reached_start=True, excluded=False, turn=3,
+                last_attempt_at=0, last_head_at=0, retry_at=0))
+            migration.upgrade()
+        record = connection.execute(sa.select(HistoryChat.__table__)).mappings().one()
+        assert record["known_top_id"] == 600 and record["turn"] == 3 and record["recheck_before_id"] is None
+        assert {column["name"] for column in sa.inspect(connection).get_columns("history_chat")} == set(HistoryChat.model_fields)
+    async with engine.begin() as connection:
+        await connection.run_sync(check)
 
 
 @pytest.mark.asyncio
